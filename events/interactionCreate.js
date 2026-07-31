@@ -109,6 +109,34 @@ ephemeral:true
 });
 
 
+// Get request details
+const request =
+db.prepare(`
+
+SELECT *
+FROM queue
+WHERE id=?
+
+`).get(id);
+
+
+
+if(!request){
+
+return interaction.reply({
+
+content:"❌ Carry request not found",
+
+ephemeral:true
+
+});
+
+}
+
+
+
+// Update queue
+
 db.prepare(`
 
 UPDATE queue
@@ -123,6 +151,79 @@ member.id,
 id
 
 );
+
+
+
+// DM player
+
+try {
+
+
+const player =
+await client.users.fetch(request.user);
+
+
+
+await player.send({
+
+embeds:[
+
+new EmbedBuilder()
+
+.setTitle("🦆 Duck Carries Update")
+
+.setDescription(`
+
+Your carry request has been claimed!
+
+🏰 Dungeon:
+${request.dungeon}
+
+⚔ Difficulty:
+${request.difficulty}
+
+👥 Runs:
+${request.runs}
+
+🧑 Carrier:
+${member}
+
+Please wait for further communication.
+
+`)
+
+.setTimestamp()
+
+]
+
+});
+
+
+} catch(err){
+
+
+console.log(
+"Could not DM player"
+);
+
+
+}
+
+
+
+// Update queue message
+
+await interaction.update({
+
+content:
+`🟢 Claimed by ${member}\n\nPlayer has been notified.`,
+
+components:[]
+
+});
+
+
+}
 
 
 
