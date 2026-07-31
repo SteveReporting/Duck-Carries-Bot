@@ -194,7 +194,20 @@ function refreshQueue(guildId){
 
 }
 
+/**
+ * Get single request
+ */
+function getRequest(id){
 
+    return db.prepare(`
+
+        SELECT *
+        FROM queue
+        WHERE id=?
+
+    `).get(id);
+
+}
 
 module.exports = {
 
@@ -204,6 +217,7 @@ module.exports = {
     claimRequest,
     completeRequest,
     cancelRequest,
-    refreshQueue
+    refreshQueue,
+    getRequest
 
 };
