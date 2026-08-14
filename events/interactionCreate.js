@@ -19,7 +19,7 @@ function isCarrier(interaction) {
 
 function requestEmbed(request, statusText) {
     return new EmbedBuilder()
-        .setTitle(`🦆 Carry Request #${request.id}`)
+        .setTitle(`🍺 Carry Request #${request.id}`)
         .setDescription([
             `👤 **Roblox Username:** ${request.roblox}`,
             `🏰 **Dungeon:** ${request.dungeon}`,
@@ -122,7 +122,7 @@ async function claimCarry(interaction, client, id) {
         await requester.send({
             embeds: [
                 new EmbedBuilder()
-                    .setTitle("🦆 Duck Carries Update")
+                    .setTitle("🍺 The Carry Tavern Update")
                     .setDescription([
                         "Your carry request has been claimed!",
                         "",
@@ -259,7 +259,7 @@ async function submitCarry(interaction) {
     });
 
     return interaction.reply({
-        content: "✅ Your carry request has been added to the queue!",
+        content: "✅ Your carry request has been added to The Carry Tavern queue!",
         ephemeral: true,
     });
 }
