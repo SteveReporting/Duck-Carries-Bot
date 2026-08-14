@@ -16,7 +16,7 @@ new SlashCommandBuilder()
 .setName("setup")
 
 .setDescription(
-"Setup Duck Carries"
+"Setup The Carry Tavern"
 )
 
 .addChannelOption(option=>
@@ -74,7 +74,7 @@ completed.id
 await interaction.reply({
 
 content:
-"🦆 Duck Carries setup complete!",
+"🍺 The Carry Tavern setup is complete!",
 
 ephemeral:true
 
