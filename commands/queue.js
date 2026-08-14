@@ -36,7 +36,7 @@ interaction.guild.id
 if(!items.length)
 
 return interaction.reply(
-"🦆 Queue is empty!"
+"🍺 The tavern queue is empty!"
 );
 
 
