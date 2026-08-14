@@ -9,7 +9,7 @@ console.log(
 );
 
 client.user.setActivity(
-"Duck Carries 🦆"
+"The Carry Tavern 🍺"
 );
 
 }
