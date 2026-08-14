@@ -36,7 +36,7 @@ LIMIT 10
 
 
 
-let msg="🏆 **Duck Carrier Leaderboard**\n\n";
+let msg="🏆 **The Carry Tavern Leaderboard**\n\n";
 
 
 rows.forEach((r,i)=>{
