@@ -22,7 +22,7 @@ const app = express();
 
 app.get("/", (_req, res) => {
     res.status(200).json({
-        service: "duck-carries-bot",
+        service: "carry-tavern-bot",
         status: "online",
     });
 });
