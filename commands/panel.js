@@ -14,7 +14,7 @@ new SlashCommandBuilder()
 
 .setName("panel")
 .setDescription(
-"Create carry request panel"
+"Create The Carry Tavern request panel"
 ),
 
 
@@ -29,7 +29,7 @@ new ButtonBuilder()
 )
 
 .setLabel(
-"➕ Create Carry Request"
+"🍺 Request a Carry"
 )
 
 .setStyle(
@@ -42,9 +42,9 @@ await interaction.reply({
 
 content:
 `
-# 🦆 Request a Carry
+# 🍺 The Carry Tavern
 
-Click the button below and fill out the form.
+Need a carry? Pull up a stool and send in your request below.
 
 Please only request carries when you are available.
 `,
