@@ -385,19 +385,19 @@ async function executeTool(interaction, name, args, mode) {
             const role = getGuildRole(interaction, args.role_id);
             ensureManageableRole(interaction, role);
             const mapping = {
-                view_channel: PermissionFlagsBits.ViewChannel,
-                send_messages: PermissionFlagsBits.SendMessages,
-                read_message_history: PermissionFlagsBits.ReadMessageHistory,
-                add_reactions: PermissionFlagsBits.AddReactions,
-                attach_files: PermissionFlagsBits.AttachFiles,
-                embed_links: PermissionFlagsBits.EmbedLinks,
-                connect: PermissionFlagsBits.Connect,
-                speak: PermissionFlagsBits.Speak,
+                view_channel: "ViewChannel",
+                send_messages: "SendMessages",
+                read_message_history: "ReadMessageHistory",
+                add_reactions: "AddReactions",
+                attach_files: "AttachFiles",
+                embed_links: "EmbedLinks",
+                connect: "Connect",
+                speak: "Speak",
             };
             const update = {};
-            for (const [key, flag] of Object.entries(mapping)) {
+            for (const [key, permissionName] of Object.entries(mapping)) {
                 if (Object.prototype.hasOwnProperty.call(args.permissions, key)) {
-                    update[flag] = args.permissions[key];
+                    update[permissionName] = args.permissions[key];
                 }
             }
             await channel.permissionOverwrites.edit(role, update, { reason: `AI manager request by ${interaction.user.tag}` });
@@ -421,7 +421,7 @@ async function executeTool(interaction, name, args, mode) {
             if (!hook || !hook.token) throw new Error("Webhook not found in this guild, or its token is unavailable to this bot.");
             const client = new WebhookClient({ id: hook.id, token: hook.token });
             const message = await client.send({ content: args.content.slice(0, 2000), username: args.username || undefined });
-            await client.destroy();
+            client.destroy();
             await sendAuditLog(interaction, name, `Sent webhook message through ${hook.name} (${hook.id})`);
             return { message_id: message.id, webhook_id: hook.id };
         }
