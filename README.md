@@ -1,4 +1,4 @@
-# Duck Carries Discord Queue Bot
+# The Carry Tavern Discord Queue Bot
 
 A Discord.js queue-management bot built for a Roblox Dungeon Quest carry community. It turns free-form carry requests into a structured workflow that members and carriers can manage inside Discord.
 
@@ -24,7 +24,7 @@ A Discord.js queue-management bot built for a Roblox Dungeon Quest carry communi
 ## Architecture
 
 ```text
-Duck-Carries-Bot/
+Carry-Tavern-Bot/
 ├── commands/             Slash commands
 ├── database/             SQLite initialization and persistence
 ├── events/               Discord interaction/event handlers
