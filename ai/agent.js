@@ -1,6 +1,8 @@
 const { TOOL_DEFINITIONS, READ_ONLY_TOOLS, executeTool } = require("./discordTools");
 
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/responses";
+const OPENAI_TIMEOUT_MS = 60000;
+const TOOL_TIMEOUT_MS = 25000;
 
 function toolsForMode(mode) {
     if (mode === "fix") return TOOL_DEFINITIONS;
@@ -22,6 +24,7 @@ function buildInstructions(interaction, mode) {
         "Do not alter the carry queue/database internals unless the user explicitly asks about them and a tool supports the requested operation.",
         "Prefer the smallest set of changes that fulfills the request.",
         "When changing permissions, inspect the current structure first and preserve unrelated overwrites.",
+        "If one tool action fails or times out, continue with independent safe actions when possible and report the failed action instead of aborting the whole task.",
         "Keep the final Discord response concise: summarize what you found or changed, then mention any action that still requires the owner.",
     ].join("\n");
 }
@@ -31,21 +34,35 @@ async function createResponse(payload) {
         throw new Error("OPENAI_API_KEY is not configured on the bot host.");
     }
 
-    const response = await fetch(OPENAI_ENDPOINT, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
 
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-        const message = body?.error?.message || `OpenAI request failed with HTTP ${response.status}.`;
-        throw new Error(message);
+    try {
+        const response = await fetch(OPENAI_ENDPOINT, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+        });
+
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            const message = body?.error?.message || `OpenAI request failed with HTTP ${response.status}.`;
+            throw new Error(message);
+        }
+
+        return body;
+    } catch (error) {
+        if (error.name === "AbortError") {
+            throw new Error(`OpenAI request timed out after ${OPENAI_TIMEOUT_MS / 1000}s.`);
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeout);
     }
-    return body;
 }
 
 function extractOutputText(response) {
@@ -67,11 +84,27 @@ function parseToolArguments(item) {
     }
 }
 
+function withTimeout(promise, milliseconds, label) {
+    let timer;
+
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(
+            () => reject(new Error(`${label} timed out after ${milliseconds / 1000}s.`)),
+            milliseconds
+        );
+    });
+
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 async function runDiscordAgent({ interaction, mode, prompt }) {
     const tools = toolsForMode(mode);
     const model = process.env.OPENAI_MODEL || "gpt-5.6";
     const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || "low";
-    const maxToolRounds = Math.max(1, Math.min(Number(process.env.AI_MAX_TOOL_ROUNDS) || 8, 20));
+    const maxToolRounds = Math.max(1, Math.min(Number(process.env.AI_MAX_TOOL_ROUNDS) || 3, 10));
+
+    console.log(`[AI AGENT] Model: ${model}`);
+    console.log(`[AI AGENT] Max rounds: ${maxToolRounds}`);
 
     let response = await createResponse({
         model,
@@ -85,18 +118,28 @@ async function runDiscordAgent({ interaction, mode, prompt }) {
 
     for (let round = 0; round < maxToolRounds; round += 1) {
         const calls = (response.output || []).filter((item) => item.type === "function_call");
+
         if (calls.length === 0) {
             return extractOutputText(response) || "Done. No text response was returned.";
         }
 
+        console.log(`[AI AGENT] Round ${round + 1}: ${calls.length} tool call(s)`);
+
         const toolOutputs = [];
+
         for (const call of calls) {
             let output;
+
             try {
                 const args = parseToolArguments(call);
-                const result = await executeTool(interaction, call.name, args, mode);
+                const result = await withTimeout(
+                    executeTool(interaction, call.name, args, mode),
+                    TOOL_TIMEOUT_MS,
+                    `Tool ${call.name}`
+                );
                 output = { ok: true, result };
             } catch (error) {
+                console.warn(`[AI TOOL] ${call.name} failed: ${error.message}`);
                 output = { ok: false, error: error.message };
             }
 
