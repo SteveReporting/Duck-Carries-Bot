@@ -1,115 +1,134 @@
-# The Carry Tavern Discord Queue Bot
+# The Carry Tavern Discord Bot
 
-A Discord.js bot built for The Carry Tavern, a Roblox Dungeon Quest carry community. It combines the existing carry queue with an optional AI server-management layer that can inspect the guild and perform tightly controlled Discord changes.
+A Discord.js bot for The Carry Tavern Dungeon Quest community. It includes the carry queue, carrier statistics, Treasury loans/trust tracking, private Treasury tickets, and an OpenAI-powered Discord server manager.
 
-## What it does
+## Features
 
-- `/setup` configuration for server queue channels
-- Button-driven carry request flow
-- Discord modal collecting Roblox username, dungeon, difficulty, run count and availability
-- Persistent SQLite queue storage
-- Role-gated carrier claiming
-- Automatic DM notification when a carrier claims a request
-- Completion tracking and per-carrier statistics
-- Lightweight Express health endpoint for cloud hosting
-- `/ai ask` for server-aware AI help without making changes
-- `/ai audit` for read-only inspection of channels, roles, permission overwrites and webhooks
-- `/ai fix` for safe, non-destructive Discord changes
-- Optional AI action logging to a staff channel
+- `/setup` carry queue configuration
+- Button + modal carry requests
+- Carrier claiming and completion tracking
+- Persistent SQLite storage
+- `/leaderboard`, `/queue`, `/stats`, `/panel`
+- Treasury borrowing, donations, Trust Scores and overdue monitoring
+- `/treasury-setup` and `/treasury-admin`
+- `/ai ask`, `/ai audit`, `/ai fix`
+- Controlled AI Discord tools for channels, roles, permissions and webhooks
 
-## AI manager safeguards
+## Runtime
 
-The AI manager does not receive a Discord user token and cannot execute arbitrary Discord API calls. It only receives the specific functions exposed in `ai/discordTools.js`.
-
-Current write tools can:
-
-- create categories and text channels
-- rename and move channels
-- create and rename manageable roles
-- update a safe subset of channel/role permission overwrites
-- create webhooks
-- send messages through webhooks owned/visible to the bot
-
-The tool layer intentionally does **not** expose channel deletion, role deletion, kick, ban, mass DM, Administrator assignment, Manage Server assignment, Manage Roles assignment, token retrieval or arbitrary code execution.
-
-`/ai fix` is restricted to the server owner, Discord administrators, or members with `AI_MANAGER_ROLE_ID`.
-
-## Tech stack
-
-- Node.js 18+
+- Node.js 20+
 - Discord.js v14
 - better-sqlite3
-- Express
-- dotenv
 - OpenAI Responses API
+- PM2 recommended on Oracle Cloud
 
-## Architecture
+There is no web server or health endpoint. The bot runs as a normal long-lived Discord process.
+
+## Structure
 
 ```text
 Carry-Tavern-Bot/
 ├── ai/
-│   ├── agent.js          OpenAI Responses API + tool loop
-│   └── discordTools.js   Allow-listed Discord read/write actions
-├── commands/             Slash commands, including /ai
-├── database/             SQLite initialization and persistence
-├── events/               Discord interaction/event handlers
-├── deploy-commands.js    Guild command deployment
-├── index.js              Bot bootstrap + health endpoint
+│   ├── agent.js
+│   └── discordTools.js
+├── commands/
+├── database/
+│   └── database.js
+├── events/
+├── treasury/
+├── deploy-commands.js
+├── ecosystem.config.js
+├── index.js
 └── package.json
 ```
 
-## Queue flow
+## Environment
 
-1. A member opens the carry-request modal.
-2. The request is saved to SQLite.
-3. A formatted queue message is posted and the carrier role is notified.
-4. An authorized carrier claims the request.
-5. The member is notified by DM.
-6. Completed carries are removed from the live queue and recorded in carrier stats.
-
-## AI commands
-
-```text
-/ai ask prompt:<question>
-/ai audit focus:<optional area>
-/ai fix prompt:<requested change>
-```
-
-Examples:
-
-```text
-/ai ask prompt:Which roles can manage channels?
-/ai audit focus:staff permissions and webhooks
-/ai fix prompt:Create a Carry Logs category with a completed-carries text channel
-/ai fix prompt:Rename the old duck-announcements channel to tavern-announcements
-```
-
-## Environment variables
-
-Copy `.env.example` to `.env` and supply your own values:
+Copy `.env.example` to `.env` and fill in the values on the host:
 
 ```env
 TOKEN=
 CLIENT_ID=
 GUILD_ID=
 CARRIER_ROLE=
-PORT=3000
 
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5.6
 OPENAI_REASONING_EFFORT=low
 AI_MANAGER_ROLE_ID=
 AI_AUDIT_CHANNEL_ID=
-AI_MAX_TOOL_ROUNDS=8
+AI_MAX_TOOL_ROUNDS=3
 ```
 
-`AI_MANAGER_ROLE_ID` is optional if only the server owner/Administrators should use AI management. `AI_AUDIT_CHANNEL_ID` is optional; when set, successful AI write actions are logged there.
+Never commit the real `.env` file.
 
-Never commit the real `.env` file. It is excluded by `.gitignore`.
+## Oracle Cloud setup
 
-## Required Discord bot permissions
+On the VM:
 
-The bot only needs permissions for actions you want the AI manager to perform. Typical permissions are:
+```bash
+git clone https://github.com/SteveReporting/Duck-Carries-Bot.git
+cd Duck-Carries-Bot
+npm install
+cp .env.example .env
+nano .env
+```
+
+Deploy slash commands once after command structure changes:
+
+```bash
+npm run deploy
+```
+
+Install PM2 and start the bot:
+
+```bash
+sudo npm install -g pm2
+npm run pm2:start
+pm2 save
+pm2 startup
+```
+
+Run the command printed by `pm2 startup`, then run:
+
+```bash
+pm2 save
+```
+
+Useful commands:
+
+```bash
+pm2 status
+pm2 logs carry-tavern
+pm2 restart carry-tavern
+```
+
+## Updating the bot on Oracle
+
+```bash
+cd Duck-Carries-Bot
+git pull
+npm install
+pm2 restart carry-tavern
+```
+
+Only run `npm run deploy` again when slash-command definitions change.
+
+## SQLite
+
+Runtime data is stored in `database/duck.db`. The database uses WAL mode and a busy timeout for safer long-running VM use. Database files are ignored by Git so server data is not overwritten by `git pull`.
+
+Back up `database/duck.db` before major changes.
+
+## AI manager safeguards
+
+`/ai fix` can only perform actions exposed by `ai/discordTools.js`. The tool layer intentionally does not expose arbitrary code execution, token retrieval, kick/ban, mass DMs, deletion, Administrator assignment, Manage Server assignment or Manage Roles assignment.
+
+AI tool calls have timeouts so one stalled Discord operation does not leave the whole command hanging indefinitely. Failed tool actions are reported back to the AI so independent safe actions can continue.
+
+## Discord permissions
+
+Give the bot only the permissions required for the features you use, normally including:
 
 - View Channels
 - Send Messages
@@ -118,22 +137,4 @@ The bot only needs permissions for actions you want the AI manager to perform. T
 - Manage Roles
 - Manage Webhooks
 
-Do not give the bot Administrator unless you independently need it for something else. Its highest role must still sit above any role you expect `/ai fix` to rename or edit.
-
-## Local setup
-
-```bash
-npm install
-npm run deploy
-npm start
-```
-
-Run `npm run deploy` after pulling the AI branch so Discord receives the new `/ai` command.
-
-## Hosting setup
-
-Add the same environment variables to the hosting provider that currently runs the bot. The OpenAI key belongs in the host's secret/environment settings, not in GitHub.
-
-## Portfolio notes
-
-This project demonstrates Discord API integration, event-driven Node.js code, SQL persistence, role-based permissions, modal/button workflows, OpenAI tool calling, controlled external actions and deployment-oriented health checking. Community-specific IDs and credentials are kept outside source control.
+The bot's Discord role must sit above roles it needs to manage.
