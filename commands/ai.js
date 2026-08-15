@@ -1,7 +1,6 @@
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
-    MessageFlags,
 } = require("discord.js");
 
 const { runDiscordAgent } = require("../ai/agent");
@@ -36,7 +35,7 @@ async function runAgent(interaction, mode, prompt) {
         const chunks = splitMessage(result);
         const first = chunks.shift() || "✅ Done.";
 
-        await interaction.editReply(first);
+        await interaction.editReply({ content: first });
 
         for (const chunk of chunks) {
             await interaction.followUp({ content: chunk });
@@ -47,11 +46,7 @@ async function runAgent(interaction, mode, prompt) {
         const message = `❌ AI manager error: ${error.message || "Unknown error"}`.slice(0, 1900);
 
         try {
-            if (interaction.replied || interaction.deferred) {
-                await interaction.editReply(message);
-            } else {
-                await interaction.reply(message);
-            }
+            await interaction.editReply({ content: message });
         } catch (replyError) {
             console.error("[AI ERROR] Could not send error reply:", replyError);
         }
@@ -98,19 +93,24 @@ module.exports = {
 
     async execute(interaction) {
         console.log(`[AI] /ai received from ${interaction.user.username}`);
+        console.log("[AI] Sending immediate Discord acknowledgement...");
+
+        // Acknowledge Discord BEFORE permission checks or OpenAI work.
+        // This uses the same simple reply pattern as the working /panel command.
+        await interaction.reply({
+            content: "⏳ **The Carry Tavern AI Manager is working...**",
+        });
+
+        console.log("[AI] Initial Discord reply sent successfully");
 
         if (!hasAiAccess(interaction)) {
-            if (interaction.replied || interaction.deferred) {
-                return interaction.editReply("❌ You do not have permission to use The Carry Tavern AI manager.");
-            }
-
-            return interaction.reply({
+            console.log("[AI] Access denied");
+            return interaction.editReply({
                 content: "❌ You do not have permission to use The Carry Tavern AI manager.",
-                flags: MessageFlags.Ephemeral,
             });
         }
 
-        console.log(`[AI] Interaction already acknowledged: ${interaction.replied || interaction.deferred}`);
+        console.log("[AI] Access granted");
 
         const subcommand = interaction.options.getSubcommand();
         console.log(`[AI] Subcommand: ${subcommand}`);
