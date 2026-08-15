@@ -30,12 +30,7 @@ async function runAgent(interaction, mode, prompt) {
     console.log(`[AI] Starting ${mode}`);
 
     try {
-        const result = await runDiscordAgent({
-            interaction,
-            mode,
-            prompt,
-        });
-
+        const result = await runDiscordAgent({ interaction, mode, prompt });
         console.log(`[AI] ${mode} completed successfully`);
 
         const chunks = splitMessage(result);
@@ -49,10 +44,7 @@ async function runAgent(interaction, mode, prompt) {
     } catch (error) {
         console.error(`[AI ERROR] ${mode}:`, error);
 
-        const message = `❌ AI manager error: ${error.message || "Unknown error"}`.slice(
-            0,
-            1900
-        );
+        const message = `❌ AI manager error: ${error.message || "Unknown error"}`.slice(0, 1900);
 
         try {
             if (interaction.replied || interaction.deferred) {
@@ -108,16 +100,17 @@ module.exports = {
         console.log(`[AI] /ai received from ${interaction.user.username}`);
 
         if (!hasAiAccess(interaction)) {
+            if (interaction.replied || interaction.deferred) {
+                return interaction.editReply("❌ You do not have permission to use The Carry Tavern AI manager.");
+            }
+
             return interaction.reply({
                 content: "❌ You do not have permission to use The Carry Tavern AI manager.",
                 flags: MessageFlags.Ephemeral,
             });
         }
 
-        // IMPORTANT: acknowledge Discord immediately. On this host, deferReply()
-        // has repeatedly failed to acknowledge the interaction in time.
-        await interaction.reply("⏳ **The Carry Tavern AI Manager is working...**");
-        console.log("[AI] Initial Discord reply sent successfully");
+        console.log(`[AI] Interaction already acknowledged: ${interaction.replied || interaction.deferred}`);
 
         const subcommand = interaction.options.getSubcommand();
         console.log(`[AI] Subcommand: ${subcommand}`);
