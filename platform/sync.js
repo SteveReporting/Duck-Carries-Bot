@@ -116,7 +116,9 @@ async function syncDiscordContentFeed(client, feedType, channelId) {
     author_username: message.author.username,
     author_display_name: message.member?.displayName || message.author.globalName || message.author.username,
     author_avatar_url: message.author.displayAvatarURL({ extension: "png", size: 128 }),
-    content: String(message.content).slice(0, 8000),
+    // cleanContent keeps Discord markdown while resolving raw role/user/channel
+    // mention IDs into readable names for the public website feed.
+    content: String(message.cleanContent || message.content).slice(0, 8000),
     message_url: message.url,
     posted_at: message.createdAt.toISOString(),
     edited_at: message.editedAt ? message.editedAt.toISOString() : null,
