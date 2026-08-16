@@ -3,7 +3,6 @@ const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
 const { marketplaceBaseUrl } = require("./helpers");
 
-const seenEvents = new Set();
 const seenListings = new Set();
 const seenCarries = new Set();
 let initialized = false;
@@ -19,6 +18,11 @@ function carrierRoleMap() {
     "Brewmaster": process.env.CARRIER_ROLE_BREWMASTER,
     "Master of the Tap": process.env.CARRIER_ROLE_MASTER_OF_TAP,
   };
+}
+
+function eventFeedChannelId() {
+  // Temporary backwards compatibility with the old variable so existing hosts do not break.
+  return process.env.EVENT_FEED_CHANNEL_ID || process.env.EVENT_ANNOUNCEMENT_CHANNEL_ID || null;
 }
 
 async function safeChannel(client, id) {
@@ -89,29 +93,50 @@ async function syncLegacyDiscordQueue() {
   if (upsertError) throw new Error(`Discord queue bridge sync failed: ${upsertError.message}`);
 }
 
-async function pollEvents(client, announce) {
-  const supabase = getSupabase();
-  const { data, error } = await supabase.from("events")
-    .select("id,title,description,event_type,starts_at,location_text")
-    .eq("status", "published")
-    .gte("starts_at", new Date(Date.now() - 60_000).toISOString())
-    .order("created_at", { ascending: false }).limit(100);
-  if (error) throw error;
-  for (const event of data || []) {
-    const isNew = !seenEvents.has(event.id);
-    seenEvents.add(event.id);
-    if (!announce || !isNew) continue;
-    const channel = await safeChannel(client, process.env.EVENT_ANNOUNCEMENT_CHANNEL_ID);
-    if (!channel) continue;
-    const base = marketplaceBaseUrl();
-    const embed = new EmbedBuilder()
-      .setTitle(`🏆 ${event.title}`)
-      .setDescription((event.description || "Tavern event").slice(0, 3500))
-      .addFields({ name: "Starts", value: `<t:${Math.floor(new Date(event.starts_at).getTime() / 1000)}:F>` }, { name: "Type", value: event.event_type.replaceAll("_", " "), inline: true });
-    if (event.location_text) embed.addFields({ name: "Location", value: event.location_text, inline: true });
-    if (base) embed.setURL(`${base}/events`);
-    await channel.send({ embeds: [embed] });
+async function syncDiscordContentFeed(client, feedType, channelId) {
+  if (!channelId) return;
+  const channel = await safeChannel(client, channelId);
+  if (!channel?.messages?.fetch) {
+    console.warn(`[DISCORD FEED] ${feedType}: configured channel ${channelId} is not readable.`);
+    return;
   }
+
+  const fetched = await channel.messages.fetch({ limit: 100 });
+  const messages = [...fetched.values()]
+    .filter((message) => !message.author?.bot && String(message.content || "").trim())
+    .sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+  if (!messages.length) return;
+
+  const now = new Date().toISOString();
+  const payload = messages.map((message) => ({
+    message_id: String(message.id),
+    feed_type: feedType,
+    guild_id: String(message.guildId || process.env.GUILD_ID || ""),
+    channel_id: String(channel.id),
+    author_discord_id: String(message.author.id),
+    author_username: message.author.username,
+    author_display_name: message.member?.displayName || message.author.globalName || message.author.username,
+    author_avatar_url: message.author.displayAvatarURL({ extension: "png", size: 128 }),
+    content: String(message.content).slice(0, 8000),
+    message_url: message.url,
+    posted_at: message.createdAt.toISOString(),
+    edited_at: message.editedAt ? message.editedAt.toISOString() : null,
+    synced_at: now,
+  }));
+
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from("discord_content_feed")
+    .upsert(payload, { onConflict: "message_id" });
+  if (error) throw new Error(`${feedType} Discord feed sync failed: ${error.message}`);
+}
+
+async function syncDiscordFeeds(client) {
+  await Promise.all([
+    syncDiscordContentFeed(client, "event", eventFeedChannelId()),
+    syncDiscordContentFeed(client, "announcement", process.env.ANNOUNCEMENT_CHANNEL_ID || null),
+  ]);
 }
 
 async function pollListings(client, announce) {
@@ -219,7 +244,7 @@ async function tick(client) {
     await heartbeat();
     await Promise.all([
       syncLegacyDiscordQueue(),
-      pollEvents(client, initialized),
+      syncDiscordFeeds(client),
       pollListings(client, initialized),
       pollCarries(client, initialized),
       pollDiscordNotifications(client),
@@ -238,4 +263,4 @@ function startPlatformSync(client) {
   timer.unref?.();
 }
 
-module.exports = { startPlatformSync, syncLegacyDiscordQueue };
+module.exports = { startPlatformSync, syncLegacyDiscordQueue, syncDiscordFeeds };
