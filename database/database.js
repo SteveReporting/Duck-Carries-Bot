@@ -46,4 +46,25 @@ db.prepare(`
     )
 `).run();
 
+function addColumn(table, definition) {
+    const name = definition.trim().split(/\s+/)[0];
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!columns.some((column) => column.name === name)) {
+        db.prepare(`ALTER TABLE ${table} ADD COLUMN ${definition}`).run();
+    }
+}
+
+addColumn("settings", "queueBoardMessage TEXT");
+
+addColumn("queue", "created_at INTEGER");
+addColumn("queue", "ticket_channel TEXT");
+addColumn("queue", "message_channel TEXT");
+addColumn("queue", "message_id TEXT");
+addColumn("queue", "carrier_confirmed INTEGER DEFAULT 0");
+addColumn("queue", "requester_confirmed INTEGER DEFAULT 0");
+
+// Existing live legacy rows predate timestamps. Give them a safe migration timestamp
+// so the new timeout system does not instantly remove them on first boot.
+db.prepare("UPDATE queue SET created_at = ? WHERE created_at IS NULL").run(Date.now());
+
 module.exports = db;
