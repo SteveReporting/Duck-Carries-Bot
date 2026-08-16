@@ -1,11 +1,24 @@
 const {
+  ActionRowBuilder,
   EmbedBuilder,
   MessageFlags,
   SlashCommandBuilder,
+  StringSelectMenuBuilder,
 } = require("discord.js");
 
 const { getSupabase } = require("../marketplace/supabase");
 const { loadLiveLegacyQueue } = require("../platform/legacyQueue");
+const {
+  claimCarryGroup,
+  groupWaitingRequests,
+  loadPlatformQueue,
+  requireCarrierProfile,
+} = require("../platform/carryQueue");
+const {
+  canonicalizeDungeon,
+  canonicalizeDifficulty,
+  groupKey,
+} = require("../platform/dungeons");
 const {
   displayName,
   requireLinkedProfile,
@@ -17,25 +30,40 @@ function shortId(id) {
   return String(id).slice(0, 8);
 }
 
-async function loadPlatformQueue() {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from("carry_requests")
-    .select("id, requester_id, carrier_id, dungeon, difficulty, runs_requested, runs_completed, notes, status, created_at")
-    .in("status", ["queued", "claimed", "in_progress"])
-    .order("created_at", { ascending: true })
-    .limit(25);
-  if (error) throw new Error(`Could not load the website carry queue: ${error.message}`);
-  if (!data?.length) return [];
+function encodeToken(parts) {
+  return Buffer.from(JSON.stringify(parts)).toString("base64url");
+}
 
-  const ids = [...new Set(data.flatMap((row) => [row.requester_id, row.carrier_id]).filter(Boolean))];
-  const { data: profiles, error: profileError } = await supabase
-    .from("profiles")
-    .select("id, discord_username, discord_display_name, roblox_username")
-    .in("id", ids);
-  if (profileError) throw new Error(`Could not load queue members: ${profileError.message}`);
-  const map = new Map((profiles || []).map((p) => [p.id, p]));
-  return data.map((row) => ({ ...row, requester: map.get(row.requester_id), carrier: map.get(row.carrier_id) }));
+function decodeToken(value) {
+  try {
+    return JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function ageText(dateValue) {
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(dateValue).getTime()) / 1000));
+  if (seconds < 60) return "<1m";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function groupLegacyQueue(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    const dungeon = canonicalizeDungeon(row.dungeon);
+    const difficulty = canonicalizeDifficulty(row.difficulty);
+    const key = groupKey(dungeon, difficulty);
+    const group = map.get(key) || { dungeon, difficulty, requests: [], tiers: new Set() };
+    group.requests.push(row);
+    const runs = Number.parseInt(row.runs, 10);
+    if (Number.isFinite(runs)) group.tiers.add(runs);
+    map.set(key, group);
+  }
+  return [...map.values()].map((g) => ({ ...g, tiers: [...g.tiers].sort((a, b) => a - b) }));
 }
 
 async function viewQueue(interaction) {
@@ -44,42 +72,126 @@ async function viewQueue(interaction) {
     loadLiveLegacyQueue(interaction.client, interaction.guildId, { maxMessages: 500 }),
   ]);
 
-  if (!platformQueue.length && !legacyQueue.length) {
+  const waitingGroups = groupWaitingRequests(platformQueue);
+  const claimed = platformQueue.filter((r) => r.status === "claimed" || r.status === "in_progress");
+  const legacyGroups = groupLegacyQueue(legacyQueue);
+
+  if (!waitingGroups.length && !claimed.length && !legacyGroups.length) {
     return interaction.reply("🍺 The Tavern carry queue is empty!");
   }
 
   const sections = [];
 
-  if (legacyQueue.length) {
-    const shown = legacyQueue.slice(0, 20);
-    const legacyLines = shown.map((r) => {
-      const carrier = r.carrier ? `\n🍻 Carrier: <@${r.carrier}>` : "";
-      return `**Carry Request #${r.id} · ${r.dungeon || "Unknown dungeon"}**\n👤 ${r.roblox || `<@${r.user}>`}\n⚔️ ${r.difficulty || "Not set"} · ${r.runs || "?"} run(s)\n🕒 ${r.availability || "Not set"}\n📌 ${r.status || "waiting"}${carrier}`;
+  if (waitingGroups.length) {
+    const lines = waitingGroups.slice(0, 18).map((group, index) => {
+      const tiers = group.runTiers.join(" / ");
+      return `**${index + 1}. ${group.dungeon} • ${group.difficulty}**\n👥 ${group.requests.length} request${group.requests.length === 1 ? "" : "s"} • 🏃 ${tiers} run tier${group.runTiers.length === 1 ? "" : "s"} • ⏱️ oldest ${ageText(group.oldestAt)}`;
     });
-    const more = legacyQueue.length > shown.length ? `\n\n…plus **${legacyQueue.length - shown.length}** more live Discord request(s) on the website.` : "";
-    sections.push(`**🍺 Live Discord Queue**\n${legacyLines.join("\n\n")}${more}`);
+    if (waitingGroups.length > 18) lines.push(`…and **${waitingGroups.length - 18}** more grouped queues.`);
+    sections.push(`**🟡 Waiting Groups**\n${lines.join("\n\n")}`);
   }
 
-  if (platformQueue.length) {
-    const platformLines = platformQueue.map((r, i) => {
-      const carrier = r.carrier ? `\n🍻 Carrier: ${displayName(r.carrier)}` : "";
-      return `**#${i + 1} · ${r.dungeon}**\n👤 ${displayName(r.requester)}\n⚔️ ${r.difficulty} · ${r.runs_requested} run(s)\n📌 ${r.status}${carrier}\n\`${r.id}\``;
+  if (claimed.length) {
+    const lines = claimed.slice(0, 10).map((request) => {
+      const carrier = request.carrier ? displayName(request.carrier) : "Carrier";
+      return `**${request.dungeon} • ${request.difficulty}** • ${request.runs_requested} runs\n🍻 ${carrier} • 📌 ${request.status}`;
     });
-    sections.push(`**🌐 Website / Supabase Queue**\n${platformLines.join("\n\n")}`);
+    if (claimed.length > 10) lines.push(`…and **${claimed.length - 10}** more claimed/in-progress request(s).`);
+    sections.push(`**🟢 Claimed / In Progress**\n${lines.join("\n\n")}`);
+  }
+
+  if (legacyGroups.length) {
+    const lines = legacyGroups.slice(0, 8).map((group) => {
+      const tiers = group.tiers.length ? group.tiers.join(" / ") : "mixed";
+      return `**${group.dungeon} • ${group.difficulty}** • ${group.requests.length} legacy request${group.requests.length === 1 ? "" : "s"} • ${tiers} runs`;
+    });
+    sections.push(`**🕰️ Existing Legacy Requests**\n${lines.join("\n")}`);
   }
 
   const base = marketplaceBaseUrl();
   const embed = new EmbedBuilder()
     .setTitle("⚔️ The Carry Tavern Queue")
     .setDescription(sections.join("\n\n━━━━━━━━━━━━━━━━━━━━\n\n").slice(0, 4000))
-    .setFooter({ text: "Discord entries are detected from live Claim/Complete buttons, so stale database rows are ignored." });
+    .setFooter({ text: "New requests are grouped by exact dungeon + difficulty. Carriers can claim a run tier below." });
   if (base) embed.setURL(`${base}/carry-queue`);
-  return interaction.reply({ embeds: [embed] });
+
+  const components = [];
+  if (waitingGroups.length) {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId("queue_group_select")
+      .setPlaceholder("Carrier: choose a dungeon + difficulty")
+      .addOptions(waitingGroups.slice(0, 25).map((group) => ({
+        label: `${group.dungeon} • ${group.difficulty}`.slice(0, 100),
+        description: `${group.requests.length} request(s) • runs ${group.runTiers.join("/")}`.slice(0, 100),
+        value: encodeToken([group.dungeon, group.difficulty]),
+      })));
+    components.push(new ActionRowBuilder().addComponents(select));
+  }
+
+  return interaction.reply({ embeds: [embed], components });
+}
+
+async function handleGroupSelection(interaction) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const carrier = await requireCarrierProfile(interaction, { alreadyDeferred: true });
+  if (!carrier) return true;
+
+  const decoded = decodeToken(interaction.values?.[0]);
+  if (!Array.isArray(decoded) || decoded.length < 2) {
+    await interaction.editReply("❌ That queue selection expired. Run `/queue view` again.");
+    return true;
+  }
+  const [dungeon, difficulty] = decoded;
+  const queue = await loadPlatformQueue({ statuses: ["queued"] });
+  const matches = queue.filter((row) =>
+    canonicalizeDungeon(row.dungeon) === canonicalizeDungeon(dungeon) &&
+    canonicalizeDifficulty(row.difficulty) === canonicalizeDifficulty(difficulty));
+  if (!matches.length) {
+    await interaction.editReply("❌ That group is no longer waiting in the queue.");
+    return true;
+  }
+
+  const tiers = [...new Set(matches.map((r) => Number(r.runs_requested)))].sort((a, b) => a - b);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("queue_run_select")
+    .setPlaceholder("Choose the maximum run amount you will carry")
+    .addOptions(tiers.map((tier) => {
+      const included = matches.filter((r) => Number(r.runs_requested) <= tier).length;
+      return {
+        label: `Up to ${tier} run${tier === 1 ? "" : "s"}`,
+        description: `Claims ${included} requester${included === 1 ? "" : "s"} in this group`,
+        value: encodeToken([canonicalizeDungeon(dungeon), canonicalizeDifficulty(difficulty), tier]),
+      };
+    }));
+
+  await interaction.editReply({
+    content: `🍺 **${canonicalizeDungeon(dungeon)} • ${canonicalizeDifficulty(difficulty)}**\nChoose a run tier. Selecting **15**, for example, also includes waiting requests for 5 runs in the same dungeon and difficulty.`,
+    components: [new ActionRowBuilder().addComponents(select)],
+  });
+  return true;
+}
+
+async function handleRunSelection(interaction) {
+  const decoded = decodeToken(interaction.values?.[0]);
+  if (!Array.isArray(decoded) || decoded.length < 3) {
+    await interaction.reply({ content: "❌ That run selection expired. Run `/queue view` again.", flags: MessageFlags.Ephemeral });
+    return true;
+  }
+  const [dungeon, difficulty, maxRuns] = decoded;
+  await claimCarryGroup(interaction, { dungeon, difficulty, maxRuns: Number(maxRuns) });
+  return true;
+}
+
+async function handleQueueComponent(interaction) {
+  if (!interaction.isStringSelectMenu()) return false;
+  if (interaction.customId === "queue_group_select") return handleGroupSelection(interaction);
+  if (interaction.customId === "queue_run_select") return handleRunSelection(interaction);
+  return false;
 }
 
 async function createRequest(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const profile = await requireLinkedProfile(interaction, { alreadyDeferred: true });
+  const profile = await requireLinkedProfile(interaction, { alreadyDeferred: true, requireRoblox: true });
   if (!profile) return;
   const supabase = getSupabase();
   const { data: active, error: activeError } = await supabase
@@ -92,21 +204,53 @@ async function createRequest(interaction) {
   if (activeError) throw new Error(activeError.message);
   if (active) return interaction.editReply(`❌ You already have an active request for **${active.dungeon}** (${active.status}).`);
 
-  const dungeon = interaction.options.getString("dungeon", true).trim();
-  const difficulty = interaction.options.getString("difficulty")?.trim() || "Nightmare";
+  const dungeon = canonicalizeDungeon(interaction.options.getString("dungeon", true));
+  const difficulty = canonicalizeDifficulty(interaction.options.getString("difficulty") || "Nightmare");
   const runs = interaction.options.getInteger("runs") ?? 1;
+  const availability = interaction.options.getString("availability")?.trim() || null;
   const notes = interaction.options.getString("notes")?.trim() || null;
   const { data, error } = await supabase.from("carry_requests").insert({
     requester_id: profile.id,
     dungeon,
     difficulty,
     runs_requested: runs,
+    availability,
     notes,
     status: "queued",
   }).select("id").single();
   if (error) throw new Error(`Could not join the queue: ${error.message}`);
   const base = marketplaceBaseUrl();
-  return interaction.editReply(`✅ Added **${dungeon}** (${difficulty}, ${runs} run${runs === 1 ? "" : "s"}) to the Tavern queue.\nRequest ID: \`${data.id}\`${base ? `\n${base}/carry-queue` : ""}`);
+  return interaction.editReply(`✅ Added **${dungeon}** (${difficulty}, ${runs} run${runs === 1 ? "" : "s"}) to the Tavern queue.\nYour Roblox account: **${profile.roblox_username}**\nRequest ID: \`${data.id}\`${base ? `\n${base}/carry-queue` : ""}`);
+}
+
+async function releaseSingleClaim(profile, requestId) {
+  const supabase = getSupabase();
+  const { data: request, error: fetchError } = await supabase
+    .from("carry_requests")
+    .select("id,requester_id,carrier_id,status,dungeon")
+    .eq("id", requestId)
+    .maybeSingle();
+  if (fetchError) throw fetchError;
+  if (!request || !["claimed", "in_progress"].includes(request.status)) throw new Error("Carry is not currently claimed.");
+  const staff = await hasAnyPlatformRole(profile.id, ["moderator", "administrator", "owner"]);
+  if (request.carrier_id !== profile.id && !staff) throw new Error("Only the assigned Carrier can release this claim.");
+  const { data, error } = await supabase
+    .from("carry_requests")
+    .update({
+      carrier_id: null,
+      status: "queued",
+      claimed_at: null,
+      started_at: null,
+      carrier_confirmed_at: null,
+      requester_confirmed_at: null,
+      ticket_channel_id: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", request.id)
+    .select("id,dungeon")
+    .single();
+  if (error) throw error;
+  return data;
 }
 
 async function queueAction(interaction, kind) {
@@ -115,6 +259,12 @@ async function queueAction(interaction, kind) {
   if (!profile) return;
   const supabase = getSupabase();
   const requestId = interaction.options.getString("request", true).trim();
+
+  if (kind === "unclaim") {
+    const request = await releaseSingleClaim(profile, requestId);
+    return interaction.editReply(`✅ Released **${request.dungeon}** back into the queue.`);
+  }
+
   let rpc;
   let args = { _request_id: requestId, _actor_id: profile.id };
   if (kind === "claim") {
@@ -134,7 +284,12 @@ async function queueAction(interaction, kind) {
   const { data, error } = await supabase.rpc(rpc, args);
   if (error) throw new Error(error.message);
   const request = Array.isArray(data) ? data[0] : data;
-  const labels = { claim: "claimed", start: "started", complete: "completed", cancel: "cancelled" };
+  const labels = {
+    claim: "claimed",
+    start: "started",
+    complete: request?.status === "completed" ? "fully completed" : "completion confirmed (waiting for the other side)",
+    cancel: "cancelled",
+  };
   return interaction.editReply(`✅ Carry **${request?.dungeon || shortId(requestId)}** ${labels[kind]}.`);
 }
 
@@ -142,21 +297,24 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName("queue")
     .setDescription("Use the Carry Tavern carry queue")
-    .addSubcommand((s) => s.setName("view").setDescription("View the Discord and website carry queues"))
-    .addSubcommand((s) => s.setName("request").setDescription("Request a carry through the website queue")
-      .addStringOption((o) => o.setName("dungeon").setDescription("Dungeon name").setRequired(true).setMaxLength(120))
-      .addStringOption((o) => o.setName("difficulty").setDescription("Difficulty").setMaxLength(60))
-      .addIntegerOption((o) => o.setName("runs").setDescription("Number of runs").setMinValue(1).setMaxValue(100))
+    .addSubcommand((s) => s.setName("view").setDescription("View the grouped live carry queue"))
+    .addSubcommand((s) => s.setName("request").setDescription("Request a carry through the shared queue")
+      .addStringOption((o) => o.setName("dungeon").setDescription("Dungeon name or abbreviation, e.g. UW").setRequired(true).setMaxLength(120))
+      .addStringOption((o) => o.setName("difficulty").setDescription("Difficulty, e.g. NM HC").setMaxLength(60))
+      .addIntegerOption((o) => o.setName("runs").setDescription("Number of runs").setMinValue(1).setMaxValue(15))
+      .addStringOption((o) => o.setName("availability").setDescription("When you are available").setMaxLength(240))
       .addStringOption((o) => o.setName("notes").setDescription("Notes for the Carrier").setMaxLength(1000)))
-    .addSubcommand((s) => s.setName("claim").setDescription("Claim a website queue carry")
-      .addStringOption((o) => o.setName("request").setDescription("Request UUID from /queue view").setRequired(true).setMinLength(36).setMaxLength(36)))
-    .addSubcommand((s) => s.setName("start").setDescription("Start your claimed website carry")
+    .addSubcommand((s) => s.setName("claim").setDescription("Claim one specific website queue carry")
+      .addStringOption((o) => o.setName("request").setDescription("Request UUID from the website").setRequired(true).setMinLength(36).setMaxLength(36)))
+    .addSubcommand((s) => s.setName("start").setDescription("Start your claimed carry")
       .addStringOption((o) => o.setName("request").setDescription("Request UUID").setRequired(true).setMinLength(36).setMaxLength(36)))
-    .addSubcommand((s) => s.setName("complete").setDescription("Complete and log a website carry")
+    .addSubcommand((s) => s.setName("complete").setDescription("Confirm your side of a carry as complete")
       .addStringOption((o) => o.setName("request").setDescription("Request UUID").setRequired(true).setMinLength(36).setMaxLength(36))
-      .addIntegerOption((o) => o.setName("runs").setDescription("Runs completed").setMinValue(1).setMaxValue(100))
+      .addIntegerOption((o) => o.setName("runs").setDescription("Runs completed").setMinValue(1).setMaxValue(15))
       .addIntegerOption((o) => o.setName("minutes").setDescription("Service minutes").setMinValue(0).setMaxValue(1440)))
-    .addSubcommand((s) => s.setName("cancel").setDescription("Cancel a website carry you requested or claimed")
+    .addSubcommand((s) => s.setName("unclaim").setDescription("Release a carry you claimed by mistake")
+      .addStringOption((o) => o.setName("request").setDescription("Request UUID").setRequired(true).setMinLength(36).setMaxLength(36)))
+    .addSubcommand((s) => s.setName("cancel").setDescription("Cancel a carry you requested")
       .addStringOption((o) => o.setName("request").setDescription("Request UUID").setRequired(true).setMinLength(36).setMaxLength(36))),
 
   async execute(interaction) {
@@ -167,8 +325,11 @@ module.exports = {
       return await queueAction(interaction, sub);
     } catch (error) {
       console.error("[QUEUE]", error);
-      if (interaction.deferred || interaction.replied) return interaction.editReply("❌ Queue request failed. Nothing was changed.");
-      return interaction.reply({ content: "❌ Queue request failed. Nothing was changed.", flags: MessageFlags.Ephemeral });
+      const message = `❌ ${error.message || "Queue request failed. Nothing was changed."}`;
+      if (interaction.deferred || interaction.replied) return interaction.editReply(message);
+      return interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
     }
   },
+
+  handleQueueComponent,
 };
