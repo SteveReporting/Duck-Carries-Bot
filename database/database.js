@@ -46,6 +46,126 @@ db.prepare(`
     )
 `).run();
 
+// Bot-only community state. The shared carry queue itself remains in Supabase.
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS carrier_status(
+        guild TEXT NOT NULL,
+        user TEXT NOT NULL,
+        available INTEGER NOT NULL DEFAULT 0,
+        session_dungeon TEXT,
+        session_difficulty TEXT,
+        session_started_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(guild, user)
+    )
+`).run();
+
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS carrier_permissions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild TEXT NOT NULL,
+        user TEXT NOT NULL,
+        dungeon TEXT NOT NULL,
+        difficulty TEXT NOT NULL DEFAULT '*',
+        allowed INTEGER NOT NULL DEFAULT 1,
+        granted_by TEXT,
+        created_at INTEGER NOT NULL,
+        UNIQUE(guild, user, dungeon, difficulty)
+    )
+`).run();
+
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS carrier_ratings(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild TEXT,
+        request_id TEXT NOT NULL UNIQUE,
+        carrier TEXT NOT NULL,
+        requester TEXT NOT NULL,
+        score INTEGER NOT NULL CHECK(score BETWEEN 1 AND 5),
+        note TEXT,
+        created_at INTEGER NOT NULL
+    )
+`).run();
+
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS no_shows(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild TEXT NOT NULL,
+        request_id TEXT,
+        offender TEXT NOT NULL,
+        reporter TEXT NOT NULL,
+        offender_side TEXT NOT NULL,
+        reason TEXT,
+        created_at INTEGER NOT NULL
+    )
+`).run();
+
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS warnings(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild TEXT NOT NULL,
+        user TEXT NOT NULL,
+        staff TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        removed_at INTEGER,
+        removed_by TEXT
+    )
+`).run();
+
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS trade_ratings(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild TEXT NOT NULL,
+        rater TEXT NOT NULL,
+        target TEXT NOT NULL,
+        score INTEGER NOT NULL CHECK(score BETWEEN 1 AND 5),
+        reference TEXT NOT NULL,
+        note TEXT,
+        created_at INTEGER NOT NULL,
+        UNIQUE(guild, rater, target, reference)
+    )
+`).run();
+
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS trade_disputes(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild TEXT NOT NULL,
+        reporter TEXT NOT NULL,
+        target TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        evidence TEXT,
+        status TEXT NOT NULL DEFAULT 'open',
+        created_at INTEGER NOT NULL,
+        resolved_at INTEGER,
+        resolved_by TEXT
+    )
+`).run();
+
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS abuse_events(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild TEXT NOT NULL,
+        user TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        weight INTEGER NOT NULL DEFAULT 1,
+        metadata TEXT,
+        created_at INTEGER NOT NULL
+    )
+`).run();
+
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS abuse_alerts(
+        guild TEXT NOT NULL,
+        user TEXT NOT NULL,
+        last_alert_at INTEGER NOT NULL,
+        last_score INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(guild, user)
+    )
+`).run();
+
 function addColumn(table, definition) {
     const name = definition.trim().split(/\s+/)[0];
     const columns = db.prepare(`PRAGMA table_info(${table})`).all();
@@ -66,5 +186,15 @@ addColumn("queue", "requester_confirmed INTEGER DEFAULT 0");
 // Existing live legacy rows predate timestamps. Give them a safe migration timestamp
 // so the new timeout system does not instantly remove them on first boot.
 db.prepare("UPDATE queue SET created_at = ? WHERE created_at IS NULL").run(Date.now());
+
+// Helpful indexes for leaderboard, moderation and matching reads.
+db.prepare("CREATE INDEX IF NOT EXISTS carrier_status_available_idx ON carrier_status(guild, available, updated_at)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS carrier_permissions_user_idx ON carrier_permissions(guild, user)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS carrier_ratings_carrier_idx ON carrier_ratings(carrier, created_at)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS no_shows_offender_idx ON no_shows(guild, offender, created_at)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS warnings_user_idx ON warnings(guild, user, active)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS trade_ratings_target_idx ON trade_ratings(guild, target, created_at)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS trade_disputes_target_idx ON trade_disputes(guild, target, status)").run();
+db.prepare("CREATE INDEX IF NOT EXISTS abuse_events_user_idx ON abuse_events(guild, user, created_at)").run();
 
 module.exports = db;
