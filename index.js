@@ -10,6 +10,7 @@ const {
     Routes,
 } = require("discord.js");
 const db = require("./database/database");
+const { guardCarryClaimInteraction } = require("./platform/carryClaimAccess");
 
 console.log("=================================");
 console.log("🍺 Starting The Carry Tavern...");
@@ -83,7 +84,13 @@ function loadEvents() {
                 throw new Error("Event must export { name, execute }.");
             }
 
-            const listener = (...args) => event.execute(...args, client);
+            const listener = async (...args) => {
+                if (event.name === "interactionCreate") {
+                    const allowed = await guardCarryClaimInteraction(args[0]);
+                    if (!allowed) return;
+                }
+                return event.execute(...args, client);
+            };
 
             if (event.once) {
                 client.once(event.name, listener);
