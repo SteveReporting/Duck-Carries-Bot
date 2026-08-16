@@ -14,6 +14,10 @@ const {
 
 const CARRY_TAVERN_ROBLOX_GROUP_ID = 738161741;
 
+function eventFeedChannelId() {
+  return process.env.EVENT_FEED_CHANNEL_ID || process.env.EVENT_ANNOUNCEMENT_CHANNEL_ID || null;
+}
+
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, { ...options, signal: AbortSignal.timeout(12_000) });
   if (!response.ok) throw new Error(`Roblox API returned ${response.status}. Try again shortly.`);
@@ -69,14 +73,13 @@ async function statusCommand(interaction) {
   return interaction.reply({ embeds: [embed] });
 }
 
-async function loadDiscordEventAnnouncements(interaction) {
-  const channelId = process.env.EVENT_ANNOUNCEMENT_CHANNEL_ID;
+async function loadDiscordFeed(interaction, channelId, label) {
   if (!channelId) return { configured: false, messages: [] };
 
   try {
     const channel = await interaction.client.channels.fetch(channelId);
     if (!channel?.isTextBased?.() || !channel.messages?.fetch) {
-      return { configured: true, messages: [], error: "Configured event channel is not a readable text channel." };
+      return { configured: true, messages: [], error: `Configured ${label} channel is not a readable text channel.` };
     }
 
     const fetched = await channel.messages.fetch({ limit: 50 });
@@ -87,9 +90,18 @@ async function loadDiscordEventAnnouncements(interaction) {
 
     return { configured: true, channel, messages };
   } catch (error) {
-    console.warn("[EVENT FEED] Could not read Discord event channel:", error.message);
+    console.warn(`[${label.toUpperCase()} FEED] Could not read Discord channel:`, error.message);
     return { configured: true, messages: [], error: error.message };
   }
+}
+
+function discordMessageLines(messages) {
+  return messages.map((message) => {
+    const content = String(message.content).trim().slice(0, 850);
+    const stamp = Math.floor(message.createdTimestamp / 1000);
+    const author = message.member?.displayName || message.author.globalName || message.author.username;
+    return `**<t:${stamp}:R> · ${author}**\n${content}\n[Open in Discord](${message.url})`;
+  });
 }
 
 async function eventsCommand(interaction) {
@@ -102,43 +114,61 @@ async function eventsCommand(interaction) {
       .gte("starts_at", new Date().toISOString())
       .order("starts_at")
       .limit(10),
-    loadDiscordEventAnnouncements(interaction),
+    loadDiscordFeed(interaction, eventFeedChannelId(), "event"),
   ]);
 
   if (error) throw new Error(error.message);
 
   const sections = [];
 
-  if (data?.length) {
-    const published = data.map((event) => `**${event.title}**\n${event.event_type.replaceAll("_", " ")} · <t:${Math.floor(new Date(event.starts_at).getTime() / 1000)}:F>${event.location_text ? `\n📍 ${event.location_text}` : ""}`);
-    sections.push(`**🌐 Published Tavern Events**\n${published.join("\n\n")}`);
+  if (discordFeed.messages.length) {
+    sections.push(`**📣 Live Discord Event Feed**\n${discordMessageLines(discordFeed.messages).join("\n\n")}`);
   }
 
-  if (discordFeed.messages.length) {
-    const announcements = discordFeed.messages.map((message) => {
-      const content = String(message.content).trim().slice(0, 850);
-      const stamp = Math.floor(message.createdTimestamp / 1000);
-      return `**<t:${stamp}:R> · ${message.member?.displayName || message.author.username}**\n${content}\n[Open announcement](${message.url})`;
-    });
-    sections.push(`**📣 Recent Discord Event Announcements**\n${announcements.join("\n\n")}`);
+  if (data?.length) {
+    const published = data.map((event) => `**${event.title}**\n${event.event_type.replaceAll("_", " ")} · <t:${Math.floor(new Date(event.starts_at).getTime() / 1000)}:F>${event.location_text ? `\n📍 ${event.location_text}` : ""}`);
+    sections.push(`**🌐 Scheduled Website Events**\n${published.join("\n\n")}`);
   }
 
   if (!sections.length) {
     if (!discordFeed.configured) {
-      return interaction.editReply("🍺 No upcoming website events are published, and `EVENT_ANNOUNCEMENT_CHANNEL_ID` is not configured for reading Discord event announcements.");
+      return interaction.editReply("🍺 No scheduled website events are published, and `EVENT_FEED_CHANNEL_ID` is not configured.");
     }
     if (discordFeed.error) {
-      return interaction.editReply(`🍺 No upcoming website events are published, and I could not read the configured Discord event channel: ${discordFeed.error}`);
+      return interaction.editReply(`🍺 No scheduled website events are published, and I could not read the Event channel: ${discordFeed.error}`);
     }
-    return interaction.editReply("🍺 No upcoming website events or recent text event announcements were found.");
+    return interaction.editReply("🍺 No scheduled events or recent Event channel posts were found.");
   }
 
   const base = marketplaceBaseUrl();
   const embed = new EmbedBuilder()
-    .setTitle("🏆 Tavern Events & Announcements")
+    .setTitle("🏆 Tavern Events")
     .setDescription(sections.join("\n\n━━━━━━━━━━━━━━━━━━━━\n\n").slice(0, 4000))
-    .setFooter({ text: "Reads both published website events and recent human announcements from the configured Discord event channel." });
+    .setFooter({ text: "Event channel posts and scheduled website events are kept separate but shown together." });
   if (base) embed.setURL(`${base}/events`);
+  return interaction.editReply({ embeds: [embed] });
+}
+
+async function announcementsCommand(interaction) {
+  await interaction.deferReply();
+  const feed = await loadDiscordFeed(interaction, process.env.ANNOUNCEMENT_CHANNEL_ID || null, "announcement");
+
+  if (!feed.configured) {
+    return interaction.editReply("🍺 `ANNOUNCEMENT_CHANNEL_ID` is not configured yet.");
+  }
+  if (feed.error) {
+    return interaction.editReply(`❌ I could not read the important announcements channel: ${feed.error}`);
+  }
+  if (!feed.messages.length) {
+    return interaction.editReply("🍺 No recent important announcements were found.");
+  }
+
+  const base = marketplaceBaseUrl();
+  const embed = new EmbedBuilder()
+    .setTitle("📢 Tavern Announcements")
+    .setDescription(discordMessageLines(feed.messages).join("\n\n").slice(0, 4000))
+    .setFooter({ text: "Copied from the configured important announcements channel." });
+  if (base) embed.setURL(`${base}/announcements`);
   return interaction.editReply({ embeds: [embed] });
 }
 
@@ -222,7 +252,8 @@ module.exports = {
     .addSubcommand((s) => s.setName("profile").setDescription("View your linked Tavern profile"))
     .addSubcommand((s) => s.setName("verify-roblox").setDescription("Verify your pending Roblox link using your profile description code"))
     .addSubcommand((s) => s.setName("status").setDescription("View platform status"))
-    .addSubcommand((s) => s.setName("events").setDescription("Read website events and recent Discord event announcements")),
+    .addSubcommand((s) => s.setName("events").setDescription("Read the Event channel and scheduled Tavern events"))
+    .addSubcommand((s) => s.setName("announcements").setDescription("Read important Tavern announcements")),
 
   async execute(interaction) {
     try {
@@ -230,6 +261,7 @@ module.exports = {
       if (sub === "profile") return await profileCommand(interaction);
       if (sub === "verify-roblox") return await verifyRobloxCommand(interaction);
       if (sub === "status") return await statusCommand(interaction);
+      if (sub === "announcements") return await announcementsCommand(interaction);
       return await eventsCommand(interaction);
     } catch (error) {
       console.error("[TAVERN]", error);
