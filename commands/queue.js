@@ -15,16 +15,27 @@ const {
   requireCarrierProfile,
 } = require("../platform/carryQueue");
 const {
+  DUNGEONS,
   canonicalizeDungeon,
   canonicalizeDifficulty,
   groupKey,
 } = require("../platform/dungeons");
+const {
+  countAvailableCarriers,
+  estimateQueueMinutes,
+  maybeSendAbuseAlert,
+  notifyMatchingCarriers,
+  priorityForAge,
+  recordAbuseEvent,
+} = require("../platform/communitySystems");
 const {
   displayName,
   requireLinkedProfile,
   hasAnyPlatformRole,
   marketplaceBaseUrl,
 } = require("../platform/helpers");
+
+const DIFFICULTIES = ["Easy", "Medium", "Hard", "Insane", "Insane Hardcore", "Nightmare", "Nightmare Hardcore"];
 
 function shortId(id) {
   return String(id).slice(0, 8);
@@ -85,16 +96,24 @@ async function viewQueue(interaction) {
   if (waitingGroups.length) {
     const lines = waitingGroups.slice(0, 18).map((group, index) => {
       const tiers = group.runTiers.join(" / ");
-      return `**${index + 1}. ${group.dungeon} • ${group.difficulty}**\n👥 ${group.requests.length} request${group.requests.length === 1 ? "" : "s"} • 🏃 ${tiers} run tier${group.runTiers.length === 1 ? "" : "s"} • ⏱️ oldest ${ageText(group.oldestAt)}`;
+      const priority = priorityForAge(group.oldestAt);
+      const available = countAvailableCarriers(interaction.guildId, group.dungeon, group.difficulty);
+      const eta = estimateQueueMinutes(index + 1, available);
+      const etaText = eta == null ? "no matching Carrier marked available" : `~${eta}m estimated`;
+      return [
+        `**${index + 1}. ${group.dungeon} • ${group.difficulty}**`,
+        `${priority.icon} ${priority.label} • 👥 ${group.requests.length} request${group.requests.length === 1 ? "" : "s"} • 🏃 ${tiers} run tier${group.runTiers.length === 1 ? "" : "s"}`,
+        `⏱️ oldest ${ageText(group.oldestAt)} • 🍻 ${available} available • 🕒 ${etaText}`,
+      ].join("\n");
     });
     if (waitingGroups.length > 18) lines.push(`…and **${waitingGroups.length - 18}** more grouped queues.`);
-    sections.push(`**🟡 Waiting Groups**\n${lines.join("\n\n")}`);
+    sections.push(`**🟡 Waiting Groups • oldest requests have priority**\n${lines.join("\n\n")}`);
   }
 
   if (claimed.length) {
     const lines = claimed.slice(0, 10).map((request) => {
       const carrier = request.carrier ? displayName(request.carrier) : "Carrier";
-      return `**${request.dungeon} • ${request.difficulty}** • ${request.runs_requested} runs\n🍻 ${carrier} • 📌 ${request.status}`;
+      return `**${canonicalizeDungeon(request.dungeon)} • ${canonicalizeDifficulty(request.difficulty)}** • ${request.runs_requested} runs\n🍻 ${carrier} • 📌 ${request.status}`;
     });
     if (claimed.length > 10) lines.push(`…and **${claimed.length - 10}** more claimed/in-progress request(s).`);
     sections.push(`**🟢 Claimed / In Progress**\n${lines.join("\n\n")}`);
@@ -112,7 +131,7 @@ async function viewQueue(interaction) {
   const embed = new EmbedBuilder()
     .setTitle("⚔️ The Carry Tavern Queue")
     .setDescription(sections.join("\n\n━━━━━━━━━━━━━━━━━━━━\n\n").slice(0, 4000))
-    .setFooter({ text: "New requests are grouped by exact dungeon + difficulty. Carriers can claim a run tier below." });
+    .setFooter({ text: "ETA is an estimate based on queue position and Carriers currently marked available. New requests are grouped by exact dungeon + difficulty." });
   if (base) embed.setURL(`${base}/carry-queue`);
 
   const components = [];
@@ -120,11 +139,14 @@ async function viewQueue(interaction) {
     const select = new StringSelectMenuBuilder()
       .setCustomId("queue_group_select")
       .setPlaceholder("Carrier: choose a dungeon + difficulty")
-      .addOptions(waitingGroups.slice(0, 25).map((group) => ({
-        label: `${group.dungeon} • ${group.difficulty}`.slice(0, 100),
-        description: `${group.requests.length} request(s) • runs ${group.runTiers.join("/")}`.slice(0, 100),
-        value: encodeToken([group.dungeon, group.difficulty]),
-      })));
+      .addOptions(waitingGroups.slice(0, 25).map((group) => {
+        const priority = priorityForAge(group.oldestAt);
+        return {
+          label: `${priority.icon} ${group.dungeon} • ${group.difficulty}`.slice(0, 100),
+          description: `${group.requests.length} request(s) • runs ${group.runTiers.join("/")} • ${priority.label}`.slice(0, 100),
+          value: encodeToken([group.dungeon, group.difficulty]),
+        };
+      }));
     components.push(new ActionRowBuilder().addComponents(select));
   }
 
@@ -202,7 +224,11 @@ async function createRequest(interaction) {
     .limit(1)
     .maybeSingle();
   if (activeError) throw new Error(activeError.message);
-  if (active) return interaction.editReply(`❌ You already have an active request for **${active.dungeon}** (${active.status}).`);
+  if (active) {
+    recordAbuseEvent(interaction.guildId, interaction.user.id, "duplicate_request", 1, { active: active.id });
+    await maybeSendAbuseAlert(interaction.client, interaction.guildId, interaction.user.id, "duplicate carry request").catch(() => {});
+    return interaction.editReply(`❌ You already have an active request for **${active.dungeon}** (${active.status}).`);
+  }
 
   const dungeon = canonicalizeDungeon(interaction.options.getString("dungeon", true));
   const difficulty = canonicalizeDifficulty(interaction.options.getString("difficulty") || "Nightmare");
@@ -217,10 +243,23 @@ async function createRequest(interaction) {
     availability,
     notes,
     status: "queued",
-  }).select("id").single();
+  }).select("id,requester_id,dungeon,difficulty,runs_requested,availability,created_at").single();
   if (error) throw new Error(`Could not join the queue: ${error.message}`);
+
+  recordAbuseEvent(interaction.guildId, interaction.user.id, "queue_request", 0, { requestId: data.id });
+  const [matched] = await Promise.all([
+    notifyMatchingCarriers(interaction.client, interaction.guildId, data).catch(() => 0),
+    maybeSendAbuseAlert(interaction.client, interaction.guildId, interaction.user.id, "carry request").catch(() => null),
+  ]);
+
   const base = marketplaceBaseUrl();
-  return interaction.editReply(`✅ Added **${dungeon}** (${difficulty}, ${runs} run${runs === 1 ? "" : "s"}) to the Tavern queue.\nYour Roblox account: **${profile.roblox_username}**\nRequest ID: \`${data.id}\`${base ? `\n${base}/carry-queue` : ""}`);
+  return interaction.editReply([
+    `✅ Added **${dungeon}** (${difficulty}, ${runs} run${runs === 1 ? "" : "s"}) to the Tavern queue.`,
+    `🎮 Roblox: **${profile.roblox_username}**`,
+    `🍻 Smart match: **${matched}** available matching Carrier${matched === 1 ? "" : "s"} notified.`,
+    `Request ID: \`${data.id}\``,
+    base ? `${base}/carry-queue` : null,
+  ].filter(Boolean).join("\n"));
 }
 
 async function releaseSingleClaim(profile, requestId) {
@@ -262,6 +301,8 @@ async function queueAction(interaction, kind) {
 
   if (kind === "unclaim") {
     const request = await releaseSingleClaim(profile, requestId);
+    recordAbuseEvent(interaction.guildId, interaction.user.id, "claim_release", 1, { requestId });
+    await maybeSendAbuseAlert(interaction.client, interaction.guildId, interaction.user.id, "released carry claim").catch(() => {});
     return interaction.editReply(`✅ Released **${request.dungeon}** back into the queue.`);
   }
 
@@ -297,10 +338,10 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName("queue")
     .setDescription("Use the Carry Tavern carry queue")
-    .addSubcommand((s) => s.setName("view").setDescription("View the grouped live carry queue"))
+    .addSubcommand((s) => s.setName("view").setDescription("View the grouped live carry queue with priority and ETA"))
     .addSubcommand((s) => s.setName("request").setDescription("Request a carry through the shared queue")
-      .addStringOption((o) => o.setName("dungeon").setDescription("Dungeon name or abbreviation, e.g. UW").setRequired(true).setMaxLength(120))
-      .addStringOption((o) => o.setName("difficulty").setDescription("Difficulty, e.g. NM HC").setMaxLength(60))
+      .addStringOption((o) => o.setName("dungeon").setDescription("Choose a Dungeon Quest dungeon").setRequired(true).setAutocomplete(true))
+      .addStringOption((o) => o.setName("difficulty").setDescription("Choose difficulty").setAutocomplete(true))
       .addIntegerOption((o) => o.setName("runs").setDescription("Number of runs").setMinValue(1).setMaxValue(15))
       .addStringOption((o) => o.setName("availability").setDescription("When you are available").setMaxLength(240))
       .addStringOption((o) => o.setName("notes").setDescription("Notes for the Carrier").setMaxLength(1000)))
@@ -316,6 +357,25 @@ module.exports = {
       .addStringOption((o) => o.setName("request").setDescription("Request UUID").setRequired(true).setMinLength(36).setMaxLength(36)))
     .addSubcommand((s) => s.setName("cancel").setDescription("Cancel a carry you requested")
       .addStringOption((o) => o.setName("request").setDescription("Request UUID").setRequired(true).setMinLength(36).setMaxLength(36))),
+
+  async autocomplete(interaction) {
+    const focused = interaction.options.getFocused(true);
+    const typed = String(focused.value || "").toLowerCase();
+    if (focused.name === "dungeon") {
+      const choices = DUNGEONS
+        .filter((d) => d.name.toLowerCase().includes(typed) || d.aliases.some((a) => a.includes(typed)))
+        .slice(0, 25)
+        .map((d) => ({ name: d.name, value: d.name }));
+      return interaction.respond(choices);
+    }
+    if (focused.name === "difficulty") {
+      return interaction.respond(DIFFICULTIES
+        .filter((d) => d.toLowerCase().includes(typed))
+        .slice(0, 25)
+        .map((d) => ({ name: d, value: d })));
+    }
+    return interaction.respond([]);
+  },
 
   async execute(interaction) {
     try {
