@@ -431,7 +431,12 @@ async function handleRatingButton(interaction) {
   }
 
   const rep = carrierReputation(request.carrier.discord_id, interaction.guildId || process.env.GUILD_ID || "");
-  await supabase.from("carrier_profiles").update({ quality_score: rep.average || 0 }).eq("user_id", request.carrier_id).catch(() => {});
+  const { error: qualityError } = await supabase
+    .from("carrier_profiles")
+    .update({ quality_score: rep.average || 0 })
+    .eq("user_id", request.carrier_id);
+  if (qualityError) console.warn("[CARRY RATING] Could not sync quality score:", qualityError.message);
+
   await interaction.update({
     content: `⭐ **Thanks! You rated this Carrier ${score}/5.**\nTheir current Carry Tavern rating is **${rep.average}/5** from ${rep.ratings} rating${rep.ratings === 1 ? "" : "s"}.`,
     components: [],
