@@ -1,4 +1,5 @@
 const { EmbedBuilder } = require("discord.js");
+const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
 const { marketplaceBaseUrl } = require("./helpers");
 
@@ -42,6 +43,50 @@ async function heartbeat() {
     updated_at: now,
   }, { onConflict: "service" });
   if (error) throw new Error(`Heartbeat failed: ${error.message}`);
+}
+
+async function syncLegacyDiscordQueue() {
+  const guildId = process.env.GUILD_ID;
+  if (!guildId) return;
+
+  const rows = db.prepare(`
+    SELECT id, guild, user, roblox, dungeon, difficulty, runs, availability, carrier, status
+    FROM queue
+    WHERE guild = ?
+    ORDER BY id ASC
+  `).all(guildId);
+
+  const supabase = getSupabase();
+  const now = new Date().toISOString();
+
+  const { error: deactivateError } = await supabase
+    .from("discord_carry_queue")
+    .update({ active: false, synced_at: now })
+    .eq("guild_id", guildId)
+    .eq("active", true);
+  if (deactivateError) throw new Error(`Discord queue bridge deactivate failed: ${deactivateError.message}`);
+
+  if (!rows.length) return;
+
+  const payload = rows.map((row) => ({
+    guild_id: String(row.guild),
+    legacy_id: Number(row.id),
+    discord_user_id: row.user ? String(row.user) : null,
+    roblox_username: row.roblox || null,
+    dungeon: row.dungeon || "Unknown dungeon",
+    difficulty: row.difficulty || null,
+    runs: row.runs == null ? null : String(row.runs),
+    availability: row.availability || null,
+    discord_carrier_id: row.carrier ? String(row.carrier) : null,
+    status: row.status || "waiting",
+    active: true,
+    synced_at: now,
+  }));
+
+  const { error: upsertError } = await supabase
+    .from("discord_carry_queue")
+    .upsert(payload, { onConflict: "guild_id,legacy_id" });
+  if (upsertError) throw new Error(`Discord queue bridge sync failed: ${upsertError.message}`);
 }
 
 async function pollEvents(client, announce) {
@@ -173,6 +218,7 @@ async function tick(client) {
     ticks += 1;
     await heartbeat();
     await Promise.all([
+      syncLegacyDiscordQueue(),
       pollEvents(client, initialized),
       pollListings(client, initialized),
       pollCarries(client, initialized),
@@ -192,4 +238,4 @@ function startPlatformSync(client) {
   timer.unref?.();
 }
 
-module.exports = { startPlatformSync };
+module.exports = { startPlatformSync, syncLegacyDiscordQueue };
