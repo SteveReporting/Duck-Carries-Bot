@@ -1,5 +1,6 @@
 const db = require("../database/database");
 const { handleTreasuryInteraction } = require("../treasury/treasury");
+const { handleTreasuryStockInteraction } = require("../platform/treasuryStock");
 const { getSupabase } = require("../marketplace/supabase");
 const { getLinkedProfile, marketplaceBaseUrl } = require("../platform/helpers");
 const { canonicalizeDungeon, canonicalizeDifficulty, parseRuns } = require("../platform/dungeons");
@@ -391,6 +392,9 @@ module.exports = {
                 }
                 return await command.execute(interaction);
             }
+
+            const stockHandled = await handleTreasuryStockInteraction(interaction);
+            if (stockHandled) return;
 
             const treasuryHandled = await handleTreasuryInteraction(interaction);
             if (treasuryHandled) return;
