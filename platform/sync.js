@@ -7,6 +7,18 @@ const seenListings = new Set();
 const seenCarries = new Set();
 let initialized = false;
 let timer = null;
+let ticks = 0;
+
+function carrierRoleMap() {
+  return {
+    "Barback": process.env.CARRIER_ROLE_BARBACK || process.env.CARRIER_ROLE,
+    "Bartender": process.env.CARRIER_ROLE_BARTENDER,
+    "Caskkeeper": process.env.CARRIER_ROLE_CASKKEEPER,
+    "Tapmaster": process.env.CARRIER_ROLE_TAPMASTER,
+    "Brewmaster": process.env.CARRIER_ROLE_BREWMASTER,
+    "Master of the Tap": process.env.CARRIER_ROLE_MASTER_OF_TAP,
+  };
+}
 
 async function safeChannel(client, id) {
   if (!id) return null;
@@ -60,8 +72,10 @@ async function pollEvents(client, announce) {
 async function pollListings(client, announce) {
   const supabase = getSupabase();
   const { data, error } = await supabase.from("listings")
-    .select("id,item_name,price_gold,quantity,potential,created_at")
+    .select("id,item_name,price_gold,quantity,potential,created_at,expires_at")
     .eq("status", "available")
+    .gt("quantity", 0)
+    .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
     .order("created_at", { ascending: false }).limit(100);
   if (error) throw error;
   for (const listing of data || []) {
@@ -105,14 +119,66 @@ async function pollCarries(client, announce) {
   }
 }
 
+async function pollDiscordNotifications(client) {
+  if (String(process.env.DM_NOTIFICATIONS_ENABLED).toLowerCase() !== "true") return;
+  const supabase = getSupabase();
+  const { data, error } = await supabase.from("notifications")
+    .select("id,title,body,link,user:profiles!notifications_user_id_fkey(discord_id)")
+    .is("discord_delivered_at", null)
+    .order("created_at", { ascending: true })
+    .limit(25);
+  if (error) throw error;
+  for (const notification of data || []) {
+    const discordId = notification.user?.discord_id;
+    if (!discordId) continue;
+    try {
+      const discordUser = await client.users.fetch(discordId);
+      const base = marketplaceBaseUrl();
+      const target = base && notification.link ? `${base}${notification.link}` : null;
+      await discordUser.send(`🍺 **${notification.title}**\n${notification.body || ""}${target ? `\n${target}` : ""}`.slice(0, 1900));
+      await supabase.from("notifications").update({ discord_delivered_at: new Date().toISOString() }).eq("id", notification.id);
+    } catch (error) {
+      console.warn(`[DM] Could not deliver notification ${notification.id}:`, error.message);
+    }
+  }
+}
+
+async function syncCarrierRoles(client) {
+  const roleMap = carrierRoleMap();
+  const configuredRoleIds = [...new Set(Object.values(roleMap).filter(Boolean))];
+  if (!configuredRoleIds.length || !process.env.GUILD_ID) return;
+  const supabase = getSupabase();
+  const { data, error } = await supabase.from("carrier_profiles")
+    .select("user_id,carrier_rank,active,profile:profiles!carrier_profiles_user_id_fkey(discord_id)")
+    .eq("active", true);
+  if (error) throw error;
+  const guild = await client.guilds.fetch(process.env.GUILD_ID);
+  for (const carrier of data || []) {
+    const discordId = carrier.profile?.discord_id;
+    const desiredRole = roleMap[carrier.carrier_rank];
+    if (!discordId || !desiredRole) continue;
+    try {
+      const member = await guild.members.fetch(discordId);
+      const remove = configuredRoleIds.filter((id) => id !== desiredRole && member.roles.cache.has(id));
+      if (remove.length) await member.roles.remove(remove, "Carry Tavern automatic Carrier rank sync");
+      if (!member.roles.cache.has(desiredRole)) await member.roles.add(desiredRole, "Carry Tavern automatic Carrier rank sync");
+    } catch (error) {
+      console.warn(`[CARRIER ROLE SYNC] ${discordId}:`, error.message);
+    }
+  }
+}
+
 async function tick(client) {
   try {
+    ticks += 1;
     await heartbeat();
     await Promise.all([
       pollEvents(client, initialized),
       pollListings(client, initialized),
       pollCarries(client, initialized),
+      pollDiscordNotifications(client),
     ]);
+    if (ticks === 1 || ticks % 5 === 0) await syncCarrierRoles(client);
     initialized = true;
   } catch (error) {
     console.error("[PLATFORM SYNC]", error);
