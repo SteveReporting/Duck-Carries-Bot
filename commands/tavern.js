@@ -61,7 +61,7 @@ async function statusCommand(interaction) {
     let status = row.status;
     if (row.service === "discord_bot" && (!row.last_heartbeat_at || now - new Date(row.last_heartbeat_at).getTime() > 180_000)) status = "outage";
     const icon = status === "operational" ? "🟢" : status === "maintenance" ? "🟡" : status === "degraded" ? "🟠" : status === "outage" ? "🔴" : "⚪";
-    return `${icon} **${row.service.replaceAll("_", " ")}** — ${status}`;
+    return `${icon} **${row.service.replaceAll("_", " ")}** - ${status}`;
   });
   const base = marketplaceBaseUrl();
   const embed = new EmbedBuilder().setTitle("🍺 Carry Tavern Status").setDescription(lines.join("\n"));
@@ -69,16 +69,77 @@ async function statusCommand(interaction) {
   return interaction.reply({ embeds: [embed] });
 }
 
+async function loadDiscordEventAnnouncements(interaction) {
+  const channelId = process.env.EVENT_ANNOUNCEMENT_CHANNEL_ID;
+  if (!channelId) return { configured: false, messages: [] };
+
+  try {
+    const channel = await interaction.client.channels.fetch(channelId);
+    if (!channel?.isTextBased?.() || !channel.messages?.fetch) {
+      return { configured: true, messages: [], error: "Configured event channel is not a readable text channel." };
+    }
+
+    const fetched = await channel.messages.fetch({ limit: 50 });
+    const messages = [...fetched.values()]
+      .filter((message) => !message.author?.bot && String(message.content || "").trim())
+      .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+      .slice(0, 10);
+
+    return { configured: true, channel, messages };
+  } catch (error) {
+    console.warn("[EVENT FEED] Could not read Discord event channel:", error.message);
+    return { configured: true, messages: [], error: error.message };
+  }
+}
+
 async function eventsCommand(interaction) {
+  await interaction.deferReply();
   const supabase = getSupabase();
-  const { data, error } = await supabase.from("events").select("id,title,event_type,starts_at,location_text").eq("status", "published").gte("starts_at", new Date().toISOString()).order("starts_at").limit(10);
+  const [{ data, error }, discordFeed] = await Promise.all([
+    supabase.from("events")
+      .select("id,title,event_type,starts_at,location_text")
+      .eq("status", "published")
+      .gte("starts_at", new Date().toISOString())
+      .order("starts_at")
+      .limit(10),
+    loadDiscordEventAnnouncements(interaction),
+  ]);
+
   if (error) throw new Error(error.message);
-  if (!data?.length) return interaction.reply("🍺 No upcoming Tavern events are published right now.");
+
+  const sections = [];
+
+  if (data?.length) {
+    const published = data.map((event) => `**${event.title}**\n${event.event_type.replaceAll("_", " ")} · <t:${Math.floor(new Date(event.starts_at).getTime() / 1000)}:F>${event.location_text ? `\n📍 ${event.location_text}` : ""}`);
+    sections.push(`**🌐 Published Tavern Events**\n${published.join("\n\n")}`);
+  }
+
+  if (discordFeed.messages.length) {
+    const announcements = discordFeed.messages.map((message) => {
+      const content = String(message.content).trim().slice(0, 850);
+      const stamp = Math.floor(message.createdTimestamp / 1000);
+      return `**<t:${stamp}:R> · ${message.member?.displayName || message.author.username}**\n${content}\n[Open announcement](${message.url})`;
+    });
+    sections.push(`**📣 Recent Discord Event Announcements**\n${announcements.join("\n\n")}`);
+  }
+
+  if (!sections.length) {
+    if (!discordFeed.configured) {
+      return interaction.editReply("🍺 No upcoming website events are published, and `EVENT_ANNOUNCEMENT_CHANNEL_ID` is not configured for reading Discord event announcements.");
+    }
+    if (discordFeed.error) {
+      return interaction.editReply(`🍺 No upcoming website events are published, and I could not read the configured Discord event channel: ${discordFeed.error}`);
+    }
+    return interaction.editReply("🍺 No upcoming website events or recent text event announcements were found.");
+  }
+
   const base = marketplaceBaseUrl();
-  const lines = data.map((event) => `**${event.title}**\n${event.event_type.replaceAll("_", " ")} · <t:${Math.floor(new Date(event.starts_at).getTime() / 1000)}:F>${event.location_text ? `\n📍 ${event.location_text}` : ""}`);
-  const embed = new EmbedBuilder().setTitle("🏆 Upcoming Tavern Events").setDescription(lines.join("\n\n"));
+  const embed = new EmbedBuilder()
+    .setTitle("🏆 Tavern Events & Announcements")
+    .setDescription(sections.join("\n\n━━━━━━━━━━━━━━━━━━━━\n\n").slice(0, 4000))
+    .setFooter({ text: "Reads both published website events and recent human announcements from the configured Discord event channel." });
   if (base) embed.setURL(`${base}/events`);
-  return interaction.reply({ embeds: [embed] });
+  return interaction.editReply({ embeds: [embed] });
 }
 
 async function verifyRobloxCommand(interaction) {
@@ -151,7 +212,7 @@ async function verifyRobloxCommand(interaction) {
   await supabase.from("notifications").insert({ user_id: profile.id, kind: "roblox_link", title: "Roblox account verified", body: `${details?.name || pending.roblox_username} was verified through your Roblox profile description.`, link: "/hub" });
   await supabase.from("audit_log").insert({ actor_id: profile.id, action: "roblox.self_verify", target_type: "profile", target_id: profile.id, new_value: { roblox_user_id: String(account.id), roblox_username: details?.name, community_member: communityMember }, source: "discord" });
 
-  return interaction.editReply(`✅ Roblox account verified: **${details?.displayName || details?.name}** (@${details?.name})${communityMember ? `\n🍺 Carry Tavern Roblox community member${communityRole ? ` — **${communityRole}**` : ""}` : "\nℹ️ This Roblox account is not currently in the Carry Tavern Roblox community."}`);
+  return interaction.editReply(`✅ Roblox account verified: **${details?.displayName || details?.name}** (@${details?.name})${communityMember ? `\n🍺 Carry Tavern Roblox community member${communityRole ? ` - **${communityRole}**` : ""}` : "\nℹ️ This Roblox account is not currently in the Carry Tavern Roblox community."}`);
 }
 
 module.exports = {
@@ -161,7 +222,7 @@ module.exports = {
     .addSubcommand((s) => s.setName("profile").setDescription("View your linked Tavern profile"))
     .addSubcommand((s) => s.setName("verify-roblox").setDescription("Verify your pending Roblox link using your profile description code"))
     .addSubcommand((s) => s.setName("status").setDescription("View platform status"))
-    .addSubcommand((s) => s.setName("events").setDescription("View upcoming Tavern events")),
+    .addSubcommand((s) => s.setName("events").setDescription("Read website events and recent Discord event announcements")),
 
   async execute(interaction) {
     try {
