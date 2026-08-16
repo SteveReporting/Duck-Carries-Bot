@@ -1,7 +1,7 @@
 const { EmbedBuilder } = require("discord.js");
-const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
 const { marketplaceBaseUrl } = require("./helpers");
+const { loadLiveLegacyQueue } = require("./legacyQueue");
 
 const seenListings = new Set();
 const seenCarries = new Set();
@@ -21,7 +21,6 @@ function carrierRoleMap() {
 }
 
 function eventFeedChannelId() {
-  // Temporary backwards compatibility with the old variable so existing hosts do not break.
   return process.env.EVENT_FEED_CHANNEL_ID || process.env.EVENT_ANNOUNCEMENT_CHANNEL_ID || null;
 }
 
@@ -49,17 +48,11 @@ async function heartbeat() {
   if (error) throw new Error(`Heartbeat failed: ${error.message}`);
 }
 
-async function syncLegacyDiscordQueue() {
+async function syncLegacyDiscordQueue(client) {
   const guildId = process.env.GUILD_ID;
   if (!guildId) return;
 
-  const rows = db.prepare(`
-    SELECT id, guild, user, roblox, dungeon, difficulty, runs, availability, carrier, status
-    FROM queue
-    WHERE guild = ?
-    ORDER BY id ASC
-  `).all(guildId);
-
+  const rows = await loadLiveLegacyQueue(client, guildId, { maxMessages: 500 });
   const supabase = getSupabase();
   const now = new Date().toISOString();
 
@@ -70,7 +63,10 @@ async function syncLegacyDiscordQueue() {
     .eq("active", true);
   if (deactivateError) throw new Error(`Discord queue bridge deactivate failed: ${deactivateError.message}`);
 
-  if (!rows.length) return;
+  if (!rows.length) {
+    console.log("[QUEUE BRIDGE] No live Discord carry messages found.");
+    return;
+  }
 
   const payload = rows.map((row) => ({
     guild_id: String(row.guild),
@@ -91,6 +87,8 @@ async function syncLegacyDiscordQueue() {
     .from("discord_carry_queue")
     .upsert(payload, { onConflict: "guild_id,legacy_id" });
   if (upsertError) throw new Error(`Discord queue bridge sync failed: ${upsertError.message}`);
+
+  console.log(`[QUEUE BRIDGE] Mirrored ${rows.length} live Discord carry request(s).`);
 }
 
 async function syncDiscordContentFeed(client, feedType, channelId) {
@@ -243,7 +241,7 @@ async function tick(client) {
     ticks += 1;
     await heartbeat();
     await Promise.all([
-      syncLegacyDiscordQueue(),
+      syncLegacyDiscordQueue(client),
       syncDiscordFeeds(client),
       pollListings(client, initialized),
       pollCarries(client, initialized),
