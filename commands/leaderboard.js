@@ -1,55 +1,129 @@
-const {
-SlashCommandBuilder
-}=require("discord.js");
+const { EmbedBuilder, SlashCommandBuilder } = require("discord.js");
+const db = require("../database/database");
+const { getSupabase } = require("../marketplace/supabase");
 
-
-const db=require("../database/database");
-
-
-module.exports={
-
-
-data:
-
-new SlashCommandBuilder()
-
-.setName("leaderboard")
-
-.setDescription(
-"Carrier leaderboard"
-),
-
-
-async execute(interaction){
-
-
-const rows =
-db.prepare(`
-
-SELECT * FROM stats
-
-ORDER BY completed DESC
-
-LIMIT 10
-
-`).all();
-
-
-
-let msg="🏆 **The Carry Tavern Leaderboard**\n\n";
-
-
-rows.forEach((r,i)=>{
-
-msg+=
-`${i+1}. <@${r.user}> - ${r.completed} carries\n`;
-
-});
-
-
-interaction.reply(msg);
-
-
+function sinceFor(timeframe) {
+  const now = Date.now();
+  if (timeframe === "day") return new Date(now - 24 * 60 * 60 * 1000).toISOString();
+  if (timeframe === "week") return new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+  if (timeframe === "month") return new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+  return null;
 }
 
+function timeframeLabel(value) {
+  return { day: "Last 24 Hours", week: "Last 7 Days", month: "Last 30 Days", all: "All Time" }[value] || "All Time";
+}
+
+function metricLabel(value) {
+  return { runs: "Runs Completed", carries: "Carry Requests", service: "Service Time", rating: "Carrier Rating" }[value] || "Runs Completed";
+}
+
+async function activityBoard(timeframe, metric) {
+  const supabase = getSupabase();
+  let query = supabase.from("carry_activity")
+    .select("carrier_id,runs,service_minutes,completed_at")
+    .order("completed_at", { ascending: false })
+    .limit(5000);
+  const since = sinceFor(timeframe);
+  if (since) query = query.gte("completed_at", since);
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+
+  const scores = new Map();
+  for (const row of data || []) {
+    const current = scores.get(row.carrier_id) || { carrierId: row.carrier_id, runs: 0, carries: 0, service: 0 };
+    current.runs += Number(row.runs || 0);
+    current.carries += 1;
+    current.service += Number(row.service_minutes || 0);
+    scores.set(row.carrier_id, current);
+  }
+  const rows = [...scores.values()].sort((a, b) => b[metric] - a[metric]).slice(0, 10);
+  if (!rows.length) return [];
+
+  const { data: profiles, error: profileError } = await supabase.from("profiles")
+    .select("id,discord_id,discord_username,discord_display_name,roblox_username")
+    .in("id", rows.map((r) => r.carrierId));
+  if (profileError) throw new Error(profileError.message);
+  const map = new Map((profiles || []).map((p) => [p.id, p]));
+  return rows.map((row) => ({ ...row, profile: map.get(row.carrierId) || null }));
+}
+
+function ratingBoard(guildId, timeframe) {
+  const sinceIso = sinceFor(timeframe);
+  const since = sinceIso ? new Date(sinceIso).getTime() : 0;
+  return db.prepare(`
+    SELECT carrier,COUNT(*) AS ratings,ROUND(AVG(score),2) AS average,
+      SUM(CASE WHEN score=5 THEN 1 ELSE 0 END) AS five_star
+    FROM carrier_ratings
+    WHERE guild=? AND created_at>=?
+    GROUP BY carrier
+    HAVING COUNT(*) >= 1
+    ORDER BY average DESC,ratings DESC,five_star DESC
+    LIMIT 10
+  `).all(String(guildId), since);
+}
+
+function legacyFallback() {
+  return db.prepare("SELECT user,completed FROM stats ORDER BY completed DESC LIMIT 10").all();
+}
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName("leaderboard")
+    .setDescription("Carrier leaderboard by timeframe and metric")
+    .addStringOption((o) => o.setName("timeframe").setDescription("Leaderboard period")
+      .addChoices(
+        { name: "Today / 24h", value: "day" },
+        { name: "Weekly / 7d", value: "week" },
+        { name: "Monthly / 30d", value: "month" },
+        { name: "All time", value: "all" },
+      ))
+    .addStringOption((o) => o.setName("metric").setDescription("What to rank")
+      .addChoices(
+        { name: "Runs completed", value: "runs" },
+        { name: "Carry requests completed", value: "carries" },
+        { name: "Service time", value: "service" },
+        { name: "Carrier rating", value: "rating" },
+      )),
+
+  async execute(interaction) {
+    try {
+      await interaction.deferReply();
+      const timeframe = interaction.options.getString("timeframe") || "week";
+      const metric = interaction.options.getString("metric") || "runs";
+      let lines = [];
+
+      if (metric === "rating") {
+        const rows = ratingBoard(interaction.guildId, timeframe);
+        lines = rows.map((row, index) => `${index + 1}. <@${row.carrier}> • ⭐ **${row.average}/5** • ${row.ratings} rating${row.ratings === 1 ? "" : "s"}`);
+      } else {
+        const rows = await activityBoard(timeframe, metric);
+        lines = rows.map((row, index) => {
+          const who = row.profile?.discord_id ? `<@${row.profile.discord_id}>` : (row.profile?.roblox_username ? `@${row.profile.roblox_username}` : "Unknown Carrier");
+          const value = metric === "service"
+            ? `${Math.floor(row.service / 60)}h ${row.service % 60}m`
+            : metric === "carries" ? `${row.carries} carries` : `${row.runs} runs`;
+          return `${index + 1}. ${who} • **${value}**`;
+        });
+      }
+
+      if (!lines.length && timeframe === "all" && (metric === "runs" || metric === "carries")) {
+        lines = legacyFallback().map((row, index) => `${index + 1}. <@${row.user}> • **${row.completed} legacy carries**`);
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle("🏆 The Carry Tavern Carrier Leaderboard")
+        .setDescription(lines.length ? lines.join("\n") : "No Carrier activity has been recorded for this period yet.")
+        .addFields(
+          { name: "Period", value: timeframeLabel(timeframe), inline: true },
+          { name: "Metric", value: metricLabel(metric), inline: true },
+        )
+        .setFooter({ text: "Completed carries only count after both Carrier and requester confirm completion." })
+        .setTimestamp();
+      return interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      console.error("[LEADERBOARD]", error);
+      return interaction.editReply(`❌ ${error.message || "Could not load the Carrier leaderboard."}`);
+    }
+  },
 };
