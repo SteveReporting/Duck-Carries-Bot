@@ -4,7 +4,14 @@ const { getSupabase } = require("../marketplace/supabase");
 const { getLinkedProfile, marketplaceBaseUrl } = require("../platform/helpers");
 const { canonicalizeDungeon, canonicalizeDifficulty, parseRuns } = require("../platform/dungeons");
 const { handleCarryTicketButton } = require("../platform/carryQueue");
+const {
+    carrierCanHandle,
+    maybeSendAbuseAlert,
+    notifyMatchingCarriers,
+    recordAbuseEvent,
+} = require("../platform/communitySystems");
 const queueCommand = require("../commands/queue");
+const helpCommand = require("../commands/help");
 const {
     ActionRowBuilder,
     ButtonBuilder,
@@ -18,11 +25,16 @@ const {
 } = require("discord.js");
 
 function isCarrier(interaction) {
-    return Boolean(
-        interaction.member &&
-        process.env.CARRIER_ROLE &&
-        interaction.member.roles.cache.has(process.env.CARRIER_ROLE)
-    );
+    const roleIds = [
+        process.env.CARRIER_ROLE,
+        process.env.CARRIER_ROLE_BARBACK,
+        process.env.CARRIER_ROLE_BARTENDER,
+        process.env.CARRIER_ROLE_CASKKEEPER,
+        process.env.CARRIER_ROLE_TAPMASTER,
+        process.env.CARRIER_ROLE_BREWMASTER,
+        process.env.CARRIER_ROLE_MASTER_OF_TAP,
+    ].filter(Boolean);
+    return Boolean(interaction.member && roleIds.some((id) => interaction.member.roles.cache.has(id)));
 }
 
 function requestEmbed(request, statusText) {
@@ -68,7 +80,7 @@ function legacyCompletionButtons(id, carrierConfirmed = false, requesterConfirme
     );
 }
 
-async function ticketParentId(guild, request) {
+async function ticketParentId(guild) {
     if (process.env.TICKET_CATEGORY_ID) {
         const category = await guild.channels.fetch(process.env.TICKET_CATEGORY_ID).catch(() => null);
         if (category?.type === ChannelType.GuildCategory) return category.id;
@@ -83,7 +95,7 @@ async function createLegacyTicket(interaction, request, client) {
     const ticket = await guild.channels.create({
         name: `carry-${canonicalizeDungeon(request.dungeon).toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)}-${request.id}`,
         type: ChannelType.GuildText,
-        parent: await ticketParentId(guild, request),
+        parent: await ticketParentId(guild),
         permissionOverwrites: [
             { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
             { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
@@ -133,7 +145,7 @@ async function showCarryModal(interaction) {
     }
     if (!profile.roblox_verified_at || !profile.roblox_username) {
         return interaction.reply({
-            content: "❌ Before requesting a carry, verify your Roblox account with `/tavern link-roblox` and then `/tavern verify-roblox`.",
+            content: "❌ Before requesting a carry, verify your Roblox account with `/roblox link` and `/roblox verify`.",
             ephemeral: true,
         });
     }
@@ -167,19 +179,25 @@ async function showCarryModal(interaction) {
 
 async function claimCarry(interaction, client, id) {
     if (!isCarrier(interaction)) {
-        return interaction.reply({ content: "❌ You are not a carrier.", ephemeral: true });
+        return interaction.reply({ content: "❌ You are not a Carrier.", ephemeral: true });
     }
 
     const request = db.prepare("SELECT * FROM queue WHERE id = ?").get(id);
     if (!request) return interaction.reply({ content: "❌ Carry request not found.", ephemeral: true });
     if (request.status !== "waiting") return interaction.reply({ content: "❌ This carry has already been claimed.", ephemeral: true });
+    if (!carrierCanHandle(interaction.guildId, interaction.user.id, request.dungeon, request.difficulty)) {
+        return interaction.reply({
+            content: `❌ Your Carrier permissions do not allow **${canonicalizeDungeon(request.dungeon)} • ${canonicalizeDifficulty(request.difficulty)}**.`,
+            ephemeral: true,
+        });
+    }
 
     const updated = db.prepare(`
         UPDATE queue
         SET carrier = ?, status = 'claimed', carrier_confirmed = 0, requester_confirmed = 0
         WHERE id = ? AND status = 'waiting'
     `).run(interaction.member.id, id);
-    if (updated.changes !== 1) return interaction.reply({ content: "❌ Another carrier claimed this request first.", ephemeral: true });
+    if (updated.changes !== 1) return interaction.reply({ content: "❌ Another Carrier claimed this request first.", ephemeral: true });
 
     try {
         const ticket = await createLegacyTicket(interaction, request, client);
@@ -220,7 +238,7 @@ async function finalizeLegacyCarry(interaction, request) {
 }
 
 async function completeCarry(interaction, id) {
-    if (!isCarrier(interaction)) return interaction.reply({ content: "❌ You are not a carrier.", ephemeral: true });
+    if (!isCarrier(interaction)) return interaction.reply({ content: "❌ You are not a Carrier.", ephemeral: true });
     const request = db.prepare("SELECT * FROM queue WHERE id = ?").get(id);
     if (!request) return interaction.reply({ content: "❌ Carry request not found.", ephemeral: true });
     if (request.carrier !== interaction.member.id) return interaction.reply({ content: "❌ Only the Carrier who claimed this request can confirm it.", ephemeral: true });
@@ -262,6 +280,8 @@ async function releaseLegacyClaim(interaction, id) {
         SET carrier=NULL,status='waiting',ticket_channel=NULL,carrier_confirmed=0,requester_confirmed=0
         WHERE id=?
     `).run(id);
+    recordAbuseEvent(interaction.guildId, interaction.user.id, "claim_release", 1, { legacyId: id });
+    await maybeSendAbuseAlert(interaction.client, interaction.guildId, interaction.user.id, "released legacy carry claim").catch(() => {});
 
     if (request.message_channel && request.message_id) {
         const source = await interaction.client.channels.fetch(request.message_channel).catch(() => null);
@@ -313,7 +333,11 @@ async function submitCarry(interaction) {
         .limit(1)
         .maybeSingle();
     if (activeError) throw activeError;
-    if (active) return interaction.reply({ content: `❌ You already have an active **${active.dungeon}** request.`, ephemeral: true });
+    if (active) {
+        recordAbuseEvent(interaction.guildId, interaction.user.id, "duplicate_request", 1, { active: active.id });
+        await maybeSendAbuseAlert(interaction.client, interaction.guildId, interaction.user.id, "duplicate carry request").catch(() => {});
+        return interaction.reply({ content: `❌ You already have an active **${active.dungeon}** request.`, ephemeral: true });
+    }
 
     const { data, error } = await supabase.from("carry_requests").insert({
         requester_id: profile.id,
@@ -323,8 +347,12 @@ async function submitCarry(interaction) {
         availability: values.availability,
         notes: values.notes,
         status: "queued",
-    }).select("id").single();
+    }).select("id,requester_id,dungeon,difficulty,runs_requested,availability,created_at").single();
     if (error) return interaction.reply({ content: `❌ ${error.message}`, ephemeral: true });
+
+    recordAbuseEvent(interaction.guildId, interaction.user.id, "queue_request", 0, { requestId: data.id });
+    const matched = await notifyMatchingCarriers(interaction.client, interaction.guildId, data).catch(() => 0);
+    await maybeSendAbuseAlert(interaction.client, interaction.guildId, interaction.user.id, "carry request").catch(() => {});
 
     const base = marketplaceBaseUrl();
     return interaction.reply({
@@ -334,8 +362,9 @@ async function submitCarry(interaction) {
             `⚔️ ${values.difficulty}`,
             `👥 ${values.runs} run${values.runs === 1 ? "" : "s"}`,
             `🎮 Roblox: ${profile.roblox_username}`,
+            `🍻 Smart match: ${matched} available matching Carrier${matched === 1 ? "" : "s"} notified.`,
             "",
-            "Carriers see matching requests merged together by dungeon and difficulty.",
+            "For the cleaner Dungeon autocomplete flow, you can also use `/queue request`.",
             base ? `${base}/carry-queue` : null,
         ].filter(Boolean).join("\n"),
         ephemeral: true,
@@ -347,6 +376,12 @@ module.exports = {
 
     async execute(interaction, client) {
         try {
+            if (interaction.isAutocomplete()) {
+                const command = client.commands.get(interaction.commandName);
+                if (!command?.autocomplete) return interaction.respond([]).catch(() => {});
+                return await command.autocomplete(interaction);
+            }
+
             if (interaction.isChatInputCommand()) {
                 console.log(`[COMMAND] /${interaction.commandName} used by ${interaction.user.tag}`);
                 const command = client.commands.get(interaction.commandName);
@@ -360,6 +395,7 @@ module.exports = {
             const treasuryHandled = await handleTreasuryInteraction(interaction);
             if (treasuryHandled) return;
 
+            if (await helpCommand.handleHelpComponent?.(interaction)) return;
             if (await queueCommand.handleQueueComponent?.(interaction)) return;
             if (interaction.isButton() && await handleCarryTicketButton(interaction)) return;
 
@@ -376,6 +412,7 @@ module.exports = {
         } catch (error) {
             console.error("[INTERACTION ERROR]", error);
             const message = `❌ ${error.message || "Something went wrong while running that interaction."}`;
+            if (interaction.isAutocomplete()) return interaction.respond([]).catch(() => {});
             if (interaction.deferred || interaction.replied) await interaction.followUp({ content: message, ephemeral: true }).catch(() => {});
             else await interaction.reply({ content: message, ephemeral: true }).catch(() => {});
         }
