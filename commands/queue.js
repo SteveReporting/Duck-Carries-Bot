@@ -4,6 +4,7 @@ const {
   SlashCommandBuilder,
 } = require("discord.js");
 
+const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
 const {
   displayName,
@@ -16,7 +17,7 @@ function shortId(id) {
   return String(id).slice(0, 8);
 }
 
-async function loadQueue() {
+async function loadPlatformQueue() {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("carry_requests")
@@ -24,7 +25,7 @@ async function loadQueue() {
     .in("status", ["queued", "claimed", "in_progress"])
     .order("created_at", { ascending: true })
     .limit(25);
-  if (error) throw new Error(`Could not load the carry queue: ${error.message}`);
+  if (error) throw new Error(`Could not load the website carry queue: ${error.message}`);
   if (!data?.length) return [];
 
   const ids = [...new Set(data.flatMap((row) => [row.requester_id, row.carrier_id]).filter(Boolean))];
@@ -37,18 +38,49 @@ async function loadQueue() {
   return data.map((row) => ({ ...row, requester: map.get(row.requester_id), carrier: map.get(row.carrier_id) }));
 }
 
+function loadLegacyQueue(guildId) {
+  if (!guildId) return [];
+  return db.prepare(`
+    SELECT id, guild, user, roblox, dungeon, difficulty, runs, availability, carrier, status
+    FROM queue
+    WHERE guild = ?
+    ORDER BY id ASC
+  `).all(guildId);
+}
+
 async function viewQueue(interaction) {
-  const queue = await loadQueue();
-  if (!queue.length) return interaction.reply("🍺 The Tavern carry queue is empty!");
-  const lines = queue.map((r, i) => {
-    const carrier = r.carrier ? `\n🍻 Carrier: ${displayName(r.carrier)}` : "";
-    return `**#${i + 1} · ${r.dungeon}**\n👤 ${displayName(r.requester)}\n⚔️ ${r.difficulty} · ${r.runs_requested} run(s)\n📌 ${r.status}${carrier}\n\`${r.id}\``;
-  });
+  const [platformQueue, legacyQueue] = await Promise.all([
+    loadPlatformQueue(),
+    Promise.resolve(loadLegacyQueue(interaction.guildId)),
+  ]);
+
+  if (!platformQueue.length && !legacyQueue.length) {
+    return interaction.reply("🍺 The Tavern carry queue is empty!");
+  }
+
+  const sections = [];
+
+  if (legacyQueue.length) {
+    const legacyLines = legacyQueue.map((r) => {
+      const carrier = r.carrier ? `\n🍻 Carrier: <@${r.carrier}>` : "";
+      return `**Carry Request #${r.id} · ${r.dungeon || "Unknown dungeon"}**\n👤 ${r.roblox || `<@${r.user}>`}\n⚔️ ${r.difficulty || "Not set"} · ${r.runs || "?"} run(s)\n🕒 ${r.availability || "Not set"}\n📌 ${r.status || "waiting"}${carrier}`;
+    });
+    sections.push(`**🍺 Existing Discord Queue**\n${legacyLines.join("\n\n")}`);
+  }
+
+  if (platformQueue.length) {
+    const platformLines = platformQueue.map((r, i) => {
+      const carrier = r.carrier ? `\n🍻 Carrier: ${displayName(r.carrier)}` : "";
+      return `**#${i + 1} · ${r.dungeon}**\n👤 ${displayName(r.requester)}\n⚔️ ${r.difficulty} · ${r.runs_requested} run(s)\n📌 ${r.status}${carrier}\n\`${r.id}\``;
+    });
+    sections.push(`**🌐 Website / Supabase Queue**\n${platformLines.join("\n\n")}`);
+  }
+
   const base = marketplaceBaseUrl();
   const embed = new EmbedBuilder()
     .setTitle("⚔️ The Carry Tavern Queue")
-    .setDescription(lines.join("\n\n").slice(0, 4000))
-    .setFooter({ text: "Website and Discord use the same live queue." });
+    .setDescription(sections.join("\n\n━━━━━━━━━━━━━━━━━━━━\n\n").slice(0, 4000))
+    .setFooter({ text: "Shows the existing Discord queue plus the shared website queue." });
   if (base) embed.setURL(`${base}/carry-queue`);
   return interaction.reply({ embeds: [embed] });
 }
@@ -117,22 +149,22 @@ async function queueAction(interaction, kind) {
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("queue")
-    .setDescription("Use the shared Carry Tavern carry queue")
-    .addSubcommand((s) => s.setName("view").setDescription("View the live carry queue"))
-    .addSubcommand((s) => s.setName("request").setDescription("Request a carry")
+    .setDescription("Use the Carry Tavern carry queue")
+    .addSubcommand((s) => s.setName("view").setDescription("View the Discord and website carry queues"))
+    .addSubcommand((s) => s.setName("request").setDescription("Request a carry through the website queue")
       .addStringOption((o) => o.setName("dungeon").setDescription("Dungeon name").setRequired(true).setMaxLength(120))
       .addStringOption((o) => o.setName("difficulty").setDescription("Difficulty").setMaxLength(60))
       .addIntegerOption((o) => o.setName("runs").setDescription("Number of runs").setMinValue(1).setMaxValue(100))
       .addStringOption((o) => o.setName("notes").setDescription("Notes for the Carrier").setMaxLength(1000)))
-    .addSubcommand((s) => s.setName("claim").setDescription("Claim a queued carry")
+    .addSubcommand((s) => s.setName("claim").setDescription("Claim a website queue carry")
       .addStringOption((o) => o.setName("request").setDescription("Request UUID from /queue view").setRequired(true).setMinLength(36).setMaxLength(36)))
-    .addSubcommand((s) => s.setName("start").setDescription("Start your claimed carry")
+    .addSubcommand((s) => s.setName("start").setDescription("Start your claimed website carry")
       .addStringOption((o) => o.setName("request").setDescription("Request UUID").setRequired(true).setMinLength(36).setMaxLength(36)))
-    .addSubcommand((s) => s.setName("complete").setDescription("Complete and log your carry")
+    .addSubcommand((s) => s.setName("complete").setDescription("Complete and log a website carry")
       .addStringOption((o) => o.setName("request").setDescription("Request UUID").setRequired(true).setMinLength(36).setMaxLength(36))
       .addIntegerOption((o) => o.setName("runs").setDescription("Runs completed").setMinValue(1).setMaxValue(100))
       .addIntegerOption((o) => o.setName("minutes").setDescription("Service minutes").setMinValue(0).setMaxValue(1440)))
-    .addSubcommand((s) => s.setName("cancel").setDescription("Cancel a carry you requested or claimed")
+    .addSubcommand((s) => s.setName("cancel").setDescription("Cancel a website carry you requested or claimed")
       .addStringOption((o) => o.setName("request").setDescription("Request UUID").setRequired(true).setMinLength(36).setMaxLength(36))),
 
   async execute(interaction) {
