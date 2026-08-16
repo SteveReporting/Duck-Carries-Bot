@@ -19,6 +19,11 @@ const {
   canonicalizeDifficulty,
   groupKey,
 } = require("./dungeons");
+const {
+  carrierCanHandle,
+  carrierReputation,
+  recordCarrierRating,
+} = require("./communitySystems");
 
 const CARRIER_PLATFORM_ROLES = ["carrier", "moderator", "administrator", "owner"];
 
@@ -83,6 +88,19 @@ function ticketButtons() {
     new ButtonBuilder().setCustomId("carry_requester_complete").setLabel("Requester Complete").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("carry_release_claim").setLabel("Release Claim").setStyle(ButtonStyle.Secondary),
   );
+}
+
+function ratingButtons(requestId) {
+  const row = new ActionRowBuilder();
+  for (let score = 1; score <= 5; score += 1) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`carry_rate_${requestId}_${score}`)
+        .setLabel(`${score} ⭐`)
+        .setStyle(score === 5 ? ButtonStyle.Success : ButtonStyle.Secondary),
+    );
+  }
+  return row;
 }
 
 function safeChannelName(value) {
@@ -166,6 +184,7 @@ async function createCarryTicket(interaction, requests, carrierProfile) {
       ...requesterLines,
       "",
       "When the carry is finished, the Carrier presses **Carrier Complete** and each requester presses **Requester Complete**. A carry only registers after both sides confirm it.",
+      "If someone does not show up after the claim, use `/noshow report` with that request ID.",
     ].join("\n"))
     .setFooter({ text: "Use Release Claim if this carry was accepted by mistake." })
     .setTimestamp();
@@ -186,6 +205,7 @@ async function createCarryTicket(interaction, requests, carrierProfile) {
         `Difficulty: **${request.difficulty}**`,
         `Runs: **${request.runs_requested}**`,
         `Carrier: <@${interaction.user.id}>`,
+        `Request ID: \`${request.id}\``,
         `Private ticket: <#${ticket.id}>`,
       ].join("\n"));
     } catch (error) {
@@ -201,11 +221,18 @@ async function claimCarryGroup(interaction, { dungeon, difficulty, maxRuns }) {
   const carrierProfile = await requireCarrierProfile(interaction, { alreadyDeferred: true });
   if (!carrierProfile) return null;
 
+  const canonicalDungeon = canonicalizeDungeon(dungeon);
+  const canonicalDifficulty = canonicalizeDifficulty(difficulty);
+  if (!carrierCanHandle(interaction.guildId, interaction.user.id, canonicalDungeon, canonicalDifficulty)) {
+    await interaction.editReply(`❌ Your Carrier dungeon permissions do not allow **${canonicalDungeon} • ${canonicalDifficulty}**.`);
+    return null;
+  }
+
   const supabase = getSupabase();
   const { data, error } = await supabase.rpc("bot_claim_carry_group", {
     _actor_id: carrierProfile.id,
-    _dungeon: canonicalizeDungeon(dungeon),
-    _difficulty: canonicalizeDifficulty(difficulty),
+    _dungeon: canonicalDungeon,
+    _difficulty: canonicalDifficulty,
     _max_runs: Number(maxRuns),
   });
   if (error) throw new Error(error.message);
@@ -288,6 +315,26 @@ async function handleReleaseClaim(interaction) {
   return true;
 }
 
+async function sendRatingPrompt(client, request) {
+  const requesterDiscordId = request.requester?.discord_id;
+  const carrierDiscordId = request.carrier?.discord_id;
+  if (!requesterDiscordId || !carrierDiscordId) return;
+  try {
+    const requester = await client.users.fetch(requesterDiscordId);
+    await requester.send({
+      content: [
+        `⭐ **Rate your ${request.dungeon} Carrier**`,
+        `Carrier: <@${carrierDiscordId}>`,
+        `Runs: **${request.runs_requested}**`,
+        "Your rating helps build the Carrier reputation and leaderboard.",
+      ].join("\n"),
+      components: [ratingButtons(request.id)],
+    });
+  } catch (error) {
+    console.warn(`[CARRY RATING] Could not DM ${requesterDiscordId}:`, error.message);
+  }
+}
+
 async function handleCompletion(interaction, kind) {
   await interaction.deferReply({ ephemeral: true });
   const profile = await getLinkedProfile(interaction.user.id);
@@ -330,6 +377,10 @@ async function handleCompletion(interaction, kind) {
   }
 
   const after = await loadTicketRequests(interaction.channelId);
+  const beforeCompleted = new Set(before.filter((r) => r.status === "completed").map((r) => r.id));
+  const newlyCompleted = after.filter((r) => r.status === "completed" && !beforeCompleted.has(r.id));
+  for (const request of newlyCompleted) await sendRatingPrompt(interaction.client, request);
+
   const completed = after.filter((r) => r.status === "completed").length;
   const remaining = after.filter((r) => r.status !== "completed");
   const waitingOn = remaining.map((r) => {
@@ -341,13 +392,55 @@ async function handleCompletion(interaction, kind) {
 
   await interaction.editReply(remaining.length
     ? `✅ Confirmation recorded. **${completed}/${after.length}** request(s) fully completed.\nWaiting on:\n${waitingOn.join("\n")}`
-    : `✅ Both sides confirmed every request. **${completed}/${after.length}** carry request(s) registered as complete.`);
+    : `✅ Both sides confirmed every request. **${completed}/${after.length}** carry request(s) registered as complete. Requesters have been sent Carrier rating buttons.`);
 
   if (!remaining.length) await closeTicketSoon(interaction.channel, "Both sides confirmed the carry as complete.");
   return true;
 }
 
+async function handleRatingButton(interaction) {
+  const match = /^carry_rate_([0-9a-f-]{36})_([1-5])$/i.exec(interaction.customId || "");
+  if (!match) return false;
+  const [, requestId, scoreText] = match;
+  const score = Number(scoreText);
+  const supabase = getSupabase();
+  const { data: request, error } = await supabase.from("carry_requests")
+    .select("id,status,requester_id,carrier_id,dungeon,requester:profiles!carry_requests_requester_id_fkey(discord_id),carrier:profiles!carry_requests_carrier_id_fkey(discord_id)")
+    .eq("id", requestId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!request || request.status !== "completed") {
+    await interaction.reply({ content: "❌ This carry is not eligible for a rating.", ephemeral: true });
+    return true;
+  }
+  if (request.requester?.discord_id !== interaction.user.id || !request.carrier?.discord_id) {
+    await interaction.reply({ content: "❌ Only the requester for this completed carry can rate the Carrier.", ephemeral: true });
+    return true;
+  }
+
+  const inserted = recordCarrierRating({
+    guildId: interaction.guildId || process.env.GUILD_ID || "",
+    requestId,
+    carrierId: request.carrier.discord_id,
+    requesterId: interaction.user.id,
+    score,
+  });
+  if (!inserted) {
+    await interaction.reply({ content: "⭐ You already rated this carry. Thank you!", ephemeral: true });
+    return true;
+  }
+
+  const rep = carrierReputation(request.carrier.discord_id, interaction.guildId || process.env.GUILD_ID || "");
+  await supabase.from("carrier_profiles").update({ quality_score: rep.average || 0 }).eq("user_id", request.carrier_id).catch(() => {});
+  await interaction.update({
+    content: `⭐ **Thanks! You rated this Carrier ${score}/5.**\nTheir current Carry Tavern rating is **${rep.average}/5** from ${rep.ratings} rating${rep.ratings === 1 ? "" : "s"}.`,
+    components: [],
+  });
+  return true;
+}
+
 async function handleCarryTicketButton(interaction) {
+  if (interaction.customId?.startsWith("carry_rate_")) return handleRatingButton(interaction);
   if (interaction.customId === "carry_release_claim") return handleReleaseClaim(interaction);
   if (interaction.customId === "carry_carrier_complete") return handleCompletion(interaction, "carrier");
   if (interaction.customId === "carry_requester_complete") return handleCompletion(interaction, "requester");
