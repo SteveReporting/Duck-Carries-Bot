@@ -4,8 +4,8 @@ const {
   SlashCommandBuilder,
 } = require("discord.js");
 
-const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
+const { loadLiveLegacyQueue } = require("../platform/legacyQueue");
 const {
   displayName,
   requireLinkedProfile,
@@ -38,20 +38,10 @@ async function loadPlatformQueue() {
   return data.map((row) => ({ ...row, requester: map.get(row.requester_id), carrier: map.get(row.carrier_id) }));
 }
 
-function loadLegacyQueue(guildId) {
-  if (!guildId) return [];
-  return db.prepare(`
-    SELECT id, guild, user, roblox, dungeon, difficulty, runs, availability, carrier, status
-    FROM queue
-    WHERE guild = ?
-    ORDER BY id ASC
-  `).all(guildId);
-}
-
 async function viewQueue(interaction) {
   const [platformQueue, legacyQueue] = await Promise.all([
     loadPlatformQueue(),
-    Promise.resolve(loadLegacyQueue(interaction.guildId)),
+    loadLiveLegacyQueue(interaction.client, interaction.guildId, { maxMessages: 500 }),
   ]);
 
   if (!platformQueue.length && !legacyQueue.length) {
@@ -61,11 +51,13 @@ async function viewQueue(interaction) {
   const sections = [];
 
   if (legacyQueue.length) {
-    const legacyLines = legacyQueue.map((r) => {
+    const shown = legacyQueue.slice(0, 20);
+    const legacyLines = shown.map((r) => {
       const carrier = r.carrier ? `\n🍻 Carrier: <@${r.carrier}>` : "";
       return `**Carry Request #${r.id} · ${r.dungeon || "Unknown dungeon"}**\n👤 ${r.roblox || `<@${r.user}>`}\n⚔️ ${r.difficulty || "Not set"} · ${r.runs || "?"} run(s)\n🕒 ${r.availability || "Not set"}\n📌 ${r.status || "waiting"}${carrier}`;
     });
-    sections.push(`**🍺 Existing Discord Queue**\n${legacyLines.join("\n\n")}`);
+    const more = legacyQueue.length > shown.length ? `\n\n…plus **${legacyQueue.length - shown.length}** more live Discord request(s) on the website.` : "";
+    sections.push(`**🍺 Live Discord Queue**\n${legacyLines.join("\n\n")}${more}`);
   }
 
   if (platformQueue.length) {
@@ -80,7 +72,7 @@ async function viewQueue(interaction) {
   const embed = new EmbedBuilder()
     .setTitle("⚔️ The Carry Tavern Queue")
     .setDescription(sections.join("\n\n━━━━━━━━━━━━━━━━━━━━\n\n").slice(0, 4000))
-    .setFooter({ text: "Shows the existing Discord queue plus the shared website queue." });
+    .setFooter({ text: "Discord entries are detected from live Claim/Complete buttons, so stale database rows are ignored." });
   if (base) embed.setURL(`${base}/carry-queue`);
   return interaction.reply({ embeds: [embed] });
 }
