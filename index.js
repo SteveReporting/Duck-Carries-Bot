@@ -6,6 +6,8 @@ const {
     Client,
     Collection,
     GatewayIntentBits,
+    REST,
+    Routes,
 } = require("discord.js");
 const db = require("./database/database");
 
@@ -14,7 +16,7 @@ console.log("🍺 Starting The Carry Tavern...");
 console.log(`Node version: ${process.version}`);
 console.log("=================================");
 
-const requiredEnvironment = ["TOKEN", "GUILD_ID"];
+const requiredEnvironment = ["TOKEN", "CLIENT_ID", "GUILD_ID"];
 const missingEnvironment = requiredEnvironment.filter((key) => !process.env[key]);
 
 if (missingEnvironment.length > 0) {
@@ -96,6 +98,18 @@ function loadEvents() {
     }
 }
 
+async function syncSlashCommands() {
+    const body = [...client.commands.values()].map((command) => command.data.toJSON());
+    const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
+
+    console.log(`🔄 Syncing ${body.length} guild slash commands...`);
+    await rest.put(
+        Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+        { body },
+    );
+    console.log("✅ Guild slash commands synced.");
+}
+
 loadCommands();
 loadEvents();
 
@@ -133,11 +147,23 @@ async function shutdown(signal) {
 process.once("SIGINT", () => shutdown("SIGINT"));
 process.once("SIGTERM", () => shutdown("SIGTERM"));
 
-console.log("🔐 Logging into Discord...");
+async function start() {
+    try {
+        await syncSlashCommands();
+    } catch (error) {
+        console.error("❌ Slash command sync failed:", error);
+        process.exit(1);
+    }
 
-client.login(process.env.TOKEN)
-    .then(() => console.log("✅ Discord login request accepted."))
-    .catch((error) => {
+    console.log("🔐 Logging into Discord...");
+
+    try {
+        await client.login(process.env.TOKEN);
+        console.log("✅ Discord login request accepted.");
+    } catch (error) {
         console.error("❌ Discord login failed:", error);
         process.exit(1);
-    });
+    }
+}
+
+void start();
