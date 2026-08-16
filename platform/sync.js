@@ -211,6 +211,59 @@ async function pollDiscordNotifications(client) {
   }
 }
 
+function rankForMember(member, roleMap) {
+  const ranks = ["Master of the Tap", "Brewmaster", "Tapmaster", "Caskkeeper", "Bartender", "Barback"];
+  return ranks.find((rank) => roleMap[rank] && member.roles.cache.has(roleMap[rank])) || null;
+}
+
+async function syncDiscordCarrierProfiles(client) {
+  const roleMap = carrierRoleMap();
+  const configuredRoleIds = [...new Set(Object.values(roleMap).filter(Boolean))];
+  if (!configuredRoleIds.length || !process.env.GUILD_ID) return;
+
+  const supabase = getSupabase();
+  const { data: profiles, error } = await supabase
+    .from("profiles")
+    .select("id,discord_id")
+    .not("discord_id", "is", null)
+    .limit(5000);
+  if (error) throw error;
+
+  const guild = await client.guilds.fetch(process.env.GUILD_ID);
+  let synced = 0;
+
+  for (const profile of profiles || []) {
+    let member;
+    try {
+      member = await guild.members.fetch(profile.discord_id);
+    } catch {
+      continue;
+    }
+
+    const rank = rankForMember(member, roleMap);
+    if (!rank) continue;
+
+    const now = new Date().toISOString();
+    const { error: carrierError } = await supabase.from("carrier_profiles").upsert({
+      user_id: profile.id,
+      carrier_rank: rank,
+      active: true,
+      updated_at: now,
+    }, { onConflict: "user_id" });
+    if (carrierError) throw carrierError;
+
+    const { error: roleError } = await supabase.from("user_roles").upsert({
+      user_id: profile.id,
+      role: "carrier",
+      granted_by: null,
+    }, { onConflict: "user_id,role" });
+    if (roleError) throw roleError;
+    synced += 1;
+  }
+
+  if (synced) console.log(`[CARRIER PROFILE SYNC] Matched ${synced} Discord Carrier role member(s) to website Carrier profiles.`);
+}
+
 async function syncCarrierRoles(client) {
   const roleMap = carrierRoleMap();
   const configuredRoleIds = [...new Set(Object.values(roleMap).filter(Boolean))];
@@ -247,7 +300,10 @@ async function tick(client) {
       pollCarries(client, initialized),
       pollDiscordNotifications(client),
     ]);
-    if (ticks === 1 || ticks % 5 === 0) await syncCarrierRoles(client);
+    if (ticks === 1 || ticks % 5 === 0) {
+      await syncDiscordCarrierProfiles(client);
+      await syncCarrierRoles(client);
+    }
     initialized = true;
   } catch (error) {
     console.error("[PLATFORM SYNC]", error);
@@ -261,4 +317,4 @@ function startPlatformSync(client) {
   timer.unref?.();
 }
 
-module.exports = { startPlatformSync, syncLegacyDiscordQueue, syncDiscordFeeds };
+module.exports = { startPlatformSync, syncLegacyDiscordQueue, syncDiscordFeeds, syncDiscordCarrierProfiles };
