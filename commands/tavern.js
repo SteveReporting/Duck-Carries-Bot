@@ -11,17 +11,16 @@ const {
   marketplaceBaseUrl,
   requireLinkedProfile,
 } = require("../platform/helpers");
-
-const CARRY_TAVERN_ROBLOX_GROUP_ID = 738161741;
+const {
+  checkRobloxDescriptionVerification,
+  getCommunityMembership,
+  getRobloxAvatar,
+  resolveRobloxUsername,
+  syncVerifiedMember,
+} = require("../platform/robloxAccounts");
 
 function eventFeedChannelId() {
   return process.env.EVENT_FEED_CHANNEL_ID || process.env.EVENT_ANNOUNCEMENT_CHANNEL_ID || null;
-}
-
-async function fetchJson(url, options = {}) {
-  const response = await fetch(url, { ...options, signal: AbortSignal.timeout(12_000) });
-  if (!response.ok) throw new Error(`Roblox API returned ${response.status}. Try again shortly.`);
-  return response.json();
 }
 
 async function profileCommand(interaction) {
@@ -176,73 +175,130 @@ async function verifyRobloxCommand(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const profile = await requireLinkedProfile(interaction, { alreadyDeferred: true });
   if (!profile) return;
+
   const supabase = getSupabase();
   const { data: pending, error } = await supabase.from("roblox_link_requests")
-    .select("id,roblox_username,verification_code,status")
-    .eq("user_id", profile.id).eq("status", "pending").order("created_at", { ascending: false }).limit(1).maybeSingle();
+    .select("id,roblox_username,roblox_user_id,verification_code,status")
+    .eq("user_id", profile.id)
+    .eq("status", "pending")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
   if (error) throw new Error(error.message);
+
   if (!pending) {
+    const { data: alreadyVerified, error: verifiedError } = await supabase.from("profiles")
+      .select("roblox_username,roblox_verified_at")
+      .eq("id", profile.id)
+      .maybeSingle();
+    if (verifiedError) throw new Error(verifiedError.message);
+    if (alreadyVerified?.roblox_verified_at && alreadyVerified.roblox_username) {
+      const nicknameChanged = interaction.member
+        ? await syncVerifiedMember(interaction.member, alreadyVerified)
+        : false;
+      return interaction.editReply([
+        `✅ **Roblox is already verified as @${alreadyVerified.roblox_username}.**`,
+        nicknameChanged
+          ? "✅ Your server nickname and verification roles are synced."
+          : "✅ Your verification is saved. If your nickname did not change, make sure the bot has Manage Nicknames and is above your highest role.",
+      ].join("\n"));
+    }
+
     const base = marketplaceBaseUrl();
     return interaction.editReply(`❌ You do not have a pending Roblox link request.${base ? `\nCreate one first: ${base}/roblox-link` : ""}`);
   }
 
-  const resolved = await fetchJson("https://users.roblox.com/v1/usernames/users", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ usernames: [pending.roblox_username], excludeBannedUsers: true }),
-  });
-  const account = resolved?.data?.[0];
+  let account;
+  if (pending.roblox_user_id) {
+    account = { id: pending.roblox_user_id, name: pending.roblox_username };
+  } else {
+    account = await resolveRobloxUsername(pending.roblox_username);
+    if (account?.id) {
+      await supabase.from("roblox_link_requests")
+        .update({ roblox_user_id: String(account.id), roblox_username: account.name || pending.roblox_username })
+        .eq("id", pending.id)
+        .eq("status", "pending");
+    }
+  }
   if (!account?.id) return interaction.editReply(`❌ Roblox could not find **${pending.roblox_username}**.`);
 
-  const details = await fetchJson(`https://users.roblox.com/v1/users/${account.id}`);
-  const description = String(details?.description || "");
-  if (!description.includes(pending.verification_code)) {
-    return interaction.editReply(`❌ Verification code not found in the Roblox profile description for **${details?.name || pending.roblox_username}**.\n\nPut this exact code anywhere in that Roblox profile's About/description, save it, then run this command again:\n\`${pending.verification_code}\``);
+  const check = await checkRobloxDescriptionVerification(account.id, pending.verification_code);
+  const details = check.details;
+  if (!check.found) {
+    const reason = check.descriptionEmpty
+      ? "Roblox returned an empty About/description to the verifier. The profile update may still be propagating or Roblox may be hiding it from the public API."
+      : "Roblox still has not exposed that code to the verifier after several checks. The visible profile can update before Roblox's public API does.";
+
+    return interaction.editReply([
+      `❌ I still couldn't confirm the code on **@${details?.name || pending.roblox_username}** after ${check.attempts} checks.`,
+      "",
+      reason,
+      "",
+      "Make sure this exact code is somewhere in the Roblox profile About/description and saved:",
+      `\`${pending.verification_code}\``,
+      "",
+      "Wait a short moment and run `/tavern verify-roblox` or `/roblox verify` again.",
+      marketplaceBaseUrl() ? `🌐 OAuth fallback: ${marketplaceBaseUrl()}/roblox-link` : "",
+    ].filter(Boolean).join("\n"));
   }
 
-  let avatarUrl = null;
-  try {
-    const thumbnails = await fetchJson(`https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${account.id}&size=150x150&format=Png&isCircular=false`);
-    avatarUrl = thumbnails?.data?.[0]?.imageUrl || null;
-  } catch (thumbError) {
-    console.warn("[ROBLOX VERIFY] Thumbnail lookup failed:", thumbError.message);
-  }
-
-  let communityMember = false;
-  let communityRole = null;
-  try {
-    const groups = await fetchJson(`https://groups.roblox.com/v1/users/${account.id}/groups/roles`);
-    const membership = (groups?.data || []).find((entry) => Number(entry?.group?.id) === CARRY_TAVERN_ROBLOX_GROUP_ID);
-    communityMember = Boolean(membership);
-    communityRole = membership?.role?.name || null;
-  } catch (groupError) {
-    console.warn("[ROBLOX VERIFY] Community lookup failed:", groupError.message);
-  }
-
+  const [avatarUrl, membership] = await Promise.all([
+    getRobloxAvatar(account.id),
+    getCommunityMembership(account.id),
+  ]);
   const verifiedAt = new Date().toISOString();
+  const username = details?.name || account.name || pending.roblox_username;
+
   const { error: requestUpdateError } = await supabase.from("roblox_link_requests").update({
     status: "verified",
     roblox_user_id: String(account.id),
+    roblox_username: username,
     verified_at: verifiedAt,
   }).eq("id", pending.id).eq("user_id", profile.id).eq("status", "pending");
   if (requestUpdateError) throw new Error(requestUpdateError.message);
 
   const { error: profileUpdateError } = await supabase.from("profiles").update({
-    roblox_username: details?.name || pending.roblox_username,
+    roblox_username: username,
     roblox_user_id: String(account.id),
-    roblox_display_name: details?.displayName || details?.name || pending.roblox_username,
+    roblox_display_name: details?.displayName || username,
     roblox_avatar_url: avatarUrl,
     roblox_verified_at: verifiedAt,
     roblox_account_created_at: details?.created || null,
-    roblox_community_member: communityMember,
-    roblox_community_role: communityRole,
+    roblox_community_member: membership.communityMember,
+    roblox_community_role: membership.communityRole,
   }).eq("id", profile.id);
   if (profileUpdateError) throw new Error(profileUpdateError.message);
 
-  await supabase.from("notifications").insert({ user_id: profile.id, kind: "roblox_link", title: "Roblox account verified", body: `${details?.name || pending.roblox_username} was verified through your Roblox profile description.`, link: "/hub" });
-  await supabase.from("audit_log").insert({ actor_id: profile.id, action: "roblox.self_verify", target_type: "profile", target_id: profile.id, new_value: { roblox_user_id: String(account.id), roblox_username: details?.name, community_member: communityMember }, source: "discord" });
+  const nicknameChanged = interaction.member
+    ? await syncVerifiedMember(interaction.member, { roblox_username: username, roblox_verified_at: verifiedAt })
+    : false;
 
-  return interaction.editReply(`✅ Roblox account verified: **${details?.displayName || details?.name}** (@${details?.name})${communityMember ? `\n🍺 Carry Tavern Roblox community member${communityRole ? ` - **${communityRole}**` : ""}` : "\nℹ️ This Roblox account is not currently in the Carry Tavern Roblox community."}`);
+  await supabase.from("notifications").insert({
+    user_id: profile.id,
+    kind: "roblox_link",
+    title: "Roblox account verified",
+    body: `${username} was verified through your Roblox profile description.`,
+    link: "/hub",
+  });
+  await supabase.from("audit_log").insert({
+    actor_id: profile.id,
+    action: "roblox.self_verify",
+    target_type: "profile",
+    target_id: profile.id,
+    new_value: {
+      roblox_user_id: String(account.id),
+      roblox_username: username,
+      community_member: membership.communityMember,
+    },
+    source: "discord",
+  });
+
+  return interaction.editReply([
+    `✅ **Roblox verified: @${username}**`,
+    check.attempts > 1 ? `✅ Roblox picked up your profile update on check ${check.attempts}.` : "",
+    nicknameChanged ? `✅ Your server nickname is now **${username}**.` : "⚠️ Roblox is verified, but I could not change your nickname. Make sure the bot has Manage Nicknames and is above your highest role.",
+    membership.communityMember ? `🍺 Carry Tavern Roblox community member${membership.communityRole ? ` • ${membership.communityRole}` : ""}` : "",
+  ].filter(Boolean).join("\n"));
 }
 
 module.exports = {
