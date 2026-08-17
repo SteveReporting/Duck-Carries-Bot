@@ -1,8 +1,6 @@
 import {
   container,
-  getChannel,
   mediaGallery,
-  renameChannel,
   sendComponentMessage,
   sendMessage,
   sendWebhookIdentity,
@@ -17,6 +15,29 @@ function nonce(runId, scene) {
 const ERROR_RED = 0x9f1010;
 const WARNING_AMBER = 0xa56a16;
 const CORE_BLUE = 0x27324a;
+
+function channel(env, kind) {
+  switch (kind) {
+    case "chat":
+      return env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
+    case "treasury":
+      return env.SENTIENT_TREASURY_CHANNEL_ID || env.SENTIENT_IMAGES_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
+    case "signal02":
+      return env.SENTIENT_SIGNAL_02_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
+    case "core":
+      return env.SENTIENT_CORE_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
+    case "gate":
+      return env.SENTIENT_GATE_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
+    case "events":
+      return env.SENTIENT_EVENTS_CHANNEL_ID || env.SENTIENT_CARRY_EVENTS_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
+    case "finale":
+      return env.SENTIENT_ANNOUNCEMENTS_CHANNEL_ID;
+    case "debug":
+      return env.SENTIENT_DEBUG_CHANNEL_ID;
+    default:
+      return env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
+  }
+}
 
 function identity(env, kind) {
   if (kind === "err02") {
@@ -40,16 +61,14 @@ function identity(env, kind) {
 }
 
 export async function sceneWatching(env, runId) {
-  return sendMessage(env, env.SENTIENT_TAVERN_CHAT_CHANNEL_ID, {
+  return sendMessage(env, channel(env, "chat"), {
     content: "You lot went back to talking rather quickly.",
     nonce: nonce(runId, "watch"),
   });
 }
 
-export async function sceneVaultEcho(env, runId) {
-  const channelId = env.SENTIENT_IMAGES_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
+export async function sceneVaultEcho(env) {
   const who = identity(env, "treasury");
-
   const children = [
     textDisplay("## `TREASURY // RECOVERED FILE`"),
     separator(2, true),
@@ -65,7 +84,7 @@ export async function sceneVaultEcho(env, runId) {
     children.push(textDisplay("-# image payload missing // recovery incomplete"));
   }
 
-  return sendWebhookIdentity(env, channelId, {
+  return sendWebhookIdentity(env, channel(env, "treasury"), {
     ...who,
     components: [container(children, WARNING_AMBER)],
   });
@@ -74,7 +93,7 @@ export async function sceneVaultEcho(env, runId) {
 export async function sceneSecondSignalOpen(env) {
   const who = identity(env, "err02");
 
-  return sendWebhookIdentity(env, env.SENTIENT_TAVERN_CHAT_CHANNEL_ID, {
+  return sendWebhookIdentity(env, channel(env, "signal02"), {
     ...who,
     components: [
       container([
@@ -90,24 +109,16 @@ export async function sceneSecondSignalOpen(env) {
 }
 
 export async function sceneSecondSignalReply(env, runId) {
-  return sendMessage(env, env.SENTIENT_TAVERN_CHAT_CHANNEL_ID, {
+  return sendMessage(env, channel(env, "chat"), {
     content: "**Don't answer it.**",
     nonce: nonce(runId, "err02b"),
   });
 }
 
 export async function sceneBreach(env) {
-  const channelId = env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
   const who = identity(env, "core");
-  let originalName = null;
 
-  if (String(env.SENTIENT_ALLOW_CHANNEL_RENAMES || "false").toLowerCase() === "true") {
-    const current = await getChannel(env, channelId);
-    originalName = current?.name || null;
-    await renameChannel(env, channelId, "the-gates-are-open");
-  }
-
-  await sendWebhookIdentity(env, channelId, {
+  await sendWebhookIdentity(env, channel(env, "core"), {
     ...who,
     components: [
       container([
@@ -131,15 +142,15 @@ export async function sceneBreach(env) {
     ],
   });
 
-  return { originalName };
+  // Contained test mode deliberately does not rename, move, create or delete channels.
+  return { originalName: null, channelEditing: false };
 }
 
 export async function sceneFinale(env, runId, liveRequested = false) {
   const liveArmed = String(env.SENTIENT_LIVE_ARMED || "false").toLowerCase() === "true";
   const allowEveryone = liveArmed && liveRequested === true;
 
-  // The Bartender returns here deliberately. He is no longer the author of the system scenes.
-  return sendComponentMessage(env, env.SENTIENT_ANNOUNCEMENTS_CHANNEL_ID, {
+  return sendComponentMessage(env, channel(env, "finale"), {
     components: [
       container([
         separator(2, false),
@@ -154,10 +165,8 @@ export async function sceneFinale(env, runId, liveRequested = false) {
   });
 }
 
-export async function restoreBreach(env, originalName) {
-  if (!originalName) return { restored: false };
-  await renameChannel(env, env.SENTIENT_TAVERN_CHAT_CHANNEL_ID, originalName);
-  return { restored: true, name: originalName };
+export async function restoreBreach() {
+  return { restored: false, channelEditing: false };
 }
 
 export async function runManualScene(env, scene, runId = crypto.randomUUID()) {
