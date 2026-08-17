@@ -96,7 +96,28 @@ async function verifyCommand(interaction) {
     .limit(1)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  if (!pending) return interaction.editReply("❌ You do not have a pending Roblox link. Run `/roblox link` first.");
+
+  if (!pending) {
+    const { data: alreadyVerified, error: alreadyError } = await supabase.from("profiles")
+      .select("roblox_username,roblox_verified_at")
+      .eq("id", profile.id)
+      .maybeSingle();
+    if (alreadyError) throw new Error(alreadyError.message);
+
+    if (alreadyVerified?.roblox_verified_at && alreadyVerified.roblox_username) {
+      const nicknameChanged = interaction.member
+        ? await syncVerifiedMember(interaction.member, alreadyVerified)
+        : false;
+      return interaction.editReply([
+        `✅ **Roblox is already verified as @${alreadyVerified.roblox_username}.**`,
+        nicknameChanged
+          ? `✅ Your server nickname and verification roles are synced.`
+          : "✅ Your website verification is saved. If your nickname did not change, make sure the bot has Manage Nicknames and is above your highest role.",
+      ].join("\n"));
+    }
+
+    return interaction.editReply("❌ You do not have a pending Roblox link. Run `/roblox link` first.");
+  }
 
   // New link requests already store the immutable numeric Roblox ID. Old pending
   // requests are resolved once and then upgraded so future retries use the ID.
