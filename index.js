@@ -68,6 +68,15 @@ function loadCommands() {
     }
 }
 
+async function warmGuildMemberCache(interaction) {
+    if (!interaction?.guild) return;
+    try {
+        await interaction.guild.members.fetch();
+    } catch (error) {
+        console.warn(`[DISCORD CACHE] Could not prefetch guild members before carry ticket creation: ${error.message}`);
+    }
+}
+
 function loadEvents() {
     const directory = path.join(__dirname, "events");
     const files = fs.readdirSync(directory)
@@ -86,7 +95,18 @@ function loadEvents() {
 
             const listener = async (...args) => {
                 if (event.name === "interactionCreate") {
-                    const allowed = await guardCarryClaimInteraction(args[0]);
+                    const interaction = args[0];
+
+                    // Discord.js resolves channel permission overwrites through the
+                    // guild member/role cache when a grouped carry ticket is created.
+                    // Freshly restarted bots may not have every requester cached yet,
+                    // which caused "Supplied parameter is not a cached User or Role."
+                    // Fetch members before the run-tier selection reaches ticket creation.
+                    if (interaction?.isStringSelectMenu?.() && interaction.customId === "queue_run_select") {
+                        await warmGuildMemberCache(interaction);
+                    }
+
+                    const allowed = await guardCarryClaimInteraction(interaction);
                     if (!allowed) return;
                 }
                 return event.execute(...args, client);
