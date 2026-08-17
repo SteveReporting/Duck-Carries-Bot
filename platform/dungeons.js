@@ -25,14 +25,22 @@ function clean(value) {
     .toLowerCase()
     .replace(/[’']/g, "'")
     .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ");
+    .replace(/[^a-z0-9' ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 const ALIAS_MAP = new Map();
+const ALIASES_LONGEST_FIRST = [];
 for (const dungeon of DUNGEONS) {
-  ALIAS_MAP.set(clean(dungeon.name), dungeon.name);
-  for (const alias of dungeon.aliases) ALIAS_MAP.set(clean(alias), dungeon.name);
+  const names = [dungeon.name, ...dungeon.aliases];
+  for (const alias of names) {
+    const normalized = clean(alias);
+    ALIAS_MAP.set(normalized, dungeon.name);
+    ALIASES_LONGEST_FIRST.push({ alias: normalized, dungeon: dungeon.name });
+  }
 }
+ALIASES_LONGEST_FIRST.sort((a, b) => b.alias.length - a.alias.length);
 
 function titleCase(value) {
   return String(value || "")
@@ -41,29 +49,56 @@ function titleCase(value) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+/**
+ * Converts aliases and messy combined text into one canonical dungeon.
+ * Examples:
+ *   "AT" -> "Aquatic Temple"
+ *   "AT Ins HC?" -> "Aquatic Temple"
+ *   "need uw nm please" -> "Underworld"
+ */
 function canonicalizeDungeon(value) {
   const key = clean(value);
   if (!key) return "";
-  return ALIAS_MAP.get(key) || titleCase(value);
+
+  const exact = ALIAS_MAP.get(key);
+  if (exact) return exact;
+
+  const padded = ` ${key} `;
+  for (const entry of ALIASES_LONGEST_FIRST) {
+    if (padded.includes(` ${entry.alias} `)) return entry.dungeon;
+  }
+
+  return titleCase(value);
 }
 
+/**
+ * Carry grouping intentionally ignores Hardcore and any extra words/punctuation.
+ * The queue groups only by the base difficulty so INS, INS HC, "Ins HC?", etc.
+ * all become Insane, and NM/NM HC all become Nightmare.
+ */
 function canonicalizeDifficulty(value) {
   const raw = clean(value);
   if (!raw) return "Nightmare";
 
-  const hardcore = /\b(hc|hardcore)\b/.test(raw);
-  const stripped = raw.replace(/\b(hc|hardcore)\b/g, "").replace(/\s+/g, " ").trim();
-  const map = new Map([
-    ["e", "Easy"], ["easy", "Easy"],
-    ["m", "Medium"], ["med", "Medium"], ["medium", "Medium"],
-    ["h", "Hard"], ["hard", "Hard"],
-    ["ins", "Insane"], ["insane", "Insane"],
-    ["nm", "Nightmare"], ["nightmare", "Nightmare"],
-  ]);
+  const tokens = raw.split(" ").filter(Boolean);
+  const has = (...values) => tokens.some((token) => values.includes(token));
 
-  const base = map.get(stripped) || titleCase(stripped || raw);
-  if (hardcore && !/hardcore/i.test(base)) return `${base} Hardcore`;
-  return base;
+  // Check Nightmare and Insane first because users often paste combined text such
+  // as "AT Ins HC?" or add unrelated words after the actual difficulty.
+  if (has("nm", "nightmare")) return "Nightmare";
+  if (has("ins", "insane")) return "Insane";
+
+  // Keep older/easier difficulties readable for legacy records, but Hardcore is
+  // never part of the canonical queue key.
+  if (has("easy", "e")) return "Easy";
+  if (has("medium", "med", "m")) return "Medium";
+  if (has("hard", "h")) return "Hard";
+
+  const stripped = tokens
+    .filter((token) => token !== "hc" && token !== "hardcore")
+    .join(" ")
+    .trim();
+  return titleCase(stripped || raw);
 }
 
 function parseRuns(value) {
