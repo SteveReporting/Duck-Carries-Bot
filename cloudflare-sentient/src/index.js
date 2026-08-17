@@ -147,7 +147,7 @@ export default {
           params: { pace, live },
           retention: {
             successRetention: "1 day",
-            errorRetention: "7 days",
+            errorRetention: "3 days",
           },
         });
 
@@ -176,7 +176,7 @@ export default {
         const instance = await getInstance(env, payload.id);
         if (url.pathname.endsWith("pause")) await instance.pause();
         if (url.pathname.endsWith("resume")) await instance.resume();
-        if (url.pathname.endsWith("stop")) await instance.terminate({ reason: "Stopped from Project Sentient control panel" });
+        if (url.pathname.endsWith("stop")) await instance.terminate();
         return json({ ok: true, id: instance.id, status: await instance.status() });
       }
 
