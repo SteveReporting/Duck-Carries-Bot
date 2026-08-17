@@ -1,4 +1,5 @@
 const { startPlatformSync } = require("../platform/sync");
+const { startPublicQueueSync } = require("../platform/publicQueueSync");
 const { startStaffRoleSync } = require("../platform/staff-role-sync");
 const { startTreasuryStockPanel } = require("../platform/treasuryStock");
 const { carryClaimRoleId } = require("../platform/carryClaimAccess");
@@ -61,8 +62,9 @@ module.exports = {
     });
 
     startPlatformSync(client);
+    startPublicQueueSync(client);
     startStaffRoleSync(client);
     startTreasuryStockPanel(client);
-    console.log("✅ Tavern platform heartbeat, Discord role sync, announcement sync and Treasury stock panel started.");
+    console.log("✅ Tavern platform heartbeat, public queue mirror, Discord role sync, announcement sync and Treasury stock panel started.");
   },
 };
