@@ -50,7 +50,6 @@ async function getWebhook(mainClient, channelId) {
     if (!hook && typeof channel.createWebhook === "function") {
         hook = await channel.createWebhook({
             name: config.webhookName,
-            avatar: config.bartenderAvatarUrl || undefined,
             reason: "Project Sentient character delivery",
         });
     }
@@ -107,7 +106,6 @@ async function sendAsEntity(mainClient, {
                 allowedMentions,
                 embeds,
                 files,
-                wait: true,
             });
         }
     }
