@@ -1,5 +1,26 @@
 const DISCORD_API = "https://discord.com/api/v10";
 const COMPONENTS_V2_FLAG = 1 << 15;
+const SENTIENT_WEBHOOK_NAME = "Sentient Relay";
+
+async function parseResponse(response, label) {
+  const text = await response.text();
+  let body = null;
+
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+  }
+
+  if (!response.ok) {
+    const detail = typeof body === "string" ? body : JSON.stringify(body);
+    throw new Error(`Discord ${response.status} on ${label}: ${detail}`);
+  }
+
+  return body;
+}
 
 async function discordRequest(env, path, options = {}) {
   if (!env.SENTIENT_BARTENDER_TOKEN) {
@@ -15,23 +36,7 @@ async function discordRequest(env, path, options = {}) {
     },
   });
 
-  const text = await response.text();
-  let body = null;
-
-  if (text) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = text;
-    }
-  }
-
-  if (!response.ok) {
-    const detail = typeof body === "string" ? body : JSON.stringify(body);
-    throw new Error(`Discord ${response.status} on ${path}: ${detail}`);
-  }
-
-  return body;
+  return parseResponse(response, path);
 }
 
 export async function sendMessage(env, channelId, {
@@ -89,6 +94,65 @@ export async function sendComponentMessage(env, channelId, {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+async function getOrCreateWebhook(env, channelId) {
+  const hooks = await discordRequest(env, `/channels/${channelId}/webhooks`, { method: "GET" });
+  let hook = Array.isArray(hooks)
+    ? hooks.find((item) => item?.type === 1 && item?.name === SENTIENT_WEBHOOK_NAME && item?.token)
+    : null;
+
+  if (!hook) {
+    hook = await discordRequest(env, `/channels/${channelId}/webhooks`, {
+      method: "POST",
+      body: JSON.stringify({ name: SENTIENT_WEBHOOK_NAME }),
+    });
+  }
+
+  if (!hook?.id || !hook?.token) {
+    throw new Error(`Sentient webhook in channel ${channelId} is missing an executable token.`);
+  }
+
+  return hook;
+}
+
+export async function sendWebhookIdentity(env, channelId, {
+  username,
+  avatarUrl,
+  content,
+  components,
+  allowEveryone = false,
+}) {
+  if (!channelId) throw new Error("Missing Discord channel ID.");
+  const hook = await getOrCreateWebhook(env, channelId);
+  const hasComponents = Array.isArray(components) && components.length > 0;
+  const query = new URLSearchParams({ wait: "true" });
+  if (hasComponents) query.set("with_components", "true");
+
+  const body = {
+    username: username || "Sentient",
+    allowed_mentions: {
+      parse: allowEveryone ? ["everyone"] : [],
+    },
+  };
+
+  if (avatarUrl) body.avatar_url = avatarUrl;
+  if (content) body.content = content;
+  if (hasComponents) {
+    body.flags = COMPONENTS_V2_FLAG;
+    body.components = components;
+  }
+
+  const response = await fetch(
+    `${DISCORD_API}/webhooks/${hook.id}/${hook.token}?${query.toString()}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }
+  );
+
+  return parseResponse(response, `/webhooks/${hook.id}/...`);
 }
 
 export function textDisplay(content) {
