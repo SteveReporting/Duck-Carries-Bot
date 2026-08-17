@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>Returning to The Carry Tavern…</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { display: grid; place-items: center; background: #120b07; color: #f3dfb7; font: 16px system-ui, sans-serif; }
+    main { max-width: 560px; padding: 32px; text-align: center; }
+    strong { color: #f6b73c; }
+  </style>
+</head>
+<body>
+  <main>
+    <strong>Returning to The Carry Tavern…</strong>
+    <p>Roblox verification is being completed. You can close this page if it does not redirect automatically.</p>
+  </main>
+  <script>
+    (() => {
+      const destination = new URL("https://carry-tavern.davidtennyson846.workers.dev/api/roblox/oauth/callback");
+      destination.search = window.location.search;
+      window.location.replace(destination.toString());
+    })();
+  </script>
+</body>
+</html>
