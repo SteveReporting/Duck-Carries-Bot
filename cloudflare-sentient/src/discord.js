@@ -1,4 +1,5 @@
 const DISCORD_API = "https://discord.com/api/v10";
+const COMPONENTS_V2_FLAG = 1 << 15;
 
 async function discordRequest(env, path, options = {}) {
   if (!env.SENTIENT_BARTENDER_TOKEN) {
@@ -59,6 +60,61 @@ export async function sendMessage(env, channelId, {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export async function sendComponentMessage(env, channelId, {
+  components,
+  nonce,
+}) {
+  if (!channelId) throw new Error("Missing Discord channel ID.");
+  if (!Array.isArray(components) || components.length === 0) {
+    throw new Error("Components V2 message requires components.");
+  }
+
+  const body = {
+    flags: COMPONENTS_V2_FLAG,
+    components,
+    allowed_mentions: { parse: [] },
+  };
+
+  if (nonce) {
+    body.nonce = String(nonce).slice(0, 25);
+    body.enforce_nonce = true;
+  }
+
+  return discordRequest(env, `/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function textDisplay(content) {
+  return { type: 10, content };
+}
+
+export function separator(spacing = 2, divider = true) {
+  return { type: 14, spacing, divider };
+}
+
+export function container(components, accentColor) {
+  const value = {
+    type: 17,
+    components,
+  };
+  if (Number.isInteger(accentColor)) value.accent_color = accentColor;
+  return value;
+}
+
+export function mediaGallery(url, description) {
+  return {
+    type: 12,
+    items: [
+      {
+        media: { url },
+        ...(description ? { description } : {}),
+      },
+    ],
+  };
 }
 
 export async function getChannel(env, channelId) {
