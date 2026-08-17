@@ -4,12 +4,24 @@ const { getSupabase } = require("../marketplace/supabase");
 const { getLinkedProfile, requireLinkedProfile } = require("../platform/helpers");
 const { carrierReputation, tradeReputation } = require("../platform/communitySystems");
 const {
+  checkRobloxDescriptionVerification,
   getCommunityMembership,
-  getRobloxAccount,
   getRobloxAvatar,
   resolveRobloxUsername,
   syncVerifiedMember,
 } = require("../platform/robloxAccounts");
+
+function robloxWebsiteUrl() {
+  const base = String(process.env.MARKETPLACE_URL || "").replace(/\/+$/, "");
+  return base ? `${base}/roblox-link` : null;
+}
+
+function websiteFallbackLine() {
+  const url = robloxWebsiteUrl();
+  return url
+    ? `🌐 **If the above doesn't work, try logging into Roblox via the website:** ${url}`
+    : "🌐 **If the above doesn't work, try logging into Roblox via the Carry Tavern website.**";
+}
 
 async function linkCommand(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -63,7 +75,10 @@ async function linkCommand(interaction) {
     `\`${request.verification_code}\``,
     "",
     "Save the Roblox profile, then come back here and run `/roblox verify`.",
+    "The bot will retry Roblox for about 15 seconds in case the profile update is delayed.",
     "Once verified, your Discord server nickname will automatically become your Roblox username.",
+    "",
+    websiteFallbackLine(),
   ].join("\n"));
 }
 
@@ -83,19 +98,39 @@ async function verifyCommand(interaction) {
   if (error) throw new Error(error.message);
   if (!pending) return interaction.editReply("❌ You do not have a pending Roblox link. Run `/roblox link` first.");
 
-  const account = pending.roblox_user_id
-    ? { id: pending.roblox_user_id, name: pending.roblox_username }
-    : await resolveRobloxUsername(pending.roblox_username);
+  // New link requests already store the immutable numeric Roblox ID. Old pending
+  // requests are resolved once and then upgraded so future retries use the ID.
+  let account;
+  if (pending.roblox_user_id) {
+    account = { id: pending.roblox_user_id, name: pending.roblox_username };
+  } else {
+    account = await resolveRobloxUsername(pending.roblox_username);
+    if (account?.id) {
+      await supabase.from("roblox_link_requests")
+        .update({ roblox_user_id: String(account.id), roblox_username: account.name || pending.roblox_username })
+        .eq("id", pending.id)
+        .eq("status", "pending");
+    }
+  }
   if (!account?.id) return interaction.editReply(`❌ Roblox could not find **${pending.roblox_username}**.`);
 
-  const details = await getRobloxAccount(account.id);
-  const description = String(details?.description || "");
-  if (!description.includes(pending.verification_code)) {
+  const check = await checkRobloxDescriptionVerification(account.id, pending.verification_code);
+  const details = check.details;
+  if (!check.found) {
+    const reason = check.descriptionEmpty
+      ? "Roblox returned an empty About/description to the verifier. This can happen while a profile update is still propagating or if Roblox is hiding the description from its public API."
+      : "Roblox still has not exposed that code to the verifier after several checks. Your visible profile can update before Roblox's public API does.";
+
     return interaction.editReply([
-      `❌ I could not find the verification code on **@${details?.name || pending.roblox_username}**.`,
+      `❌ I still couldn't confirm the code on **@${details?.name || pending.roblox_username}** after ${check.attempts} checks.`,
       "",
-      "Make sure this exact code is in the Roblox profile About/description and saved:",
+      reason,
+      "",
+      "Make sure this exact code is somewhere in the Roblox profile About/description and saved:",
       `\`${pending.verification_code}\``,
+      "",
+      "Wait a short moment and run `/roblox verify` again.",
+      websiteFallbackLine(),
     ].join("\n"));
   }
 
@@ -112,7 +147,7 @@ async function verifyCommand(interaction) {
   }).eq("id", pending.id).eq("status", "pending");
   if (requestUpdateError) throw new Error(requestUpdateError.message);
 
-  const username = details?.name || pending.roblox_username;
+  const username = details?.name || account.name || pending.roblox_username;
   const { error: profileUpdateError } = await supabase.from("profiles").update({
     roblox_username: username,
     roblox_user_id: String(account.id),
@@ -151,6 +186,7 @@ async function verifyCommand(interaction) {
 
   return interaction.editReply([
     `✅ **Roblox verified: @${username}**`,
+    check.attempts > 1 ? `✅ Roblox picked up your profile update on check ${check.attempts}.` : "",
     nicknameChanged ? `✅ Your server nickname is now **${username}**.` : "⚠️ Roblox is verified, but I could not change your nickname. Make sure the bot has Manage Nicknames and is above your highest role.",
     membership.communityMember ? `🍺 Carry Tavern Roblox community member${membership.communityRole ? ` • ${membership.communityRole}` : ""}` : "",
   ].filter(Boolean).join("\n"));
