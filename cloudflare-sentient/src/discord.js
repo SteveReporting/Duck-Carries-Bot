@@ -64,6 +64,7 @@ export async function sendMessage(env, channelId, {
 
 export async function sendComponentMessage(env, channelId, {
   components,
+  allowEveryone = false,
   nonce,
 }) {
   if (!channelId) throw new Error("Missing Discord channel ID.");
@@ -74,7 +75,9 @@ export async function sendComponentMessage(env, channelId, {
   const body = {
     flags: COMPONENTS_V2_FLAG,
     components,
-    allowed_mentions: { parse: [] },
+    allowed_mentions: {
+      parse: allowEveryone ? ["everyone"] : [],
+    },
   };
 
   if (nonce) {
