@@ -35,10 +35,14 @@ const {
   marketplaceBaseUrl,
 } = require("../platform/helpers");
 
-const DIFFICULTIES = ["Easy", "Medium", "Hard", "Insane", "Insane Hardcore", "Nightmare", "Nightmare Hardcore"];
+const DIFFICULTIES = ["Insane", "Nightmare"];
 
 function shortId(id) {
   return String(id).slice(0, 8);
+}
+
+function remainingRuns(request) {
+  return Math.max(0, Number(request.runs_requested || 0) - Number(request.runs_completed || 0));
 }
 
 function encodeToken(parts) {
@@ -102,7 +106,7 @@ async function viewQueue(interaction) {
       const etaText = eta == null ? "no matching Carrier marked available" : `~${eta}m estimated`;
       return [
         `**${index + 1}. ${group.dungeon} • ${group.difficulty}**`,
-        `${priority.icon} ${priority.label} • 👥 ${group.requests.length} request${group.requests.length === 1 ? "" : "s"} • 🏃 ${tiers} run tier${group.runTiers.length === 1 ? "" : "s"}`,
+        `${priority.icon} ${priority.label} • 👥 ${group.requests.length} request${group.requests.length === 1 ? "" : "s"} • 🏃 remaining tiers ${tiers}`,
         `⏱️ oldest ${ageText(group.oldestAt)} • 🍻 ${available} available • 🕒 ${etaText}`,
       ].join("\n");
     });
@@ -113,7 +117,9 @@ async function viewQueue(interaction) {
   if (claimed.length) {
     const lines = claimed.slice(0, 10).map((request) => {
       const carrier = request.carrier ? displayName(request.carrier) : "Carrier";
-      return `**${canonicalizeDungeon(request.dungeon)} • ${canonicalizeDifficulty(request.difficulty)}** • ${request.runs_requested} runs\n🍻 ${carrier} • 📌 ${request.status}`;
+      const left = remainingRuns(request);
+      const session = Number(request.session_runs || 0);
+      return `**${canonicalizeDungeon(request.dungeon)} • ${canonicalizeDifficulty(request.difficulty)}** • ${left} run${left === 1 ? "" : "s"} left${session ? ` • ${session} this session` : ""}\n🍻 ${carrier} • 📌 ${request.status}`;
     });
     if (claimed.length > 10) lines.push(`…and **${claimed.length - 10}** more claimed/in-progress request(s).`);
     sections.push(`**🟢 Claimed / In Progress**\n${lines.join("\n\n")}`);
@@ -131,7 +137,7 @@ async function viewQueue(interaction) {
   const embed = new EmbedBuilder()
     .setTitle("⚔️ The Carry Tavern Queue")
     .setDescription(sections.join("\n\n━━━━━━━━━━━━━━━━━━━━\n\n").slice(0, 4000))
-    .setFooter({ text: "ETA is an estimate based on queue position and Carriers currently marked available. New requests are grouped by exact dungeon + difficulty." });
+    .setFooter({ text: "Requests are grouped by dungeon + base difficulty. HC is ignored. Run tiers show how many runs are still needed." });
   if (base) embed.setURL(`${base}/carry-queue`);
 
   const components = [];
@@ -143,7 +149,7 @@ async function viewQueue(interaction) {
         const priority = priorityForAge(group.oldestAt);
         return {
           label: `${priority.icon} ${group.dungeon} • ${group.difficulty}`.slice(0, 100),
-          description: `${group.requests.length} request(s) • runs ${group.runTiers.join("/")} • ${priority.label}`.slice(0, 100),
+          description: `${group.requests.length} request(s) • remaining ${group.runTiers.join("/")} • ${priority.label}`.slice(0, 100),
           value: encodeToken([group.dungeon, group.difficulty]),
         };
       }));
@@ -166,6 +172,7 @@ async function handleGroupSelection(interaction) {
   const [dungeon, difficulty] = decoded;
   const queue = await loadPlatformQueue({ statuses: ["queued"] });
   const matches = queue.filter((row) =>
+    remainingRuns(row) > 0 &&
     canonicalizeDungeon(row.dungeon) === canonicalizeDungeon(dungeon) &&
     canonicalizeDifficulty(row.difficulty) === canonicalizeDifficulty(difficulty));
   if (!matches.length) {
@@ -173,21 +180,26 @@ async function handleGroupSelection(interaction) {
     return true;
   }
 
-  const tiers = [...new Set(matches.map((r) => Number(r.runs_requested)))].sort((a, b) => a - b);
+  const tiers = [...new Set(matches.map((r) => remainingRuns(r)).filter((runs) => runs > 0))].sort((a, b) => a - b);
   const select = new StringSelectMenuBuilder()
     .setCustomId("queue_run_select")
-    .setPlaceholder("Choose the maximum run amount you will carry")
+    .setPlaceholder("Choose how many runs this session will do")
     .addOptions(tiers.map((tier) => {
-      const included = matches.filter((r) => Number(r.runs_requested) <= tier).length;
+      const finishing = matches.filter((r) => remainingRuns(r) <= tier).length;
+      const continuing = matches.length - finishing;
       return {
-        label: `Up to ${tier} run${tier === 1 ? "" : "s"}`,
-        description: `Claims ${included} requester${included === 1 ? "" : "s"} in this group`,
+        label: `${tier}-run session`,
+        description: `${matches.length} requester(s) • ${finishing} finish • ${continuing} keep progress`.slice(0, 100),
         value: encodeToken([canonicalizeDungeon(dungeon), canonicalizeDifficulty(difficulty), tier]),
       };
     }));
 
   await interaction.editReply({
-    content: `🍺 **${canonicalizeDungeon(dungeon)} • ${canonicalizeDifficulty(difficulty)}**\nChoose a run tier. Selecting **15**, for example, also includes waiting requests for 5 runs in the same dungeon and difficulty.`,
+    content: [
+      `🍺 **${canonicalizeDungeon(dungeon)} • ${canonicalizeDifficulty(difficulty)}**`,
+      "Choose how many runs you are doing in this session.",
+      "Example: if requests need **5** and **10** runs and you choose **5**, both requesters join. The 5-run request finishes, while the 10-run request returns to the queue with **5 left**.",
+    ].join("\n"),
     components: [new ActionRowBuilder().addComponents(select)],
   });
   return true;
@@ -232,6 +244,9 @@ async function createRequest(interaction) {
 
   const dungeon = canonicalizeDungeon(interaction.options.getString("dungeon", true));
   const difficulty = canonicalizeDifficulty(interaction.options.getString("difficulty") || "Nightmare");
+  if (!DIFFICULTIES.includes(difficulty)) {
+    return interaction.editReply("❌ Carry difficulty must be **Insane** or **Nightmare**. Hardcore is ignored, so use the base difficulty only.");
+  }
   const runs = interaction.options.getInteger("runs") ?? 1;
   const availability = interaction.options.getString("availability")?.trim() || null;
   const notes = interaction.options.getString("notes")?.trim() || null;
@@ -283,6 +298,7 @@ async function releaseSingleClaim(profile, requestId) {
       carrier_confirmed_at: null,
       requester_confirmed_at: null,
       ticket_channel_id: null,
+      session_runs: null,
       updated_at: new Date().toISOString(),
     })
     .eq("id", request.id)
@@ -341,7 +357,7 @@ module.exports = {
     .addSubcommand((s) => s.setName("view").setDescription("View the grouped live carry queue with priority and ETA"))
     .addSubcommand((s) => s.setName("request").setDescription("Request a carry through the shared queue")
       .addStringOption((o) => o.setName("dungeon").setDescription("Choose a Dungeon Quest dungeon").setRequired(true).setAutocomplete(true))
-      .addStringOption((o) => o.setName("difficulty").setDescription("Choose difficulty").setAutocomplete(true))
+      .addStringOption((o) => o.setName("difficulty").setDescription("Insane or Nightmare").setAutocomplete(true))
       .addIntegerOption((o) => o.setName("runs").setDescription("Number of runs").setMinValue(1).setMaxValue(15))
       .addStringOption((o) => o.setName("availability").setDescription("When you are available").setMaxLength(240))
       .addStringOption((o) => o.setName("notes").setDescription("Notes for the Carrier").setMaxLength(1000)))
@@ -371,7 +387,6 @@ module.exports = {
     if (focused.name === "difficulty") {
       return interaction.respond(DIFFICULTIES
         .filter((d) => d.toLowerCase().includes(typed))
-        .slice(0, 25)
         .map((d) => ({ name: d, value: d })));
     }
     return interaction.respond([]);
