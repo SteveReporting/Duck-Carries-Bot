@@ -36,7 +36,7 @@ body{font-family:system-ui,sans-serif;background:#0b0b0b;color:#eee;max-width:76
 </head>
 <body>
 <h1>PROJECT SENTIENT</h1>
-<p class="warn">Private control surface. Test mode never pings @everyone.</p>
+<p class="warn">Private control surface. Contained test mode does not edit Discord channels and never pings @everyone.</p>
 <section>
 <label>Admin secret<br><input id="secret" type="password" autocomplete="off" placeholder="SENTIENT_ADMIN_SECRET"></label>
 </section>
@@ -51,7 +51,7 @@ body{font-family:system-ui,sans-serif;background:#0b0b0b;color:#eee;max-width:76
 <button onclick="scene('watching')">Watching</button>
 <button onclick="scene('vault_echo')">Vault</button>
 <button onclick="scene('second_signal')">ERR_02</button>
-<button onclick="scene('breach')">Gates</button>
+<button onclick="scene('breach')">Tavern Core</button>
 <button onclick="scene('finale')">Finale (no ping)</button>
 </section>
 <section>
@@ -94,14 +94,36 @@ function manage(action){return call('/api/'+action,'POST',{id:document.getElemen
   });
 }
 
-function missingConfig(env) {
-  const required = [
+function requiredConfig() {
+  return [
     "SENTIENT_BARTENDER_TOKEN",
-    "SENTIENT_TAVERN_CHAT_CHANNEL_ID",
-    "SENTIENT_ANNOUNCEMENTS_CHANNEL_ID",
     "SENTIENT_ADMIN_SECRET",
+    "SENTIENT_TAVERN_CHAT_CHANNEL_ID",
+    "SENTIENT_TREASURY_CHANNEL_ID",
+    "SENTIENT_SIGNAL_02_CHANNEL_ID",
+    "SENTIENT_CORE_CHANNEL_ID",
+    "SENTIENT_GATE_CHANNEL_ID",
+    "SENTIENT_EVENTS_CHANNEL_ID",
+    "SENTIENT_ANNOUNCEMENTS_CHANNEL_ID",
+    "SENTIENT_DEBUG_CHANNEL_ID",
   ];
-  return required.filter((key) => !env[key]);
+}
+
+function missingConfig(env) {
+  return requiredConfig().filter((key) => !env[key]);
+}
+
+function routingStatus(env) {
+  return {
+    chat: Boolean(env.SENTIENT_TAVERN_CHAT_CHANNEL_ID),
+    treasury: Boolean(env.SENTIENT_TREASURY_CHANNEL_ID),
+    signal02: Boolean(env.SENTIENT_SIGNAL_02_CHANNEL_ID),
+    core: Boolean(env.SENTIENT_CORE_CHANNEL_ID),
+    gate: Boolean(env.SENTIENT_GATE_CHANNEL_ID),
+    events: Boolean(env.SENTIENT_EVENTS_CHANNEL_ID),
+    finale: Boolean(env.SENTIENT_ANNOUNCEMENTS_CHANNEL_ID),
+    debug: Boolean(env.SENTIENT_DEBUG_CHANNEL_ID),
+  };
 }
 
 async function getInstance(env, id) {
@@ -123,6 +145,8 @@ export default {
         ok: missing.length === 0,
         service: "carry-tavern-sentient",
         missing,
+        routing: routingStatus(env),
+        channelEditing: false,
         liveArmed: String(env.SENTIENT_LIVE_ARMED || "false").toLowerCase() === "true",
       }, missing.length ? 503 : 200);
     }
@@ -156,6 +180,7 @@ export default {
           instanceId: instance.id,
           pace,
           liveRequested: live,
+          channelEditing: false,
           status: await instance.status(),
         });
       }
