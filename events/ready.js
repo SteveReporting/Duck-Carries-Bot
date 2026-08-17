@@ -1,10 +1,12 @@
 const { startPlatformSync } = require("../platform/sync");
 const { startStaffRoleSync } = require("../platform/staff-role-sync");
 const { startTreasuryStockPanel } = require("../platform/treasuryStock");
+const { startCarrierDirectorySync, carrierTeamRoleId } = require("../platform/carrierDirectory");
 const { carryClaimRoleId } = require("../platform/carryClaimAccess");
 
 function configuredCarrierRoles() {
   return [
+    ["Carrier Team", carrierTeamRoleId()],
     ["Carrier / Barback", process.env.CARRIER_ROLE_BARBACK || process.env.CARRIER_ROLE],
     ["Bartender", process.env.CARRIER_ROLE_BARTENDER],
     ["Caskkeeper", process.env.CARRIER_ROLE_CASKKEEPER],
@@ -42,10 +44,10 @@ async function validateRoleConfiguration(client) {
       continue;
     }
 
-    if (!role.editable) {
+    if (!role.editable && label !== "Carrier Team") {
       console.warn(`⚠️ [ROLE CHECK] @${role.name} exists, but the bot cannot manage it. Move the bot role above @${role.name} and make sure Manage Roles is enabled if automatic Carrier rank sync should assign/remove it.`);
     } else {
-      console.log(`✅ [ROLE CHECK] @${role.name} is available for automatic Carrier role sync.`);
+      console.log(`✅ [ROLE CHECK] @${role.name} is available${label === "Carrier Team" ? " for Carrier roster sync" : " for automatic Carrier role sync"}.`);
     }
   }
 }
@@ -61,8 +63,9 @@ module.exports = {
     });
 
     startPlatformSync(client);
+    startCarrierDirectorySync(client);
     startStaffRoleSync(client);
     startTreasuryStockPanel(client);
-    console.log("✅ Tavern platform heartbeat, Discord role sync, announcement sync and Treasury stock panel started.");
+    console.log("✅ Tavern platform heartbeat, Carrier directory, Discord role sync, announcement sync and Treasury stock panel started.");
   },
 };
