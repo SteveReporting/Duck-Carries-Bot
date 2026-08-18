@@ -3,8 +3,10 @@ const { liveConfig } = require("./liveConfig");
 
 let bartenderClient = null;
 let err02Client = null;
+let coreClient = null;
 let bartenderReady = false;
 let err02Ready = false;
+let coreReady = false;
 const webhookCache = new Map();
 
 function makeCharacterClient() {
@@ -50,6 +52,14 @@ async function initLiveEntities() {
             token: liveConfig.err02Token,
             label: "ERR_02",
             onReady: (value) => { err02Ready = value; },
+        });
+    }
+
+    if (!coreClient && liveConfig.coreToken) {
+        coreClient = await loginCharacter({
+            token: liveConfig.coreToken,
+            label: "TAVERN CORE",
+            onReady: (value) => { coreReady = value; },
         });
     }
 }
@@ -131,6 +141,11 @@ async function sendErr02(mainClient, channelId, content) {
 }
 
 async function sendCore(mainClient, channelId, content) {
+    if (coreReady && coreClient) {
+        const sent = await sendWithClient(coreClient, channelId, content).catch(() => null);
+        if (sent) return sent;
+    }
+
     return sendWebhookEntity(mainClient, channelId, {
         username: liveConfig.coreName,
         avatarURL: liveConfig.coreAvatarUrl,
@@ -149,17 +164,22 @@ function status() {
         err02Ready,
         err02UserId: err02Client?.user?.id || null,
         err02Mode: err02Ready ? "bot" : "webhook-fallback",
-        coreMode: "webhook",
+        coreReady,
+        coreUserId: coreClient?.user?.id || null,
+        coreMode: coreReady ? "bot" : "webhook-fallback",
     };
 }
 
 function shutdown() {
     bartenderClient?.destroy();
     err02Client?.destroy();
+    coreClient?.destroy();
     bartenderClient = null;
     err02Client = null;
+    coreClient = null;
     bartenderReady = false;
     err02Ready = false;
+    coreReady = false;
 }
 
 module.exports = {
