@@ -32,6 +32,10 @@ const liveConfig = {
     err02Name: process.env.SENTIENT_ERR02_NAME || "[ERR_02]",
     err02AvatarUrl: process.env.SENTIENT_ERR02_AVATAR_URL || "",
 
+    coreName: process.env.SENTIENT_CORE_NAME || "TAVERN CORE",
+    coreAvatarUrl: process.env.SENTIENT_CORE_AVATAR_URL || "",
+    chaosChannelId: process.env.SENTIENT_CHAOS_CHANNEL_ID || process.env.SENTIENT_TAVERN_CHAT_CHANNEL_ID || "",
+
     aiEnabledByDefault: envTrue("SENTIENT_LIVE_AI_ENABLED", false),
     allowedChannelIds,
     spontaneousChance: Math.max(0, Math.min(1, envNumber("SENTIENT_SPONTANEOUS_CHANCE", 0.12))),
