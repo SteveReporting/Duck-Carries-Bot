@@ -54,7 +54,10 @@ async function createResponse(payload) {
         const body = await response.json().catch(() => ({}));
         if (!response.ok) {
             const message = body?.error?.message || `OpenAI request failed with HTTP ${response.status}.`;
-            throw new Error(message);
+            const error = new Error(message);
+            error.status = response.status;
+            error.openaiCode = body?.error?.code || null;
+            throw error;
         }
 
         return body;
@@ -66,6 +69,46 @@ async function createResponse(payload) {
     } finally {
         clearTimeout(timeout);
     }
+}
+
+function isModelAccessError(error) {
+    const message = String(error?.message || "").toLowerCase();
+    return (
+        message.includes("does not have access to model") ||
+        message.includes("model_not_found") ||
+        message.includes("model not found") ||
+        message.includes("you do not have access to")
+    );
+}
+
+function getModelCandidates() {
+    const configured = process.env.OPENAI_MODEL || "gpt-5.6";
+    const fallback = process.env.OPENAI_FALLBACK_MODEL || "gpt-5";
+    return [...new Set([configured, fallback, "gpt-5-mini", "gpt-4.1-mini"].filter(Boolean))];
+}
+
+async function createInitialResponseWithFallback(basePayload) {
+    const models = getModelCandidates();
+    let lastError;
+
+    for (const model of models) {
+        try {
+            console.log(`[AI AGENT] Trying model: ${model}`);
+            const response = await createResponse({ ...basePayload, model });
+            if (model !== models[0]) {
+                console.warn(`[AI AGENT] Primary model unavailable. Using fallback model: ${model}`);
+            }
+            return { response, model };
+        } catch (error) {
+            lastError = error;
+            if (!isModelAccessError(error)) throw error;
+            console.warn(`[AI AGENT] Model ${model} unavailable: ${error.message}`);
+        }
+    }
+
+    throw new Error(
+        `None of the configured AI models are available to this OpenAI project. Tried: ${models.join(", ")}. Last error: ${lastError?.message || "unknown model access error"}`
+    );
 }
 
 function extractOutputText(response) {
@@ -102,15 +145,12 @@ function withTimeout(promise, milliseconds, label) {
 
 async function runDiscordAgent({ interaction, mode, prompt }) {
     const tools = toolsForMode(mode);
-    const model = process.env.OPENAI_MODEL || "gpt-5.6";
     const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || "low";
     const maxToolRounds = Math.max(1, Math.min(Number(process.env.AI_MAX_TOOL_ROUNDS) || 3, 10));
 
-    console.log(`[AI AGENT] Model: ${model}`);
     console.log(`[AI AGENT] Max rounds: ${maxToolRounds}`);
 
-    let response = await createResponse({
-        model,
+    const initial = await createInitialResponseWithFallback({
         reasoning: { effort: reasoningEffort },
         instructions: buildInstructions(interaction, mode),
         tools,
@@ -118,6 +158,10 @@ async function runDiscordAgent({ interaction, mode, prompt }) {
         input: prompt,
         max_output_tokens: 1800,
     });
+
+    let response = initial.response;
+    const model = initial.model;
+    console.log(`[AI AGENT] Active model: ${model}`);
 
     for (let round = 0; round < maxToolRounds; round += 1) {
         const calls = (response.output || []).filter((item) => item.type === "function_call");
