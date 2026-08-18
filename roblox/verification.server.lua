@@ -10,6 +10,7 @@ local HttpService = game:GetService("HttpService")
 
 local API_URL = "https://carry-tavern.davidtennyson846.workers.dev/api/roblox/game-verify"
 local GAME_SECRET_NAME = "CarryTavernVerificationSecret"
+local SECRET_RETRY_DELAYS = { 2, 3, 5, 8 }
 
 local function showStatus(player, titleText, bodyText)
 	local playerGui = player:FindFirstChildOfClass("PlayerGui")
@@ -69,11 +70,40 @@ local function showStatus(player, titleText, bodyText)
 	body.Parent = frame
 end
 
+local function getGameSecretWithRetry()
+	local lastError
+
+	for attempt, delaySeconds in ipairs(SECRET_RETRY_DELAYS) do
+		task.wait(delaySeconds)
+
+		local success, result = pcall(function()
+			return HttpService:GetSecret(GAME_SECRET_NAME)
+		end)
+
+		if success then
+			return result
+		end
+
+		lastError = result
+		warn(string.format(
+			"[Carry Tavern Verify] Secret lookup attempt %d/%d failed: %s",
+			attempt,
+			#SECRET_RETRY_DELAYS,
+			tostring(result)
+		))
+	end
+
+	error(lastError or "Roblox secret could not be loaded")
+end
+
 local function verifyPlayer(player)
 	showStatus(player, "🍺 Verifying...", "Checking your Roblox account with The Carry Tavern. Do not leave yet.")
 
 	local success, response = pcall(function()
-		local gameSecret = HttpService:GetSecret(GAME_SECRET_NAME)
+		-- A newly-created live server can briefly start before its Secret Store is
+		-- ready. Retry instead of failing the verification immediately.
+		local gameSecret = getGameSecretWithRetry()
+
 		return HttpService:RequestAsync({
 			Url = API_URL,
 			Method = "POST",
