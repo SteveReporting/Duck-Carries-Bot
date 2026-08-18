@@ -1,7 +1,6 @@
 const { TOOL_DEFINITIONS, READ_ONLY_TOOLS, executeTool } = require("./discordTools");
 
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/responses";
-const OPENAI_MODELS_ENDPOINT = "https://api.openai.com/v1/models";
 const OPENAI_TIMEOUT_MS = 60000;
 const TOOL_TIMEOUT_MS = 25000;
 
@@ -58,11 +57,7 @@ async function createResponse(payload) {
 
         const body = await response.json().catch(() => ({}));
         if (!response.ok) {
-            const message = body?.error?.message || `OpenAI request failed with HTTP ${response.status}.`;
-            const error = new Error(message);
-            error.status = response.status;
-            error.openaiCode = body?.error?.code || null;
-            throw error;
+            throw new Error(body?.error?.message || `OpenAI request failed with HTTP ${response.status}.`);
         }
 
         return body;
@@ -74,124 +69,6 @@ async function createResponse(payload) {
     } finally {
         clearTimeout(timeout);
     }
-}
-
-function isUnsupportedReasoningEffortError(error) {
-    const message = String(error?.message || "").toLowerCase();
-    return (
-        message.includes("reasoning.effort") &&
-        (message.includes("unsupported parameter") || message.includes("not supported"))
-    );
-}
-
-async function createResponseForModel(payload, model) {
-    try {
-        return await createResponse({ ...payload, model });
-    } catch (error) {
-        if (!payload.reasoning || !isUnsupportedReasoningEffortError(error)) throw error;
-
-        const { reasoning, ...withoutReasoning } = payload;
-        console.warn(`[AI AGENT] ${model} does not support reasoning.effort. Retrying without the reasoning parameter.`);
-        return createResponse({ ...withoutReasoning, model });
-    }
-}
-
-async function listAccessibleModels() {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-
-    try {
-        const response = await fetch(OPENAI_MODELS_ENDPOINT, {
-            method: "GET",
-            headers: getOpenAIHeaders(),
-            signal: controller.signal,
-        });
-
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            throw new Error(body?.error?.message || `Could not list OpenAI models (HTTP ${response.status}).`);
-        }
-
-        return new Set((body.data || []).map((model) => model.id).filter(Boolean));
-    } catch (error) {
-        if (error.name === "AbortError") {
-            throw new Error("Timed out while checking which OpenAI models this project can access.");
-        }
-        throw error;
-    } finally {
-        clearTimeout(timeout);
-    }
-}
-
-function isModelAccessError(error) {
-    const message = String(error?.message || "").toLowerCase();
-    return (
-        message.includes("does not have access to model") ||
-        message.includes("model_not_found") ||
-        message.includes("model not found") ||
-        message.includes("you do not have access to")
-    );
-}
-
-function getPreferredModels() {
-    return [...new Set([
-        process.env.OPENAI_MODEL,
-        process.env.OPENAI_FALLBACK_MODEL,
-        "gpt-5.6-sol",
-        "gpt-5",
-        "gpt-5-mini",
-        "gpt-4.1",
-        "gpt-4.1-mini",
-    ].filter(Boolean))];
-}
-
-async function getModelCandidates() {
-    const preferred = getPreferredModels();
-
-    try {
-        const available = await listAccessibleModels();
-        const candidates = preferred.filter((model) => available.has(model));
-
-        console.log(`[AI AGENT] Accessible preferred models: ${candidates.join(", ") || "none"}`);
-
-        if (candidates.length > 0) return candidates;
-
-        const usefulAvailable = [...available]
-            .filter((id) => /^(gpt-5|gpt-4\.1|gpt-4o|o[34])/.test(id))
-            .sort();
-
-        throw new Error(
-            `This OpenAI project does not expose any of the AI Manager's supported models. Available GPT/reasoning models: ${usefulAvailable.slice(0, 20).join(", ") || "none found"}`
-        );
-    } catch (error) {
-        if (String(error.message).includes("does not expose any")) throw error;
-
-        console.warn(`[AI AGENT] Could not preflight model access: ${error.message}`);
-        return preferred;
-    }
-}
-
-async function createInitialResponseWithFallback(basePayload) {
-    const models = await getModelCandidates();
-    let lastError;
-
-    console.log(`[AI AGENT] Model candidates: ${models.join(", ")}`);
-
-    for (const model of models) {
-        try {
-            console.log(`[AI AGENT] Trying model: ${model}`);
-            const response = await createResponseForModel(basePayload, model);
-            return { response, model };
-        } catch (error) {
-            lastError = error;
-            if (!isModelAccessError(error)) throw error;
-            console.warn(`[AI AGENT] Model ${model} unavailable: ${error.message}`);
-        }
-    }
-
-    throw new Error(
-        `None of the AI Manager's model candidates are available to this OpenAI project. Tried: ${models.join(", ")}. Last error: ${lastError?.message || "unknown model access error"}`
-    );
 }
 
 function extractOutputText(response) {
@@ -226,25 +103,34 @@ function withTimeout(promise, milliseconds, label) {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+function getModel() {
+    const configured = String(process.env.OPENAI_MODEL || "").trim();
+
+    // This project is configured for GPT-5.6 Sol. Older values such as
+    // gpt-5.6 or unrelated fallback models should not override it.
+    if (!configured || configured === "gpt-5.6" || !configured.startsWith("gpt-5.6-")) {
+        return "gpt-5.6-sol";
+    }
+
+    return configured;
+}
+
 async function runDiscordAgent({ interaction, mode, prompt }) {
     const tools = toolsForMode(mode);
-    const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || "low";
+    const model = getModel();
     const maxToolRounds = Math.max(1, Math.min(Number(process.env.AI_MAX_TOOL_ROUNDS) || 3, 10));
 
+    console.log(`[AI AGENT] Model: ${model}`);
     console.log(`[AI AGENT] Max rounds: ${maxToolRounds}`);
 
-    const initial = await createInitialResponseWithFallback({
-        reasoning: { effort: reasoningEffort },
+    let response = await createResponse({
+        model,
         instructions: buildInstructions(interaction, mode),
         tools,
         tool_choice: "auto",
         input: prompt,
         max_output_tokens: 1800,
     });
-
-    let response = initial.response;
-    const model = initial.model;
-    console.log(`[AI AGENT] Active model: ${model}`);
 
     for (let round = 0; round < maxToolRounds; round += 1) {
         const calls = (response.output || []).filter((item) => item.type === "function_call");
@@ -280,15 +166,15 @@ async function runDiscordAgent({ interaction, mode, prompt }) {
             });
         }
 
-        response = await createResponseForModel({
-            reasoning: { effort: reasoningEffort },
+        response = await createResponse({
+            model,
             instructions: buildInstructions(interaction, mode),
             tools,
             tool_choice: "auto",
             previous_response_id: response.id,
             input: toolOutputs,
             max_output_tokens: 1800,
-        }, model);
+        });
     }
 
     throw new Error(`AI stopped after ${maxToolRounds} tool rounds to prevent an uncontrolled action loop.`);
