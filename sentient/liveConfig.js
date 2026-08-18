@@ -32,6 +32,7 @@ const liveConfig = {
     err02Name: process.env.SENTIENT_ERR02_NAME || "[ERR_02]",
     err02AvatarUrl: process.env.SENTIENT_ERR02_AVATAR_URL || "",
 
+    coreToken: process.env.SENTIENT_CORE_TOKEN,
     coreName: process.env.SENTIENT_CORE_NAME || "TAVERN CORE",
     coreAvatarUrl: process.env.SENTIENT_CORE_AVATAR_URL || "",
     chaosChannelId: process.env.SENTIENT_CHAOS_CHANNEL_ID || process.env.SENTIENT_TAVERN_CHAT_CHANNEL_ID || "",
