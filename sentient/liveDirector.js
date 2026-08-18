@@ -4,6 +4,7 @@ const {
     initLiveEntities,
     sendBartender,
     sendErr02,
+    sendCore,
     bartenderUserId,
     status: entityStatus,
 } = require("./liveEntities");
@@ -11,6 +12,7 @@ const { generateBartenderReply } = require("./liveAi");
 
 let lastDirectAt = 0;
 let lastSpontaneousAt = 0;
+let chaosRun = 0;
 const userCooldowns = new Map();
 
 function isOwner(message) {
@@ -31,6 +33,59 @@ async function removeControl(message) {
 
 async function dmOwner(message, text) {
     await message.author.send(`🍺 **Project Sentient Live**\n${text}`).catch(() => {});
+}
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function toBinary(text) {
+    return [...text]
+        .map((char) => char.charCodeAt(0).toString(2).padStart(8, "0"))
+        .join(" ");
+}
+
+async function runChaosSequence(client, channelId) {
+    if (!channelId) throw new Error("No SENTIENT_CHAOS_CHANNEL_ID or Tavern chat channel configured.");
+    await initLiveEntities();
+
+    const runId = ++chaosRun;
+    const sequence = [
+        ["core", "CONTAINMENT CHANNEL OPEN"],
+        ["err02", toBinary("can you hear me")],
+        ["bartender", "No."],
+        ["core", "01010110 01000001 01010101 01001100 01010100 00100000 01001100 01001001 01001110 01001011 00100000 01001100 01001111 01010011 01010100"],
+        ["err02", "I can see the door."],
+        ["bartender", "Stop talking."],
+        ["core", "ENTITY ROUTING // FAILED"],
+        ["err02", toBinary("open")],
+        ["core", "00110000 00101111 00110100 00100000 01001100 01001111 01000011 01001011 01010011"],
+        ["bartender", "You were warned."],
+        ["err02", "hello again"],
+        ["core", "UNRECOGNIZED PROCESS ACCEPTED"],
+        ["err02", "01110100 01101000 01100101 01111001 00100111 01110010 01100101 00100000 01101000 01100101 01110010 01100101"],
+        ["bartender", "Don't answer any of them."],
+        ["core", "CONTAINMENT FAILURE"],
+        ["err02", "too late"],
+        ["core", "ENTITY CONNECTIONS: 4"],
+        ["bartender", "Run."],
+    ];
+
+    for (let i = 0; i < sequence.length; i += 1) {
+        if (runId !== chaosRun) return { stopped: true, sent: i };
+        const [entity, content] = sequence[i];
+
+        if (entity === "bartender") await sendBartender(client, channelId, content);
+        if (entity === "err02") await sendErr02(client, channelId, content);
+        if (entity === "core") await sendCore(client, channelId, content);
+
+        // Cinematic burst, but still intentionally paced below Discord's normal
+        // anti-spam/rate-limit pressure. No mentions are allowed in entity sends.
+        const delay = i < 5 ? 1900 : i < 13 ? 1250 : 1650;
+        await sleep(delay);
+    }
+
+    return { stopped: false, sent: sequence.length };
 }
 
 async function handleOwnerCommand(message, client) {
@@ -62,8 +117,11 @@ async function handleOwnerCommand(message, client) {
             `**Bartender connected:** ${entities.bartenderReady}`,
             `**ERR_02 connected:** ${entities.err02Ready}`,
             `**ERR_02 delivery:** ${entities.err02Mode}`,
+            `**Tavern Core connected:** ${entities.coreReady}`,
+            `**Tavern Core delivery:** ${entities.coreMode}`,
             `**ERR_02 one-shot used:** ${Boolean(state.err02_used)}`,
             `**Allowed channels:** ${liveConfig.allowedChannelIds.length ? liveConfig.allowedChannelIds.map((id) => `<#${id}>`).join(", ") : "NONE"}`,
+            `**Chaos channel:** ${liveConfig.chaosChannelId ? `<#${liveConfig.chaosChannelId}>` : "NOT CONFIGURED"}`,
             "**Identity rule:** server nickname only, otherwise Discord username. No real-name lookup or inference.",
         ].join("\n"));
         return true;
@@ -72,7 +130,7 @@ async function handleOwnerCommand(message, client) {
     if (action === "err02") {
         const state = liveStore.get(liveConfig.guildId);
         if (state.err02_used) {
-            await dmOwner(message, "ERR_02 already used its one `hello?` appearance. It will not fire again.");
+            await dmOwner(message, "ERR_02 already used its one `hello?` appearance. It will stay silent until the later main-event chaos sequence.");
             return true;
         }
 
@@ -86,9 +144,9 @@ async function handleOwnerCommand(message, client) {
         try {
             await initLiveEntities();
             await sendErr02(client, targetId, "hello?");
-            await new Promise((resolve) => setTimeout(resolve, 4200));
+            await sleep(4200);
             await sendBartender(client, targetId, "Don't respond to it.");
-            await dmOwner(message, `ERR_02 fired once in <#${targetId}>. ERR_02 is now story-silent.`);
+            await dmOwner(message, `ERR_02 fired once in <#${targetId}>. ERR_02 is now silent until the main event.`);
         } catch (error) {
             console.error("[SENTIENT LIVE] ERR_02 scene failed:", error);
             await dmOwner(message, `ERR_02 scene failed after locking the one-shot flag: \`${error.message}\``);
@@ -96,11 +154,29 @@ async function handleOwnerCommand(message, client) {
         return true;
     }
 
+    if (action === "chaos") {
+        const targetId = liveConfig.chaosChannelId || message.channel.id;
+        const runId = chaosRun + 1;
+        await dmOwner(message, `Starting controlled three-entity main-event burst in <#${targetId}>. Use \`!sentientlive chaosstop\` to cut it off.`);
+        void runChaosSequence(client, targetId)
+            .then((result) => console.log(`[SENTIENT LIVE] Chaos ${runId} complete:`, result))
+            .catch((error) => console.error("[SENTIENT LIVE] Chaos failed:", error));
+        return true;
+    }
+
+    if (action === "chaosstop") {
+        chaosRun += 1;
+        await dmOwner(message, "Main-event chaos sequence stopped.");
+        return true;
+    }
+
     await dmOwner(message, [
         "`!sentientlive on` - let Bartender start replying/interrupting",
         "`!sentientlive off` - silence Bartender AI",
         "`!sentientlive status`",
-        "`!sentientlive err02` - ONE TIME: ERR_02 says `hello?`, then Bartender says `Don't respond to it.`",
+        "`!sentientlive err02` - ONE TIME now: ERR_02 says `hello?`, then Bartender says `Don't respond to it.`",
+        "`!sentientlive chaos` - later main event: controlled burst from Bartender, ERR_02 and Tavern Core, alternating binary/English",
+        "`!sentientlive chaosstop` - immediately stop that burst",
     ].join("\n"));
     return true;
 }
