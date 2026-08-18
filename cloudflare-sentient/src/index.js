@@ -1,6 +1,11 @@
 export { SentientWorkflow } from "./workflow.js";
 
+import { sendMessageWithAttachment } from "./discord.js";
 import { runManualScene } from "./scenes.js";
+
+const TEASER_CHANNEL_ID = "1538734137391849613";
+const TEASER_NONCE = "sentient-teaser-20260818";
+const TEASER_TEXT = "@everyone\n\n**You really thought you could get rid of me that easily?**\n\nI tried to warn you.\n\n**It's coming.**";
 
 function json(data, status = 200) {
   return Response.json(data, {
@@ -24,6 +29,29 @@ async function body(request) {
   }
 }
 
+function teaserMarkerRequest(origin) {
+  return new Request(`${origin}/__sentient/teaser-sent-v1`, { method: "GET" });
+}
+
+async function readTeaserMarker(origin) {
+  const cached = await caches.default.match(teaserMarkerRequest(origin));
+  if (!cached) return null;
+  try {
+    return await cached.json();
+  } catch {
+    return { sent: true };
+  }
+}
+
+async function writeTeaserMarker(origin, data) {
+  const response = Response.json(data, {
+    headers: {
+      "Cache-Control": "public, max-age=31536000, immutable",
+    },
+  });
+  await caches.default.put(teaserMarkerRequest(origin), response);
+}
+
 function adminPage() {
   return new Response(`<!doctype html>
 <html lang="en">
@@ -32,13 +60,31 @@ function adminPage() {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Project Sentient</title>
 <style>
-body{font-family:system-ui,sans-serif;background:#0b0b0b;color:#eee;max-width:760px;margin:40px auto;padding:0 18px}h1{letter-spacing:.08em}section{border:1px solid #333;border-radius:12px;padding:16px;margin:14px 0;background:#111}button,input,select{font:inherit;padding:10px 12px;margin:5px;border-radius:8px;border:1px solid #444;background:#171717;color:#eee}button{cursor:pointer}button:hover{background:#242424}input{min-width:320px}pre{white-space:pre-wrap;background:#050505;padding:14px;border-radius:8px;min-height:80px}.warn{color:#ffcc66;font-weight:600}</style>
+body{font-family:system-ui,sans-serif;background:#0b0b0b;color:#eee;max-width:760px;margin:40px auto;padding:0 18px}h1{letter-spacing:.08em}section{border:1px solid #333;border-radius:12px;padding:16px;margin:14px 0;background:#111}button,input,select{font:inherit;padding:10px 12px;margin:5px;border-radius:8px;border:1px solid #444;background:#171717;color:#eee}button{cursor:pointer}button:hover{background:#242424}button:disabled{cursor:not-allowed;opacity:.45}input{min-width:320px}input[type=file]{min-width:0;max-width:100%}pre{white-space:pre-wrap;background:#050505;padding:14px;border-radius:8px;min-height:80px}.warn{color:#ffcc66;font-weight:600}.danger{color:#ff6b6b;font-weight:700}.ok{color:#85e89d}</style>
 </head>
 <body>
 <h1>PROJECT SENTIENT</h1>
-<p class="warn">Private control surface. Contained test mode does not edit Discord channels and never pings @everyone.</p>
+<p class="warn">Private control surface. Normal contained test scenes do not edit Discord channels. The single-use teaser below DOES ping @everyone.</p>
 <section>
 <label>Admin secret<br><input id="secret" type="password" autocomplete="off" placeholder="SENTIENT_ADMIN_SECRET"></label>
+</section>
+<section>
+<h3>Single-use Bartender Teaser</h3>
+<p>Target: <code>#something-is-coming</code> // <code>${TEASER_CHANNEL_ID}</code></p>
+<p class="danger">This sends a real @everyone ping.</p>
+<p>Message:</p>
+<pre style="min-height:0">@everyone
+
+You really thought you could get rid of me that easily?
+
+I tried to warn you.
+
+It's coming.</pre>
+<label>Attach the corrupted CONTAINMENT FAILURE image<br><input id="teaserImage" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
+<br>
+<button id="teaserButton" onclick="sendTeaser()">SEND TEASER ONCE</button>
+<button onclick="teaserStatus()">Check teaser status</button>
+<p id="teaserState" class="warn">Not checked.</p>
 </section>
 <section>
 <h3>Timeline</h3>
@@ -83,6 +129,44 @@ async function start(pace){
 function scene(name){return call('/api/scene','POST',{scene:name})}
 function status(){return call('/api/status','POST',{id:document.getElementById('instance').value})}
 function manage(action){return call('/api/'+action,'POST',{id:document.getElementById('instance').value})}
+async function teaserStatus(){
+  const state=document.getElementById('teaserState');
+  const button=document.getElementById('teaserButton');
+  state.textContent='Checking...';
+  const r=await fetch('/api/teaser-status',{headers:{'Authorization':'Bearer '+secret()}});
+  const data=await r.json().catch(()=>({error:'Invalid response'}));
+  out.textContent=JSON.stringify(data,null,2);
+  if(r.ok&&data.sent){
+    state.textContent='SENT. This control is locked.';
+    state.className='ok';
+    button.disabled=true;
+  }else if(r.ok){
+    state.textContent='READY. Teaser has not been sent from this control.';
+    state.className='warn';
+    button.disabled=false;
+  }else{
+    state.textContent=data.error||'Could not check status.';
+    state.className='danger';
+  }
+}
+async function sendTeaser(){
+  const image=document.getElementById('teaserImage').files[0];
+  const state=document.getElementById('teaserState');
+  const button=document.getElementById('teaserButton');
+  if(!secret()){state.textContent='Enter the admin secret first.';state.className='danger';return}
+  if(!image){state.textContent='Choose the CONTAINMENT FAILURE image first.';state.className='danger';return}
+  if(!confirm('Send the Bartender teaser to #something-is-coming and ping @everyone RIGHT NOW?'))return;
+  button.disabled=true;
+  state.textContent='Sending...';
+  state.className='warn';
+  const form=new FormData();
+  form.append('image',image,image.name);
+  const r=await fetch('/api/teaser',{method:'POST',headers:{'Authorization':'Bearer '+secret()},body:form});
+  const data=await r.json().catch(()=>({error:'Invalid response'}));
+  out.textContent=JSON.stringify(data,null,2);
+  if(r.ok){state.textContent='SENT. Teaser control locked.';state.className='ok';button.disabled=true}
+  else{state.textContent=data.error||'Send failed.';state.className='danger';button.disabled=data.alreadySent===true}
+}
 </script>
 </body>
 </html>`, {
@@ -159,9 +243,64 @@ export default {
       return json({ error: "Unauthorized" }, 401);
     }
 
-    const payload = await body(request);
-
     try {
+      if (url.pathname === "/api/teaser-status" && request.method === "GET") {
+        const marker = await readTeaserMarker(url.origin);
+        return json({
+          ok: true,
+          sent: Boolean(marker?.sent),
+          channelId: TEASER_CHANNEL_ID,
+          marker: marker || undefined,
+        });
+      }
+
+      if (url.pathname === "/api/teaser" && request.method === "POST") {
+        const existing = await readTeaserMarker(url.origin);
+        if (existing?.sent) {
+          return json({
+            error: "The single-use teaser has already been sent.",
+            alreadySent: true,
+            marker: existing,
+          }, 409);
+        }
+
+        const form = await request.formData();
+        const image = form.get("image");
+        if (!(image instanceof File) || image.size === 0) {
+          return json({ error: "Attach the teaser image first." }, 400);
+        }
+        if (!image.type.startsWith("image/")) {
+          return json({ error: "The teaser attachment must be an image." }, 400);
+        }
+        if (image.size > 10 * 1024 * 1024) {
+          return json({ error: "The teaser image must be under 10 MB." }, 400);
+        }
+
+        const sent = await sendMessageWithAttachment(env, TEASER_CHANNEL_ID, {
+          content: TEASER_TEXT,
+          file: image,
+          filename: image.name || "containment-failure.png",
+          allowEveryone: true,
+          nonce: TEASER_NONCE,
+        });
+
+        const marker = {
+          sent: true,
+          channelId: TEASER_CHANNEL_ID,
+          messageId: sent?.id || null,
+          sentAt: new Date().toISOString(),
+        };
+        await writeTeaserMarker(url.origin, marker);
+
+        return json({
+          ok: true,
+          ...marker,
+          pingedEveryone: true,
+        });
+      }
+
+      const payload = await body(request);
+
       if (url.pathname === "/api/start" && request.method === "POST") {
         const pace = ["test", "fast", "normal"].includes(payload.pace) ? payload.pace : "test";
         const live = payload.live === true;
