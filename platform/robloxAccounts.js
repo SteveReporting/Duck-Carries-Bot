@@ -37,10 +37,6 @@ function descriptionHasVerificationCode(description, code) {
 
   const normalizedDescription = normalizeVerificationText(description);
   if (normalizedDescription.includes(normalizedCode)) return true;
-
-  // Roblox can occasionally expose profile text with spacing or invisible characters
-  // that differ from what the user sees. Compacting both sides keeps an 8-character
-  // verification token readable without making the comparison case-sensitive.
   return compactVerificationText(description).includes(compactCode);
 }
 
@@ -77,8 +73,6 @@ async function checkRobloxDescriptionVerification(userId, code, options = {}) {
     }
   }
 
-  // If every request failed, surface the real Roblox API error instead of pretending
-  // that the user's code was missing from a profile we never successfully read.
   if (!details && lastError) throw lastError;
 
   const description = String(details?.description || "");
@@ -130,8 +124,10 @@ async function applyVerificationRoles(member, verified) {
 
 async function applyRobloxNickname(member, username) {
   if (!member || !username) return false;
+  const desired = String(username).slice(0, 32);
+  if (member.nickname === desired) return true;
   try {
-    await member.setNickname(String(username).slice(0, 32), "Verified Roblox username sync");
+    await member.setNickname(desired, "Verified Roblox username sync");
     return true;
   } catch (error) {
     console.warn(`[ROBLOX NICKNAME] ${member?.id}:`, error.message);
@@ -147,9 +143,15 @@ async function syncVerifiedMember(member, profile) {
   return applyRobloxNickname(member, profile.roblox_username);
 }
 
+function verificationGameUrl() {
+  const placeId = String(process.env.ROBLOX_VERIFICATION_PLACE_ID || "").trim();
+  return /^\d+$/.test(placeId) ? `https://www.roblox.com/games/${placeId}` : null;
+}
+
 function joinInstructions() {
   const base = (process.env.MARKETPLACE_URL || "").replace(/\/+$/, "");
   const verifyChannel = process.env.VERIFICATION_CHANNEL_ID ? `<#${process.env.VERIFICATION_CHANNEL_ID}>` : "the server";
+  const gameUrl = verificationGameUrl();
   return [
     "🍺 **Welcome to The Carry Tavern!**",
     "",
@@ -157,11 +159,11 @@ function joinInstructions() {
     "",
     base ? `1. Sign in once with Discord: ${base}/auth` : "1. Link your Tavern account with Discord.",
     `2. In ${verifyChannel}, run \`/roblox link username:YOUR_USERNAME\`.`,
-    "3. Put the code the bot gives you in your Roblox profile About/description.",
-    "4. Run `/roblox verify`.",
-    base ? `5. If the About method does not work, log into Roblox through the website: ${base}/roblox-link` : "",
+    gameUrl ? `3. Join the verification game while logged into that Roblox account: ${gameUrl}` : "3. Join the Carry Tavern Roblox verification game from the link the bot gives you.",
+    "4. The game verifies your Roblox User ID automatically. No profile code is needed.",
+    "5. Your verification role and Roblox nickname sync automatically shortly after.",
     "",
-    "After verification, the bot will sync your nickname automatically.",
+    "If the Discord-side sync has not happened yet, run `/roblox verify` once after joining the game.",
   ].filter(Boolean).join("\n");
 }
 
@@ -177,4 +179,5 @@ module.exports = {
   normalizeVerificationText,
   resolveRobloxUsername,
   syncVerifiedMember,
+  verificationGameUrl,
 };
