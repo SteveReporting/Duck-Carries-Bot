@@ -1,6 +1,7 @@
 const {
     ChannelType,
     PermissionFlagsBits,
+    PermissionsBitField,
     WebhookClient,
 } = require("discord.js");
 
@@ -26,7 +27,7 @@ const TOOL_DEFINITIONS = [
     {
         type: "function",
         name: "get_roles",
-        description: "List roles in the current guild with IDs, positions and key permission flags.",
+        description: "List roles in the current guild with IDs, hierarchy positions, colours, display settings and key permission flags.",
         strict: true,
         parameters: {
             type: "object",
@@ -152,6 +153,116 @@ const TOOL_DEFINITIONS = [
     },
     {
         type: "function",
+        name: "set_role_color",
+        description: "Change an existing role colour. Use a 6-digit hex colour such as #D4A24C, or null to reset to Discord's default colour.",
+        strict: true,
+        parameters: {
+            type: "object",
+            properties: {
+                role_id: { type: "string" },
+                color_hex: { type: ["string", "null"] },
+            },
+            required: ["role_id", "color_hex"],
+            additionalProperties: false,
+        },
+    },
+    {
+        type: "function",
+        name: "set_role_position",
+        description: "Move an existing role to an exact Discord hierarchy position. Position 1 is directly above @everyone. The role cannot be moved to or above the bot's highest role.",
+        strict: true,
+        parameters: {
+            type: "object",
+            properties: {
+                role_id: { type: "string" },
+                position: { type: "integer", minimum: 1 },
+            },
+            required: ["role_id", "position"],
+            additionalProperties: false,
+        },
+    },
+    {
+        type: "function",
+        name: "set_role_display",
+        description: "Change whether a role is displayed separately in the member list and whether members may mention it. Use null to leave a setting unchanged.",
+        strict: true,
+        parameters: {
+            type: "object",
+            properties: {
+                role_id: { type: "string" },
+                hoist: { type: ["boolean", "null"] },
+                mentionable: { type: ["boolean", "null"] },
+            },
+            required: ["role_id", "hoist", "mentionable"],
+            additionalProperties: false,
+        },
+    },
+    {
+        type: "function",
+        name: "set_role_permissions",
+        description: "Set a safe subset of guild-level permissions for one role while preserving all unspecified permissions. Administrator, Manage Server, Manage Roles and other excluded high-risk permissions cannot be granted by this tool. Use null to leave a permission unchanged.",
+        strict: true,
+        parameters: {
+            type: "object",
+            properties: {
+                role_id: { type: "string" },
+                permissions: {
+                    type: "object",
+                    properties: {
+                        view_channel: { type: ["boolean", "null"] },
+                        send_messages: { type: ["boolean", "null"] },
+                        read_message_history: { type: ["boolean", "null"] },
+                        add_reactions: { type: ["boolean", "null"] },
+                        attach_files: { type: ["boolean", "null"] },
+                        embed_links: { type: ["boolean", "null"] },
+                        use_application_commands: { type: ["boolean", "null"] },
+                        connect: { type: ["boolean", "null"] },
+                        speak: { type: ["boolean", "null"] },
+                        mute_members: { type: ["boolean", "null"] },
+                        deafen_members: { type: ["boolean", "null"] },
+                        move_members: { type: ["boolean", "null"] },
+                        manage_messages: { type: ["boolean", "null"] },
+                        manage_threads: { type: ["boolean", "null"] },
+                        manage_nicknames: { type: ["boolean", "null"] },
+                        moderate_members: { type: ["boolean", "null"] },
+                        kick_members: { type: ["boolean", "null"] },
+                        ban_members: { type: ["boolean", "null"] },
+                        view_audit_log: { type: ["boolean", "null"] },
+                        manage_events: { type: ["boolean", "null"] },
+                        manage_webhooks: { type: ["boolean", "null"] },
+                    },
+                    required: [
+                        "view_channel",
+                        "send_messages",
+                        "read_message_history",
+                        "add_reactions",
+                        "attach_files",
+                        "embed_links",
+                        "use_application_commands",
+                        "connect",
+                        "speak",
+                        "mute_members",
+                        "deafen_members",
+                        "move_members",
+                        "manage_messages",
+                        "manage_threads",
+                        "manage_nicknames",
+                        "moderate_members",
+                        "kick_members",
+                        "ban_members",
+                        "view_audit_log",
+                        "manage_events",
+                        "manage_webhooks"
+                    ],
+                    additionalProperties: false,
+                },
+            },
+            required: ["role_id", "permissions"],
+            additionalProperties: false,
+        },
+    },
+    {
+        type: "function",
         name: "set_channel_role_permissions",
         description: "Set a safe subset of channel permission overwrites for one role. Unspecified permissions remain unchanged.",
         strict: true,
@@ -247,6 +358,14 @@ function ensureManageableRole(interaction, role) {
     }
 }
 
+function normalizeRoleColor(value) {
+    if (value == null) return 0;
+    const raw = String(value).trim();
+    const match = raw.match(/^#?([0-9a-fA-F]{6})$/);
+    if (!match) throw new Error("Role colour must be a 6-digit hex value such as #D4A24C, or null to reset it.");
+    return `#${match[1].toUpperCase()}`;
+}
+
 async function sendAuditLog(interaction, action, details) {
     const channelId = process.env.AI_AUDIT_CHANNEL_ID;
     if (!channelId) return;
@@ -284,11 +403,21 @@ async function executeTool(interaction, name, args, mode) {
                     name: role.name,
                     position: role.position,
                     managed: role.managed,
+                    color: role.color,
+                    hex_color: role.hexColor,
+                    hoist: role.hoist,
+                    mentionable: role.mentionable,
+                    member_count: role.members?.size ?? 0,
                     administrator: role.permissions.has(PermissionFlagsBits.Administrator),
                     manage_guild: role.permissions.has(PermissionFlagsBits.ManageGuild),
                     manage_roles: role.permissions.has(PermissionFlagsBits.ManageRoles),
                     manage_channels: role.permissions.has(PermissionFlagsBits.ManageChannels),
                     manage_webhooks: role.permissions.has(PermissionFlagsBits.ManageWebhooks),
+                    manage_messages: role.permissions.has(PermissionFlagsBits.ManageMessages),
+                    manage_threads: role.permissions.has(PermissionFlagsBits.ManageThreads),
+                    moderate_members: role.permissions.has(PermissionFlagsBits.ModerateMembers),
+                    kick_members: role.permissions.has(PermissionFlagsBits.KickMembers),
+                    ban_members: role.permissions.has(PermissionFlagsBits.BanMembers),
                 }));
         }
 
@@ -377,6 +506,103 @@ async function executeTool(interaction, name, args, mode) {
             await role.setName(args.name, `AI manager request by ${interaction.user.tag}`);
             await sendAuditLog(interaction, name, `Renamed role ${oldName} (${role.id}) to ${role.name}`);
             return { id: role.id, old_name: oldName, new_name: role.name };
+        }
+
+        case "set_role_color": {
+            assertFixMode(mode);
+            const role = getGuildRole(interaction, args.role_id);
+            ensureManageableRole(interaction, role);
+            const oldColor = role.hexColor;
+            const requestedColor = normalizeRoleColor(args.color_hex);
+            const updated = await role.setColor(requestedColor, `AI manager request by ${interaction.user.tag}`);
+            await sendAuditLog(interaction, name, `Changed ${role.name} (${role.id}) colour from ${oldColor} to ${updated.hexColor}`);
+            return { id: role.id, name: role.name, old_color: oldColor, new_color: updated.hexColor };
+        }
+
+        case "set_role_position": {
+            assertFixMode(mode);
+            const role = getGuildRole(interaction, args.role_id);
+            ensureManageableRole(interaction, role);
+            const requestedPosition = Number(args.position);
+            if (!Number.isInteger(requestedPosition) || requestedPosition < 1) {
+                throw new Error("Role hierarchy position must be an integer of 1 or greater.");
+            }
+            const botMember = interaction.guild.members.me;
+            const highestBotPosition = botMember?.roles?.highest?.position ?? 0;
+            if (requestedPosition >= highestBotPosition) {
+                throw new Error(`The AI manager cannot move a role to position ${requestedPosition} because the bot's highest role is at position ${highestBotPosition}.`);
+            }
+            const oldPosition = role.position;
+            const updated = await role.setPosition(requestedPosition, { reason: `AI manager request by ${interaction.user.tag}` });
+            await sendAuditLog(interaction, name, `Moved ${role.name} (${role.id}) from hierarchy position ${oldPosition} to ${updated.position}`);
+            return { id: role.id, name: role.name, old_position: oldPosition, new_position: updated.position };
+        }
+
+        case "set_role_display": {
+            assertFixMode(mode);
+            const role = getGuildRole(interaction, args.role_id);
+            ensureManageableRole(interaction, role);
+            const old = { hoist: role.hoist, mentionable: role.mentionable };
+            let updated = role;
+            if (args.hoist !== null) {
+                updated = await updated.setHoist(args.hoist, `AI manager request by ${interaction.user.tag}`);
+            }
+            if (args.mentionable !== null) {
+                updated = await updated.setMentionable(args.mentionable, `AI manager request by ${interaction.user.tag}`);
+            }
+            await sendAuditLog(interaction, name, `Updated display settings for ${role.name} (${role.id}): hoist ${old.hoist} -> ${updated.hoist}, mentionable ${old.mentionable} -> ${updated.mentionable}`);
+            return {
+                id: role.id,
+                name: role.name,
+                old,
+                new: { hoist: updated.hoist, mentionable: updated.mentionable },
+            };
+        }
+
+        case "set_role_permissions": {
+            assertFixMode(mode);
+            const role = getGuildRole(interaction, args.role_id);
+            ensureManageableRole(interaction, role);
+            const mapping = {
+                view_channel: PermissionFlagsBits.ViewChannel,
+                send_messages: PermissionFlagsBits.SendMessages,
+                read_message_history: PermissionFlagsBits.ReadMessageHistory,
+                add_reactions: PermissionFlagsBits.AddReactions,
+                attach_files: PermissionFlagsBits.AttachFiles,
+                embed_links: PermissionFlagsBits.EmbedLinks,
+                use_application_commands: PermissionFlagsBits.UseApplicationCommands,
+                connect: PermissionFlagsBits.Connect,
+                speak: PermissionFlagsBits.Speak,
+                mute_members: PermissionFlagsBits.MuteMembers,
+                deafen_members: PermissionFlagsBits.DeafenMembers,
+                move_members: PermissionFlagsBits.MoveMembers,
+                manage_messages: PermissionFlagsBits.ManageMessages,
+                manage_threads: PermissionFlagsBits.ManageThreads,
+                manage_nicknames: PermissionFlagsBits.ManageNicknames,
+                moderate_members: PermissionFlagsBits.ModerateMembers,
+                kick_members: PermissionFlagsBits.KickMembers,
+                ban_members: PermissionFlagsBits.BanMembers,
+                view_audit_log: PermissionFlagsBits.ViewAuditLog,
+                manage_events: PermissionFlagsBits.ManageEvents,
+                manage_webhooks: PermissionFlagsBits.ManageWebhooks,
+            };
+            const next = new PermissionsBitField(role.permissions.bitfield);
+            const changed = {};
+            for (const [key, flag] of Object.entries(mapping)) {
+                const value = args.permissions[key];
+                if (value === null || value === undefined) continue;
+                if (value) next.add(flag);
+                else next.remove(flag);
+                changed[key] = value;
+            }
+            const updated = await role.setPermissions(next, `AI manager request by ${interaction.user.tag}`);
+            await sendAuditLog(interaction, name, `Updated safe guild permissions for ${role.name} (${role.id}): ${JSON.stringify(changed)}`);
+            return {
+                id: role.id,
+                name: role.name,
+                changed,
+                permissions: updated.permissions.toArray(),
+            };
         }
 
         case "set_channel_role_permissions": {
