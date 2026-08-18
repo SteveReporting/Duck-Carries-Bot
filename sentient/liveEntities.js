@@ -10,13 +10,10 @@ let coreReady = false;
 const webhookCache = new Map();
 
 function makeCharacterClient() {
-    return new Client({
-        intents: [
-            GatewayIntentBits.Guilds,
-            GatewayIntentBits.GuildMessages,
-            GatewayIntentBits.MessageContent,
-        ],
-    });
+    // These character clients only need to SEND. The main Carry Tavern bot is
+    // the single listener for public chat, so the character bots do not need
+    // privileged Message Content intent enabled in their own applications.
+    return new Client({ intents: [GatewayIntentBits.Guilds] });
 }
 
 async function loginCharacter({ token, label, onReady }) {
