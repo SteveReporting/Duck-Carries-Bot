@@ -76,6 +76,26 @@ async function createResponse(payload) {
     }
 }
 
+function isUnsupportedReasoningEffortError(error) {
+    const message = String(error?.message || "").toLowerCase();
+    return (
+        message.includes("reasoning.effort") &&
+        (message.includes("unsupported parameter") || message.includes("not supported"))
+    );
+}
+
+async function createResponseForModel(payload, model) {
+    try {
+        return await createResponse({ ...payload, model });
+    } catch (error) {
+        if (!payload.reasoning || !isUnsupportedReasoningEffortError(error)) throw error;
+
+        const { reasoning, ...withoutReasoning } = payload;
+        console.warn(`[AI AGENT] ${model} does not support reasoning.effort. Retrying without the reasoning parameter.`);
+        return createResponse({ ...withoutReasoning, model });
+    }
+}
+
 async function listAccessibleModels() {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
@@ -117,6 +137,7 @@ function getPreferredModels() {
     return [...new Set([
         process.env.OPENAI_MODEL,
         process.env.OPENAI_FALLBACK_MODEL,
+        "gpt-5.6-sol",
         "gpt-5",
         "gpt-5-mini",
         "gpt-4.1",
@@ -159,7 +180,7 @@ async function createInitialResponseWithFallback(basePayload) {
     for (const model of models) {
         try {
             console.log(`[AI AGENT] Trying model: ${model}`);
-            const response = await createResponse({ ...basePayload, model });
+            const response = await createResponseForModel(basePayload, model);
             return { response, model };
         } catch (error) {
             lastError = error;
@@ -259,8 +280,7 @@ async function runDiscordAgent({ interaction, mode, prompt }) {
             });
         }
 
-        response = await createResponse({
-            model,
+        response = await createResponseForModel({
             reasoning: { effort: reasoningEffort },
             instructions: buildInstructions(interaction, mode),
             tools,
@@ -268,7 +288,7 @@ async function runDiscordAgent({ interaction, mode, prompt }) {
             previous_response_id: response.id,
             input: toolOutputs,
             max_output_tokens: 1800,
-        });
+        }, model);
     }
 
     throw new Error(`AI stopped after ${maxToolRounds} tool rounds to prevent an uncontrolled action loop.`);
