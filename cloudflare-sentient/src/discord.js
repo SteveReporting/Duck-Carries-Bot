@@ -67,6 +67,46 @@ export async function sendMessage(env, channelId, {
   });
 }
 
+export async function sendMessageWithAttachment(env, channelId, {
+  content,
+  file,
+  filename = "sentient-teaser.png",
+  allowEveryone = false,
+  nonce,
+}) {
+  if (!env.SENTIENT_BARTENDER_TOKEN) {
+    throw new Error("SENTIENT_BARTENDER_TOKEN is not configured.");
+  }
+  if (!channelId) throw new Error("Missing Discord channel ID.");
+  if (!(file instanceof Blob)) throw new Error("Missing teaser image file.");
+
+  const payload = {
+    content,
+    allowed_mentions: {
+      parse: allowEveryone ? ["everyone"] : [],
+    },
+  };
+
+  if (nonce) {
+    payload.nonce = String(nonce).slice(0, 25);
+    payload.enforce_nonce = true;
+  }
+
+  const form = new FormData();
+  form.append("payload_json", JSON.stringify(payload));
+  form.append("files[0]", file, filename);
+
+  const response = await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${env.SENTIENT_BARTENDER_TOKEN}`,
+    },
+    body: form,
+  });
+
+  return parseResponse(response, `/channels/${channelId}/messages`);
+}
+
 export async function sendComponentMessage(env, channelId, {
   components,
   allowEveryone = false,
