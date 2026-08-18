@@ -3,6 +3,7 @@ const { startStaffRoleSync } = require("../platform/staff-role-sync");
 const { startTreasuryStockPanel } = require("../platform/treasuryStock");
 const { startCarrierDirectorySync, carrierTeamRoleId } = require("../platform/carrierDirectory");
 const { carryClaimRoleId } = require("../platform/carryClaimAccess");
+const { startRobloxVerificationSync } = require("../platform/robloxVerificationSync");
 
 function configuredCarrierRoles() {
   return [
@@ -66,6 +67,7 @@ module.exports = {
     startCarrierDirectorySync(client);
     startStaffRoleSync(client);
     startTreasuryStockPanel(client);
-    console.log("✅ Tavern platform heartbeat, Carrier directory, Discord role sync, announcement sync and Treasury stock panel started.");
+    startRobloxVerificationSync(client);
+    console.log("✅ Tavern platform heartbeat, Carrier directory, Discord role sync, Roblox game verification sync, announcement sync and Treasury stock panel started.");
   },
 };
