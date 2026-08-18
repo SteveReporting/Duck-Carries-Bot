@@ -84,6 +84,25 @@ async function getWebhook(mainClient, channelId) {
     return hook || null;
 }
 
+async function sendWebhookEntity(mainClient, channelId, { username, avatarURL, content }) {
+    const hook = await getWebhook(mainClient, channelId);
+    if (hook) {
+        return hook.send({
+            content,
+            username,
+            avatarURL: avatarURL || undefined,
+            allowedMentions: { parse: [] },
+        });
+    }
+
+    const channel = await mainClient.channels.fetch(channelId).catch(() => null);
+    if (!channel?.isTextBased?.()) throw new Error(`Channel ${channelId} is not text based.`);
+    return channel.send({
+        content: `**${username}**\n${content}`,
+        allowedMentions: { parse: [] },
+    });
+}
+
 async function sendBartender(mainClient, channelId, content) {
     if (bartenderReady && bartenderClient) {
         const sent = await sendWithClient(bartenderClient, channelId, content).catch(() => null);
@@ -104,21 +123,18 @@ async function sendErr02(mainClient, channelId, content) {
         if (sent) return sent;
     }
 
-    const hook = await getWebhook(mainClient, channelId);
-    if (hook) {
-        return hook.send({
-            content,
-            username: liveConfig.err02Name,
-            avatarURL: liveConfig.err02AvatarUrl || undefined,
-            allowedMentions: { parse: [] },
-        });
-    }
+    return sendWebhookEntity(mainClient, channelId, {
+        username: liveConfig.err02Name,
+        avatarURL: liveConfig.err02AvatarUrl,
+        content,
+    });
+}
 
-    const channel = await mainClient.channels.fetch(channelId).catch(() => null);
-    if (!channel?.isTextBased?.()) throw new Error(`Channel ${channelId} is not text based.`);
-    return channel.send({
-        content: `**${liveConfig.err02Name}**\n${content}`,
-        allowedMentions: { parse: [] },
+async function sendCore(mainClient, channelId, content) {
+    return sendWebhookEntity(mainClient, channelId, {
+        username: liveConfig.coreName,
+        avatarURL: liveConfig.coreAvatarUrl,
+        content,
     });
 }
 
@@ -133,6 +149,7 @@ function status() {
         err02Ready,
         err02UserId: err02Client?.user?.id || null,
         err02Mode: err02Ready ? "bot" : "webhook-fallback",
+        coreMode: "webhook",
     };
 }
 
@@ -149,6 +166,7 @@ module.exports = {
     initLiveEntities,
     sendBartender,
     sendErr02,
+    sendCore,
     bartenderUserId,
     status,
     shutdown,
