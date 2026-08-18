@@ -1,6 +1,7 @@
 const { TOOL_DEFINITIONS, READ_ONLY_TOOLS, executeTool } = require("./discordTools");
 
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/responses";
+const OPENAI_MODELS_ENDPOINT = "https://api.openai.com/v1/models";
 const OPENAI_TIMEOUT_MS = 60000;
 const TOOL_TIMEOUT_MS = 25000;
 
@@ -32,21 +33,25 @@ function buildInstructions(interaction, mode) {
     ].join("\n");
 }
 
-async function createResponse(payload) {
+function getOpenAIHeaders() {
     if (!process.env.OPENAI_API_KEY) {
         throw new Error("OPENAI_API_KEY is not configured on the bot host.");
     }
 
+    return {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+    };
+}
+
+async function createResponse(payload) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
 
     try {
         const response = await fetch(OPENAI_ENDPOINT, {
             method: "POST",
-            headers: {
-                Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-                "Content-Type": "application/json",
-            },
+            headers: getOpenAIHeaders(),
             body: JSON.stringify(payload),
             signal: controller.signal,
         });
@@ -71,6 +76,33 @@ async function createResponse(payload) {
     }
 }
 
+async function listAccessibleModels() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
+    try {
+        const response = await fetch(OPENAI_MODELS_ENDPOINT, {
+            method: "GET",
+            headers: getOpenAIHeaders(),
+            signal: controller.signal,
+        });
+
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(body?.error?.message || `Could not list OpenAI models (HTTP ${response.status}).`);
+        }
+
+        return new Set((body.data || []).map((model) => model.id).filter(Boolean));
+    } catch (error) {
+        if (error.name === "AbortError") {
+            throw new Error("Timed out while checking which OpenAI models this project can access.");
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
 function isModelAccessError(error) {
     const message = String(error?.message || "").toLowerCase();
     return (
@@ -81,24 +113,45 @@ function isModelAccessError(error) {
     );
 }
 
-function getModelCandidates() {
-    const configured = process.env.OPENAI_MODEL || "gpt-5.6-terra";
-    const fallback = process.env.OPENAI_FALLBACK_MODEL || "gpt-5-mini";
-
-    // The Carry Tavern OpenAI project currently exposes gpt-5.6-terra. Keep it
-    // as an explicit fallback even if an older .env still says gpt-5.6.
+function getPreferredModels() {
     return [...new Set([
-        configured,
-        "gpt-5.6-terra",
-        fallback,
+        process.env.OPENAI_MODEL,
+        process.env.OPENAI_FALLBACK_MODEL,
         "gpt-5",
         "gpt-5-mini",
+        "gpt-4.1",
         "gpt-4.1-mini",
     ].filter(Boolean))];
 }
 
+async function getModelCandidates() {
+    const preferred = getPreferredModels();
+
+    try {
+        const available = await listAccessibleModels();
+        const candidates = preferred.filter((model) => available.has(model));
+
+        console.log(`[AI AGENT] Accessible preferred models: ${candidates.join(", ") || "none"}`);
+
+        if (candidates.length > 0) return candidates;
+
+        const usefulAvailable = [...available]
+            .filter((id) => /^(gpt-5|gpt-4\.1|gpt-4o|o[34])/.test(id))
+            .sort();
+
+        throw new Error(
+            `This OpenAI project does not expose any of the AI Manager's supported models. Available GPT/reasoning models: ${usefulAvailable.slice(0, 20).join(", ") || "none found"}`
+        );
+    } catch (error) {
+        if (String(error.message).includes("does not expose any")) throw error;
+
+        console.warn(`[AI AGENT] Could not preflight model access: ${error.message}`);
+        return preferred;
+    }
+}
+
 async function createInitialResponseWithFallback(basePayload) {
-    const models = getModelCandidates();
+    const models = await getModelCandidates();
     let lastError;
 
     console.log(`[AI AGENT] Model candidates: ${models.join(", ")}`);
@@ -107,9 +160,6 @@ async function createInitialResponseWithFallback(basePayload) {
         try {
             console.log(`[AI AGENT] Trying model: ${model}`);
             const response = await createResponse({ ...basePayload, model });
-            if (model !== models[0]) {
-                console.warn(`[AI AGENT] Primary model unavailable. Using fallback model: ${model}`);
-            }
             return { response, model };
         } catch (error) {
             lastError = error;
@@ -119,7 +169,7 @@ async function createInitialResponseWithFallback(basePayload) {
     }
 
     throw new Error(
-        `None of the configured AI models are available to this OpenAI project. Tried: ${models.join(", ")}. Last error: ${lastError?.message || "unknown model access error"}`
+        `None of the AI Manager's model candidates are available to this OpenAI project. Tried: ${models.join(", ")}. Last error: ${lastError?.message || "unknown model access error"}`
     );
 }
 
