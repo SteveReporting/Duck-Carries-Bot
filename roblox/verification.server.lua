@@ -1,14 +1,15 @@
 -- The Carry Tavern Roblox verification game
 -- Put this Script in ServerScriptService in the published verification place.
 -- In Game Settings -> Security, enable Allow HTTP Requests.
--- IMPORTANT: replace GAME_SECRET with the same long random secret stored in Cloudflare
--- as ROBLOX_VERIFICATION_GAME_SECRET. Never publish the real secret to GitHub.
+-- In Creator Dashboard -> your experience -> Secrets, create a secret named:
+-- CarryTavernVerificationSecret
+-- Its value must exactly match the Cloudflare ROBLOX_VERIFICATION_GAME_SECRET.
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 
 local API_URL = "https://carry-tavern.davidtennyson846.workers.dev/api/roblox/game-verify"
-local GAME_SECRET = "REPLACE_WITH_A_LONG_RANDOM_SECRET"
+local GAME_SECRET_NAME = "CarryTavernVerificationSecret"
 
 local function showStatus(player, titleText, bodyText)
 	local playerGui = player:FindFirstChildOfClass("PlayerGui")
@@ -72,12 +73,13 @@ local function verifyPlayer(player)
 	showStatus(player, "🍺 Verifying...", "Checking your Roblox account with The Carry Tavern. Do not leave yet.")
 
 	local success, response = pcall(function()
+		local gameSecret = HttpService:GetSecret(GAME_SECRET_NAME)
 		return HttpService:RequestAsync({
 			Url = API_URL,
 			Method = "POST",
 			Headers = {
 				["Content-Type"] = "application/json",
-				["x-carry-tavern-game-secret"] = GAME_SECRET,
+				["x-api-key"] = gameSecret,
 			},
 			Body = HttpService:JSONEncode({
 				robloxUserId = tostring(player.UserId),
