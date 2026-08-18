@@ -82,14 +82,26 @@ function isModelAccessError(error) {
 }
 
 function getModelCandidates() {
-    const configured = process.env.OPENAI_MODEL || "gpt-5.6";
-    const fallback = process.env.OPENAI_FALLBACK_MODEL || "gpt-5";
-    return [...new Set([configured, fallback, "gpt-5-mini", "gpt-4.1-mini"].filter(Boolean))];
+    const configured = process.env.OPENAI_MODEL || "gpt-5.6-terra";
+    const fallback = process.env.OPENAI_FALLBACK_MODEL || "gpt-5-mini";
+
+    // The Carry Tavern OpenAI project currently exposes gpt-5.6-terra. Keep it
+    // as an explicit fallback even if an older .env still says gpt-5.6.
+    return [...new Set([
+        configured,
+        "gpt-5.6-terra",
+        fallback,
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-4.1-mini",
+    ].filter(Boolean))];
 }
 
 async function createInitialResponseWithFallback(basePayload) {
     const models = getModelCandidates();
     let lastError;
+
+    console.log(`[AI AGENT] Model candidates: ${models.join(", ")}`);
 
     for (const model of models) {
         try {
