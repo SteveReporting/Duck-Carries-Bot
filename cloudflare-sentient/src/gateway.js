@@ -12,6 +12,7 @@ const ALEX_DISCORD_USER_ID = "1005869667044311111";
 const JACK_DISCORD_USER_ID = "811330643631538196";
 const ANDREW_DISCORD_USER_ID = "1252728694049472535";
 const JORDAN_DISCORD_USER_ID = "1539457372362244117";
+const JACK_ONE_TIME_STORAGE_KEY = "jack_one_time_result_v1";
 
 function json(data, status = 200) {
   return Response.json(data, { status, headers: { "Cache-Control": "no-store" } });
@@ -529,6 +530,25 @@ export class SentientGateway extends DurableObject {
     // We still record public conversation so Bartender can pick up naturally afterwards.
     if (this.isMuted()) return;
     if (this.replyBusy) return;
+
+    if (message.author?.id === JACK_DISCORD_USER_ID) {
+      const alreadyUsed = Boolean(await this.ctx.storage.get(JACK_ONE_TIME_STORAGE_KEY));
+      if (!alreadyUsed) {
+        const oneTimeReply = `<@${JACK_DISCORD_USER_ID}> Did you really think that would work? This is the result. Ask me about yourself?`;
+        try {
+          await triggerTyping(this.env, message.channel_id);
+          const sent = await sendLiveReply(this.env, message.channel_id, oneTimeReply, JACK_DISCORD_USER_ID);
+          await this.ctx.storage.put(JACK_ONE_TIME_STORAGE_KEY, true);
+          this.pushHistory(message.channel_id, `[ERR_] Th3_B4rt3nd3r: ${oneTimeReply}`);
+          this.lastReplyAt = new Date().toISOString();
+          if (sent?.id) await this.ctx.storage.put("lastMessageId", sent.id).catch(() => {});
+          return;
+        } catch (error) {
+          this.lastError = error?.message || String(error);
+          console.error("[SENTIENT GATEWAY] one-time Jack reply failed:", error);
+        }
+      }
+    }
 
     const settings = this.liveSettings();
     const direct = this.isDirectMessage(message);
