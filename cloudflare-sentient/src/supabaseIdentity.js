@@ -3,6 +3,7 @@ const STATIC_FIRST_NAMES = new Map([
   ["608497545227927554", "Nguyen"],
   ["1001679436107755590", "Jayden"],
   ["1256503719391137812", "Themis"],
+  ["1493006418759127222", "Matisse"],
 ]);
 
 let cacheExpiresAt = 0;
