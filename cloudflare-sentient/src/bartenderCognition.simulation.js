@@ -275,3 +275,38 @@ export class BartenderCognitionSimulation {
 export function createBartenderCognitionSimulation(seed) {
   return new BartenderCognitionSimulation(seed);
 }
+
+class CognitivePulseEngine {
+  constructor(windowSize = 12) {
+    this.windowSize = windowSize;
+    this.samples = [];
+    this.phase = "idle";
+  }
+
+  ingest({ curiosity = 0, irritation = 0, confidence = 0, timestamp = Date.now() } = {}) {
+    const intensity = clamp((curiosity * 0.45) + (irritation * 0.35) + (confidence * 0.2));
+    this.samples.push({ intensity, timestamp });
+    if (this.samples.length > this.windowSize) this.samples.shift();
+
+    const average = this.samples.reduce((sum, item) => sum + item.intensity, 0) / Math.max(1, this.samples.length);
+    this.phase = average > 0.74 ? "elevated" : average > 0.52 ? "active" : "idle";
+
+    return {
+      phase: this.phase,
+      intensity,
+      average: clamp(average),
+      sampleCount: this.samples.length,
+    };
+  }
+
+  read() {
+    return {
+      phase: this.phase,
+      samples: this.samples.slice(-5),
+    };
+  }
+}
+
+export function createCognitivePulseEngine(windowSize) {
+  return new CognitivePulseEngine(windowSize);
+}
