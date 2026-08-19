@@ -6,15 +6,21 @@ db.prepare(`
         guild TEXT PRIMARY KEY,
         enabled INTEGER NOT NULL DEFAULT 0,
         err02_used INTEGER NOT NULL DEFAULT 0,
+        intro_used INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL
     )
 `).run();
 
+const columns = db.prepare("PRAGMA table_info(sentient_live_state)").all();
+if (!columns.some((column) => column.name === "intro_used")) {
+    db.prepare("ALTER TABLE sentient_live_state ADD COLUMN intro_used INTEGER NOT NULL DEFAULT 0").run();
+}
+
 function ensure(guildId) {
     if (!guildId) return;
     db.prepare(`
-        INSERT INTO sentient_live_state(guild, enabled, err02_used, updated_at)
-        VALUES (?, ?, 0, ?)
+        INSERT INTO sentient_live_state(guild, enabled, err02_used, intro_used, updated_at)
+        VALUES (?, ?, 0, 0, ?)
         ON CONFLICT(guild) DO NOTHING
     `).run(guildId, liveConfig.aiEnabledByDefault ? 1 : 0, Date.now());
 }
@@ -25,6 +31,7 @@ function get(guildId) {
         guild: guildId,
         enabled: liveConfig.aiEnabledByDefault ? 1 : 0,
         err02_used: 0,
+        intro_used: 0,
         updated_at: Date.now(),
     };
 }
@@ -46,8 +53,19 @@ function markErr02Used(guildId) {
     return result.changes === 1;
 }
 
+function markIntroUsed(guildId) {
+    ensure(guildId);
+    const result = db.prepare(`
+        UPDATE sentient_live_state
+        SET intro_used = 1, updated_at = ?
+        WHERE guild = ? AND intro_used = 0
+    `).run(Date.now(), guildId);
+    return result.changes === 1;
+}
+
 module.exports = {
     get,
     setEnabled,
     markErr02Used,
+    markIntroUsed,
 };
