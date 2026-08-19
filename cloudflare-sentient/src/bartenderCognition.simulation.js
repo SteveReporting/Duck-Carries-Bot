@@ -83,7 +83,7 @@ function createMemberRecord(displayName = "unknown") {
   };
 }
 
-function updateMemberRecord(record, signals, content, timestamp) {
+function updateMemberRecord(record, signals, timestamp) {
   const rememberedTopics = [...record.rememberedTopics];
   if (signals.lore && !rememberedTopics.includes("sentient-lore")) rememberedTopics.push("sentient-lore");
   if (signals.challenge && !rememberedTopics.includes("skepticism")) rememberedTopics.push("skepticism");
@@ -117,12 +117,71 @@ function buildDecisionFrame(state, member, signals) {
   };
 }
 
+class MemoryLattice {
+  constructor(limit = 48) {
+    this.limit = limit;
+    this.nodes = [];
+    this.links = new Map();
+  }
+
+  remember({ memberId, label, weight = 0.5, timestamp = Date.now() }) {
+    const node = {
+      id: `${timestamp}:${this.nodes.length}`,
+      memberId: memberId || null,
+      label: normalize(label).slice(0, 120),
+      weight: clamp(weight),
+      timestamp,
+    };
+
+    this.nodes.push(node);
+    if (this.nodes.length > this.limit) this.nodes.shift();
+
+    if (memberId) {
+      const list = this.links.get(memberId) || [];
+      list.push(node.id);
+      this.links.set(memberId, list.slice(-12));
+    }
+
+    return node;
+  }
+
+  recall(memberId, count = 5) {
+    if (!memberId) return [];
+    const wanted = new Set((this.links.get(memberId) || []).slice(-count));
+    return this.nodes.filter((node) => wanted.has(node.id));
+  }
+
+  compact() {
+    return this.nodes.slice(-12).map(({ id, memberId, label, weight }) => ({
+      id,
+      memberId,
+      label,
+      weight,
+    }));
+  }
+}
+
+function projectIntent(state, decision, member) {
+  const candidates = [
+    { intent: "observe", score: 0.42 + state.curiosity * 0.18 },
+    { intent: "reply", score: decision.responsePressure * 0.86 },
+    { intent: "tease", score: state.mood === "amused" || state.mood === "dry" ? 0.68 : 0.18 },
+    { intent: "withhold", score: state.mood === "cold" ? 0.74 : 0.22 },
+    { intent: "probe", score: (member?.intrigue || 0.35) * state.curiosity },
+  ];
+
+  return candidates
+    .map((item) => ({ ...item, score: clamp(item.score) }))
+    .sort((a, b) => b.score - a.score);
+}
+
 export class BartenderCognitionSimulation {
   constructor(seed = {}) {
     this.state = { ...BASELINE, ...seed };
     this.members = new Map();
     this.timeline = [];
     this.decisionFrames = [];
+    this.memory = new MemoryLattice();
   }
 
   observe({ memberId, displayName, content, timestamp = Date.now() } = {}) {
@@ -139,15 +198,39 @@ export class BartenderCognitionSimulation {
       member = updateMemberRecord(
         { ...current, displayName: displayName || current.displayName },
         signals,
-        text,
         timestamp
       );
       this.members.set(memberId, member);
     }
 
     const frame = buildDecisionFrame(this.state, member, signals);
-    this.decisionFrames.push({ timestamp, memberId: memberId || null, ...frame });
+    const intents = projectIntent(this.state, frame, member);
+
+    this.decisionFrames.push({
+      timestamp,
+      memberId: memberId || null,
+      ...frame,
+      intents: intents.slice(0, 3),
+    });
     if (this.decisionFrames.length > 24) this.decisionFrames.shift();
+
+    if (signals.lore) {
+      this.memory.remember({
+        memberId,
+        label: `lore-interest:${text.slice(0, 80)}`,
+        weight: 0.72,
+        timestamp,
+      });
+    }
+
+    if (signals.challenge) {
+      this.memory.remember({
+        memberId,
+        label: `challenge:${text.slice(0, 80)}`,
+        weight: 0.61,
+        timestamp,
+      });
+    }
 
     this.timeline.push({
       timestamp,
@@ -156,6 +239,7 @@ export class BartenderCognitionSimulation {
       signals,
       excerpt: text.slice(0, 160),
       responsePressure: frame.responsePressure,
+      projectedIntent: intents[0]?.intent || "observe",
     });
 
     if (this.timeline.length > 32) this.timeline.shift();
@@ -172,6 +256,7 @@ export class BartenderCognitionSimulation {
       confidence: this.state.confidence,
       irritation: this.state.irritation,
       member: member ? { ...member } : null,
+      memories: this.memory.recall(memberId, 5),
       latestDecision: latestDecision ? { ...latestDecision } : null,
     };
   }
@@ -180,6 +265,7 @@ export class BartenderCognitionSimulation {
     return {
       state: { ...this.state },
       knownMembers: this.members.size,
+      memoryNodes: this.memory.compact(),
       recentDecisions: this.decisionFrames.slice(-5),
       timeline: this.timeline.slice(-8),
     };
