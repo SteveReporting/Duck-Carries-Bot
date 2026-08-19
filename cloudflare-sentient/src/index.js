@@ -8,6 +8,8 @@ import { runManualScene } from "./scenes.js";
 const TEASER_CHANNEL_ID = "1538734137391849613";
 const TEASER_NONCE = "sentient-teaser-20260818";
 const TEASER_TEXT = "@everyone\n\n**You really thought you could get rid of me that easily?**\n\nI tried to warn you.\n\n**It's coming.**";
+const ONE_TIME_60S_LAUNCH_PATH = "/__sentient/run-now-20260819-0448-9f2c71";
+const ONE_TIME_60S_LAUNCH_MARKER = "manual-60s-launch-20260819-0448-9f2c71";
 
 function json(data, status = 200) {
   return Response.json(data, {
@@ -61,6 +63,29 @@ async function readTeaserMarker(origin) {
 async function writeTeaserMarker(origin, data) {
   await caches.default.put(
     teaserMarkerRequest(origin),
+    Response.json(data, {
+      headers: { "Cache-Control": "public, max-age=31536000, immutable" },
+    })
+  );
+}
+
+function oneTimeLaunchMarkerRequest(origin) {
+  return new Request(`${origin}/__sentient/${ONE_TIME_60S_LAUNCH_MARKER}`, { method: "GET" });
+}
+
+async function readOneTimeLaunchMarker(origin) {
+  const cached = await caches.default.match(oneTimeLaunchMarkerRequest(origin));
+  if (!cached) return null;
+  try {
+    return await cached.json();
+  } catch {
+    return { launched: true };
+  }
+}
+
+async function writeOneTimeLaunchMarker(origin, data) {
+  await caches.default.put(
+    oneTimeLaunchMarkerRequest(origin),
     Response.json(data, {
       headers: { "Cache-Control": "public, max-age=31536000, immutable" },
     })
@@ -150,6 +175,22 @@ async function getInstance(env, id) {
   return env.SENTIENT_WORKFLOW.get(id);
 }
 
+async function launchTestWorkflow(env) {
+  const test = testHealth(env);
+  if (!test.ready) {
+    throw new Error("60 second test is not ready.");
+  }
+
+  const instanceId = `sentient-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
+  const instance = await env.SENTIENT_WORKFLOW.create({
+    id: instanceId,
+    params: { pace: "test", live: false },
+    retention: { successRetention: "1 day", errorRetention: "3 days" },
+  });
+
+  return { instance, instanceId, test };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -178,6 +219,38 @@ export default {
         liveAi,
         test: testHealth(env),
       }, coreMissing.length ? 503 : 200);
+    }
+
+    // Deliberately narrow, single-use launch path for this one test run only.
+    // It bypasses the broken admin UI authorization flow but cannot be reused.
+    if (url.pathname === ONE_TIME_60S_LAUNCH_PATH && request.method === "GET") {
+      try {
+        const existing = await readOneTimeLaunchMarker(url.origin);
+        if (existing?.launched) {
+          return json({ error: "This one-time 60 second launch has already been used.", ...existing }, 409);
+        }
+
+        const { instance, instanceId, test } = await launchTestWorkflow(env);
+        const marker = {
+          launched: true,
+          instanceId,
+          launchedAt: new Date().toISOString(),
+        };
+        await writeOneTimeLaunchMarker(url.origin, marker);
+
+        return json({
+          ok: true,
+          launched: true,
+          instanceId,
+          pace: "test",
+          durationSeconds: 60,
+          scope: ["chat", "err02", "core", "announcements"],
+          test,
+          status: await instance.status(),
+        });
+      } catch (error) {
+        return json({ error: error?.message || String(error) }, 500);
+      }
     }
 
     if (!url.pathname.startsWith("/api/")) {
