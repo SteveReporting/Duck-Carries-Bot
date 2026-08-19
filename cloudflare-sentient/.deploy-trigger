@@ -1,3 +1,4 @@
 Trigger Cloudflare production build for agent/project-sentient-cloudflare.
-Deploy Andrew's Roblox-account-age context (20, account age only) and use the configured Tavern chat, ERR_02, Tavern Core, and announcements channel variables for the 60-second Bartender x ERR_02 test.
-2026-08-19T04:10:00+01:00
+Deploy Andrew's Roblox-account-age context: Discord user 1252728694049472535 has a Roblox account age of 20 years. This is account age only, never the person's real age.
+Preserve the configured channel-variable routing for the 60-second Bartender x ERR_02 test.
+2026-08-19T04:12:00+01:00
