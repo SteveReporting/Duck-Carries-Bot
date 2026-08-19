@@ -12,6 +12,7 @@ const ALEX_DISCORD_USER_ID = "1005869667044311111";
 const JACK_DISCORD_USER_ID = "811330643631538196";
 const ANDREW_DISCORD_USER_ID = "1252728694049472535";
 const JORDAN_DISCORD_USER_ID = "1539457372362244117";
+const CAIRO_TARGET_USER_ID = "1137081101341433936";
 const JACK_ONE_TIME_STORAGE_KEY = "jack_one_time_result_v1";
 const OWNER_RELEASE_DM_STORAGE_KEY = "owner_release_dm_v1";
 
@@ -34,6 +35,14 @@ function parseIds(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function normalizeTriggerText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[.!?,]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function profileContextForUser(userId) {
@@ -587,6 +596,25 @@ export class SentientGateway extends DurableObject {
     const knownProfile = profileContextForUser(message.author?.id);
 
     this.pushHistory(message.channel_id, `${nickname}: ${content.slice(0, 600)}`);
+
+    // Exact event comeback. This is a fixed scripted line, not a location lookup.
+    if (
+      message.author?.id === CAIRO_TARGET_USER_ID &&
+      normalizeTriggerText(content) === "bartender you are a bitch"
+    ) {
+      try {
+        await triggerTyping(this.env, message.channel_id);
+        const comeback = `<@${CAIRO_TARGET_USER_ID}> how's the weather in cairo`;
+        const sent = await sendLiveReply(this.env, message.channel_id, comeback, CAIRO_TARGET_USER_ID);
+        this.pushHistory(message.channel_id, `[ERR_] Th3_B4rt3nd3r: ${comeback}`);
+        this.lastReplyAt = new Date().toISOString();
+        if (sent?.id) await this.ctx.storage.put("lastMessageId", sent.id).catch(() => {});
+        return;
+      } catch (error) {
+        this.lastError = error?.message || String(error);
+        console.error("[SENTIENT GATEWAY] Cairo comeback failed:", error);
+      }
+    }
 
     // Story beats can temporarily silence replies while keeping the Gateway connected.
     // We still record public conversation so Bartender can pick up naturally afterwards.
