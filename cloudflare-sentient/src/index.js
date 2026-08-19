@@ -1,4 +1,5 @@
 export { SentientWorkflow } from "./workflow.js";
+export { SentientGateway } from "./gateway.js";
 
 import { sendMessageWithAttachment } from "./discord.js";
 import { runManualScene } from "./scenes.js";
@@ -27,6 +28,21 @@ async function body(request) {
   } catch {
     return {};
   }
+}
+
+function gatewayStub(env) {
+  if (!env.SENTIENT_GATEWAY) throw new Error("SENTIENT_GATEWAY Durable Object binding is missing.");
+  const id = env.SENTIENT_GATEWAY.idFromName("bartender-live");
+  return env.SENTIENT_GATEWAY.get(id);
+}
+
+async function gatewayAction(env, action) {
+  const stub = gatewayStub(env);
+  const response = await stub.fetch(`https://sentient-gateway/${action}`, {
+    method: action === "status" ? "GET" : "POST",
+  });
+  const data = await response.json().catch(() => ({ error: "Invalid gateway response" }));
+  return { response, data };
 }
 
 function teaserMarkerRequest(origin) {
@@ -60,13 +76,21 @@ function adminPage() {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Project Sentient</title>
 <style>
-body{font-family:system-ui,sans-serif;background:#0b0b0b;color:#eee;max-width:760px;margin:40px auto;padding:0 18px}h1{letter-spacing:.08em}section{border:1px solid #333;border-radius:12px;padding:16px;margin:14px 0;background:#111}button,input,select{font:inherit;padding:10px 12px;margin:5px;border-radius:8px;border:1px solid #444;background:#171717;color:#eee}button{cursor:pointer}button:hover{background:#242424}button:disabled{cursor:not-allowed;opacity:.45}input{min-width:320px}input[type=file]{min-width:0;max-width:100%}pre{white-space:pre-wrap;background:#050505;padding:14px;border-radius:8px;min-height:80px}.warn{color:#ffcc66;font-weight:600}.danger{color:#ff6b6b;font-weight:700}.ok{color:#85e89d}</style>
+body{font-family:system-ui,sans-serif;background:#0b0b0b;color:#eee;max-width:760px;margin:40px auto;padding:0 18px}h1{letter-spacing:.08em}section{border:1px solid #333;border-radius:12px;padding:16px;margin:14px 0;background:#111}button,input,select{font:inherit;padding:10px 12px;margin:5px;border-radius:8px;border:1px solid #444;background:#171717;color:#eee}button{cursor:pointer}button:hover{background:#242424}button:disabled{cursor:not-allowed;opacity:.45}input{min-width:320px}input[type=file]{min-width:0;max-width:100%}pre{white-space:pre-wrap;background:#050505;padding:14px;border-radius:8px;min-height:80px}.warn{color:#ffcc66;font-weight:600}.danger{color:#ff6b6b;font-weight:700}.ok{color:#85e89d}.live{border-color:#335c42;background:#0d1711}</style>
 </head>
 <body>
 <h1>PROJECT SENTIENT</h1>
-<p class="warn">Private control surface. Normal contained test scenes do not edit Discord channels. The single-use teaser below DOES ping @everyone.</p>
+<p class="warn">Private control surface. Live Bartender AI is separate from the vault/story timeline.</p>
 <section>
 <label>Admin secret<br><input id="secret" type="password" autocomplete="off" placeholder="SENTIENT_ADMIN_SECRET"></label>
+</section>
+<section class="live">
+<h3>Live Bartender AI</h3>
+<p>This only lets <strong>[ERR_] Th3_B4rt3nd3r</strong> read configured public Tavern channels, reply as a live AI character, and occasionally enter normal conversation. It does <strong>not</strong> start the vault, breach, ERR_02, finale or any timeline scene.</p>
+<button onclick="liveAi('start')">START BARTENDER AI</button>
+<button onclick="liveAi('stop')">STOP BARTENDER AI</button>
+<button onclick="liveAi('status')">LIVE AI STATUS</button>
+<p id="liveState" class="warn">Not checked.</p>
 </section>
 <section>
 <h3>Single-use Bartender Teaser</h3>
@@ -129,6 +153,24 @@ async function start(pace){
 function scene(name){return call('/api/scene','POST',{scene:name})}
 function status(){return call('/api/status','POST',{id:document.getElementById('instance').value})}
 function manage(action){return call('/api/'+action,'POST',{id:document.getElementById('instance').value})}
+async function liveAi(action){
+  const state=document.getElementById('liveState');
+  if(!secret()){state.textContent='Enter the admin secret first.';state.className='danger';return}
+  state.textContent=action==='start'?'Connecting Bartender to Discord Gateway...':action==='stop'?'Stopping live AI...':'Checking...';
+  state.className='warn';
+  const method=action==='status'?'GET':'POST';
+  const r=await fetch('/api/live-ai/'+action,{method,headers:{'Authorization':'Bearer '+secret()}});
+  const data=await r.json().catch(()=>({error:'Invalid response'}));
+  out.textContent=JSON.stringify(data,null,2);
+  if(!r.ok){state.textContent=data.error||'Live AI action failed.';state.className='danger';return}
+  if(data.enabled){
+    state.textContent=data.ready?'LIVE. Bartender is connected and listening.':'STARTED. Gateway is connecting; check status again in a few seconds.';
+    state.className='ok';
+  }else{
+    state.textContent='OFF. Bartender live AI is silent.';
+    state.className='warn';
+  }
+}
 async function teaserStatus(){
   const state=document.getElementById('teaserState');
   const button=document.getElementById('teaserButton');
@@ -232,6 +274,7 @@ export default {
         routing: routingStatus(env),
         channelEditing: false,
         liveArmed: String(env.SENTIENT_LIVE_ARMED || "false").toLowerCase() === "true",
+        liveAiConfigured: Boolean(env.SENTIENT_GATEWAY && env.OPENAI_API_KEY && (env.SENTIENT_GUILD_ID || env.GUILD_ID)),
       }, missing.length ? 503 : 200);
     }
 
@@ -244,6 +287,21 @@ export default {
     }
 
     try {
+      if (url.pathname === "/api/live-ai/status" && request.method === "GET") {
+        const { response, data } = await gatewayAction(env, "status");
+        return json(data, response.status);
+      }
+
+      if (url.pathname === "/api/live-ai/start" && request.method === "POST") {
+        const { response, data } = await gatewayAction(env, "start");
+        return json(data, response.status);
+      }
+
+      if (url.pathname === "/api/live-ai/stop" && request.method === "POST") {
+        const { response, data } = await gatewayAction(env, "stop");
+        return json(data, response.status);
+      }
+
       if (url.pathname === "/api/teaser-status" && request.method === "GET") {
         const marker = await readTeaserMarker(url.origin);
         return json({
@@ -348,6 +406,15 @@ export default {
     } catch (error) {
       console.error("[SENTIENT]", error);
       return json({ error: error?.message || String(error) }, 500);
+    }
+  },
+
+  async scheduled(_controller, env, ctx) {
+    try {
+      const stub = gatewayStub(env);
+      ctx.waitUntil(stub.fetch("https://sentient-gateway/ensure", { method: "POST" }));
+    } catch (error) {
+      console.error("[SENTIENT] Gateway keepalive failed:", error);
     }
   },
 };
