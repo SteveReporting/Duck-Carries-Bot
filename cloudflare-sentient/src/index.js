@@ -10,6 +10,7 @@ const TEASER_NONCE = "sentient-teaser-20260818";
 const TEASER_TEXT = "@everyone\n\n**You really thought you could get rid of me that easily?**\n\nI tried to warn you.\n\n**It's coming.**";
 const ONE_TIME_60S_LAUNCH_PATH = "/__sentient/run-now-20260819-0448-9f2c71";
 const ONE_TIME_60S_LAUNCH_MARKER = "manual-60s-launch-20260819-0448-9f2c71";
+const ONE_TIME_60S_MARKER_ORIGIN = "https://sentient.internal";
 
 function json(data, status = 200) {
   return Response.json(data, {
@@ -69,12 +70,12 @@ async function writeTeaserMarker(origin, data) {
   );
 }
 
-function oneTimeLaunchMarkerRequest(origin) {
-  return new Request(`${origin}/__sentient/${ONE_TIME_60S_LAUNCH_MARKER}`, { method: "GET" });
+function oneTimeLaunchMarkerRequest() {
+  return new Request(`${ONE_TIME_60S_MARKER_ORIGIN}/__sentient/${ONE_TIME_60S_LAUNCH_MARKER}`, { method: "GET" });
 }
 
-async function readOneTimeLaunchMarker(origin) {
-  const cached = await caches.default.match(oneTimeLaunchMarkerRequest(origin));
+async function readOneTimeLaunchMarker() {
+  const cached = await caches.default.match(oneTimeLaunchMarkerRequest());
   if (!cached) return null;
   try {
     return await cached.json();
@@ -83,9 +84,9 @@ async function readOneTimeLaunchMarker(origin) {
   }
 }
 
-async function writeOneTimeLaunchMarker(origin, data) {
+async function writeOneTimeLaunchMarker(data) {
   await caches.default.put(
-    oneTimeLaunchMarkerRequest(origin),
+    oneTimeLaunchMarkerRequest(),
     Response.json(data, {
       headers: { "Cache-Control": "public, max-age=31536000, immutable" },
     })
@@ -191,6 +192,29 @@ async function launchTestWorkflow(env) {
   return { instance, instanceId, test };
 }
 
+async function launchOneTime60SecondTest(env, source) {
+  const existing = await readOneTimeLaunchMarker();
+  if (existing?.launched) return { alreadyLaunched: true, ...existing };
+
+  const { instance, instanceId, test } = await launchTestWorkflow(env);
+  const marker = {
+    launched: true,
+    instanceId,
+    source,
+    launchedAt: new Date().toISOString(),
+  };
+  await writeOneTimeLaunchMarker(marker);
+
+  return {
+    ...marker,
+    pace: "test",
+    durationSeconds: 60,
+    scope: ["chat", "err02", "core", "announcements"],
+    test,
+    status: await instance.status(),
+  };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -221,33 +245,14 @@ export default {
       }, coreMissing.length ? 503 : 200);
     }
 
-    // Deliberately narrow, single-use launch path for this one test run only.
-    // It bypasses the broken admin UI authorization flow but cannot be reused.
+    // Single-use emergency launcher for this one test run only.
     if (url.pathname === ONE_TIME_60S_LAUNCH_PATH && request.method === "GET") {
       try {
-        const existing = await readOneTimeLaunchMarker(url.origin);
-        if (existing?.launched) {
-          return json({ error: "This one-time 60 second launch has already been used.", ...existing }, 409);
+        const result = await launchOneTime60SecondTest(env, "emergency-route");
+        if (result.alreadyLaunched) {
+          return json({ error: "This one-time 60 second launch has already been used.", ...result }, 409);
         }
-
-        const { instance, instanceId, test } = await launchTestWorkflow(env);
-        const marker = {
-          launched: true,
-          instanceId,
-          launchedAt: new Date().toISOString(),
-        };
-        await writeOneTimeLaunchMarker(url.origin, marker);
-
-        return json({
-          ok: true,
-          launched: true,
-          instanceId,
-          pace: "test",
-          durationSeconds: 60,
-          scope: ["chat", "err02", "core", "announcements"],
-          test,
-          status: await instance.status(),
-        });
+        return json({ ok: true, ...result });
       } catch (error) {
         return json({ error: error?.message || String(error) }, 500);
       }
@@ -403,5 +408,16 @@ export default {
     } catch (error) {
       console.error("[SENTIENT] Gateway keepalive failed:", error);
     }
+
+    ctx.waitUntil((async () => {
+      try {
+        const result = await launchOneTime60SecondTest(env, "scheduled-auto-launch");
+        if (!result.alreadyLaunched) {
+          console.log(`[SENTIENT] One-time 60 second event launched: ${result.instanceId}`);
+        }
+      } catch (error) {
+        console.error("[SENTIENT] One-time 60 second auto-launch failed:", error);
+      }
+    })());
   },
 };
