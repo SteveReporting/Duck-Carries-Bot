@@ -1,3 +1,3 @@
 Trigger Cloudflare production build for agent/project-sentient-cloudflare.
-Deploy the latest Project Sentient 60-second event changes and updated one-minute Worker schedule.
-2026-08-19T04:50:00+01:00
+Replace the old embedded Worker control room with the Sentient Control command UI and keep all live Worker controls wired: auth, readiness, 60-second workflow, pause/resume/terminate, manual beats, Bartender start/status/stop, timers and logs.
+2026-08-19T14:24:00+01:00
