@@ -11,6 +11,7 @@ const OWNER_DISCORD_USER_ID = "1178367418955989053";
 const ALEX_DISCORD_USER_ID = "1005869667044311111";
 const JACK_DISCORD_USER_ID = "811330643631538196";
 const ANDREW_DISCORD_USER_ID = "1252728694049472535";
+const JORDAN_DISCORD_USER_ID = "1539457372362244117";
 
 function json(data, status = 200) {
   return Response.json(data, { status, headers: { "Cache-Control": "no-store" } });
@@ -517,7 +518,9 @@ export class SentientGateway extends DurableObject {
           ? "Jack"
           : message.author?.id === ANDREW_DISCORD_USER_ID
             ? "Andrew"
-            : null;
+            : message.author?.id === JORDAN_DISCORD_USER_ID
+              ? "Jordan"
+              : null;
     const knownRealName = manualKnownName || await getSupabaseFirstName(this.env, message.author?.id);
 
     this.pushHistory(message.channel_id, `${nickname}: ${content.slice(0, 600)}`);
@@ -561,7 +564,9 @@ export class SentientGateway extends DurableObject {
           ? JACK_DISCORD_USER_ID
           : message.author?.id === ANDREW_DISCORD_USER_ID
             ? ANDREW_DISCORD_USER_ID
-            : null;
+            : message.author?.id === JORDAN_DISCORD_USER_ID
+              ? JORDAN_DISCORD_USER_ID
+              : null;
       const replyContent = pingUserId && !reply.includes(`<@${pingUserId}>`) && !reply.includes(`<@!${pingUserId}>`)
         ? `<@${pingUserId}> ${reply}`
         : reply;
