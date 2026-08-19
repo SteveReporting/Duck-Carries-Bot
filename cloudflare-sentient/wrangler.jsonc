@@ -27,8 +27,5 @@
       "tag": "sentient-gateway-v1",
       "new_sqlite_classes": ["SentientGateway"]
     }
-  ],
-  "triggers": {
-    "crons": ["* * * * *"]
-  }
+  ]
 }
