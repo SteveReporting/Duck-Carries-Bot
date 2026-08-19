@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "carry-tavern-sentient",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-17",
+  "keep_vars": true,
+  "observability": {
+    "enabled": true
+  },
+  "workflows": [
+    {
+      "name": "carry-tavern-sentient",
+      "binding": "SENTIENT_WORKFLOW",
+      "class_name": "SentientWorkflow"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SENTIENT_GATEWAY",
+        "class_name": "SentientGateway"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "sentient-gateway-v1",
+      "new_sqlite_classes": ["SentientGateway"]
+    }
+  ],
+  "triggers": {
+    "crons": ["* * * * *"]
+  }
+}
