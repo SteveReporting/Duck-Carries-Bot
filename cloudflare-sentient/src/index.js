@@ -220,11 +220,15 @@ async function sendTeaser(){
   });
 }
 
-function requiredConfig() {
+function coreRequiredConfig() {
   return [
     "SENTIENT_BARTENDER_TOKEN",
     "SENTIENT_ADMIN_SECRET",
-    "SENTIENT_TAVERN_CHAT_CHANNEL_ID",
+  ];
+}
+
+function storyRequiredConfig() {
+  return [
     "SENTIENT_TREASURY_CHANNEL_ID",
     "SENTIENT_SIGNAL_02_CHANNEL_ID",
     "SENTIENT_CORE_CHANNEL_ID",
@@ -235,8 +239,34 @@ function requiredConfig() {
   ];
 }
 
-function missingConfig(env) {
-  return requiredConfig().filter((key) => !env[key]);
+function missingFrom(env, keys) {
+  return keys.filter((key) => !env[key]);
+}
+
+function liveAiHealth(env) {
+  const checks = {
+    bartenderToken: Boolean(env.SENTIENT_BARTENDER_TOKEN),
+    gatewayBinding: Boolean(env.SENTIENT_GATEWAY),
+    openAiKey: Boolean(env.OPENAI_API_KEY),
+    guildId: Boolean(env.SENTIENT_GUILD_ID || env.GUILD_ID),
+    channels: Boolean(
+      String(env.SENTIENT_AI_CHANNEL_IDS || "").trim() ||
+      env.SENTIENT_TAVERN_CHAT_CHANNEL_ID
+    ),
+  };
+
+  const missing = [];
+  if (!checks.bartenderToken) missing.push("SENTIENT_BARTENDER_TOKEN");
+  if (!checks.gatewayBinding) missing.push("SENTIENT_GATEWAY binding");
+  if (!checks.openAiKey) missing.push("OPENAI_API_KEY");
+  if (!checks.guildId) missing.push("SENTIENT_GUILD_ID (or GUILD_ID)");
+  if (!checks.channels) missing.push("SENTIENT_AI_CHANNEL_IDS (or SENTIENT_TAVERN_CHAT_CHANNEL_ID)");
+
+  return {
+    configured: missing.length === 0,
+    missing,
+    checks,
+  };
 }
 
 function routingStatus(env) {
@@ -266,16 +296,22 @@ export default {
     }
 
     if (url.pathname === "/health") {
-      const missing = missingConfig(env);
+      const coreMissing = missingFrom(env, coreRequiredConfig());
+      const storyMissing = missingFrom(env, storyRequiredConfig());
+      const liveAi = liveAiHealth(env);
+
       return json({
-        ok: missing.length === 0,
+        ok: coreMissing.length === 0,
         service: "carry-tavern-sentient",
-        missing,
+        missing: coreMissing,
+        storyReady: storyMissing.length === 0,
+        storyMissing,
         routing: routingStatus(env),
         channelEditing: false,
         liveArmed: String(env.SENTIENT_LIVE_ARMED || "false").toLowerCase() === "true",
-        liveAiConfigured: Boolean(env.SENTIENT_GATEWAY && env.OPENAI_API_KEY && (env.SENTIENT_GUILD_ID || env.GUILD_ID)),
-      }, missing.length ? 503 : 200);
+        liveAiConfigured: liveAi.configured,
+        liveAi,
+      }, coreMissing.length ? 503 : 200);
     }
 
     if (!url.pathname.startsWith("/api/")) {
@@ -288,13 +324,33 @@ export default {
 
     try {
       if (url.pathname === "/api/live-ai/status" && request.method === "GET") {
+        const liveAi = liveAiHealth(env);
+        if (!liveAi.configured) {
+          return json({
+            ok: false,
+            enabled: false,
+            ready: false,
+            error: `Live AI is missing: ${liveAi.missing.join(", ")}`,
+            liveAi,
+          }, 503);
+        }
         const { response, data } = await gatewayAction(env, "status");
-        return json(data, response.status);
+        return json({ ...data, liveAi }, response.status);
       }
 
       if (url.pathname === "/api/live-ai/start" && request.method === "POST") {
+        const liveAi = liveAiHealth(env);
+        if (!liveAi.configured) {
+          return json({
+            ok: false,
+            enabled: false,
+            ready: false,
+            error: `Cannot start Bartender AI. Missing: ${liveAi.missing.join(", ")}`,
+            liveAi,
+          }, 503);
+        }
         const { response, data } = await gatewayAction(env, "start");
-        return json(data, response.status);
+        return json({ ...data, liveAi }, response.status);
       }
 
       if (url.pathname === "/api/live-ai/stop" && request.method === "POST") {
