@@ -1,4 +1,7 @@
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const STATIC_FIRST_NAMES = new Map([
+  ["608497545227927554", "Nguyen"],
+]);
 
 let cacheExpiresAt = 0;
 let identityCache = new Map();
@@ -122,11 +125,16 @@ export function supabaseIdentityConfigured(env) {
 }
 
 export async function getSupabaseFirstName(env, discordUserId) {
-  if (!discordUserId || !envConfigured(env)) return null;
+  if (!discordUserId) return null;
+
+  const id = String(discordUserId);
+  const staticFirstName = STATIC_FIRST_NAMES.get(id);
+  if (staticFirstName) return staticFirstName;
+  if (!envConfigured(env)) return null;
 
   try {
     const cache = await ensureCache(env);
-    return cache.get(String(discordUserId))?.firstName || null;
+    return cache.get(id)?.firstName || null;
   } catch (error) {
     console.error("[SENTIENT SUPABASE] identity lookup failed:", error);
     return null;
