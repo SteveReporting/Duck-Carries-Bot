@@ -148,7 +148,8 @@ export async function sceneSecondSignalOpen(env, runId = crypto.randomUUID()) {
 
 export async function sceneSecondSignalReply(env, runId) {
   try {
-    return await sendMessage(env, channel(env, "chat"), {
+    // Keep the warning in the exact channel where ERR_02 spoke.
+    return await sendMessage(env, channel(env, "signal02"), {
       content: "**Don't respond to it.**",
       nonce: nonce(runId, "err02b"),
     });
