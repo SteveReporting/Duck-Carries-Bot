@@ -136,6 +136,7 @@ export class SentientGateway extends DurableObject {
     this.lastEventAt = null;
     this.lastReplyAt = null;
     this.lastError = null;
+    this.mutedUntil = 0;
 
     this.ctx.blockConcurrencyWhile(async () => {
       this.enabled = Boolean(await this.ctx.storage.get("enabled"));
@@ -143,6 +144,7 @@ export class SentientGateway extends DurableObject {
       this.resumeUrl = (await this.ctx.storage.get("resumeUrl")) || null;
       this.seq = (await this.ctx.storage.get("seq")) ?? null;
       this.botUserId = (await this.ctx.storage.get("botUserId")) || null;
+      this.mutedUntil = Number(await this.ctx.storage.get("mutedUntil")) || 0;
     });
   }
 
@@ -165,12 +167,18 @@ export class SentientGateway extends DurableObject {
     };
   }
 
+  isMuted() {
+    return this.mutedUntil > Date.now();
+  }
+
   status() {
     return {
       enabled: this.enabled,
       connected: this.connected,
       ready: this.ready,
       connecting: this.connecting,
+      muted: this.isMuted(),
+      mutedUntil: this.isMuted() ? new Date(this.mutedUntil).toISOString() : null,
       botUserId: this.botUserId,
       guildIdConfigured: Boolean(this.targetGuild()),
       allowedChannels: this.allowedChannels(),
@@ -206,6 +214,21 @@ export class SentientGateway extends DurableObject {
       this.connected = false;
       this.ready = false;
       this.connecting = false;
+      return json({ ok: true, ...this.status() });
+    }
+
+    if (url.pathname === "/mute" && request.method === "POST") {
+      let payload = {};
+      try { payload = await request.json(); } catch {}
+      const durationMs = Math.max(1000, Math.min(30000, envNumber(payload.durationMs, 10000)));
+      this.mutedUntil = Date.now() + durationMs;
+      await this.ctx.storage.put("mutedUntil", this.mutedUntil);
+      return json({ ok: true, ...this.status() });
+    }
+
+    if (url.pathname === "/unmute" && request.method === "POST") {
+      this.mutedUntil = 0;
+      await this.ctx.storage.delete("mutedUntil");
       return json({ ok: true, ...this.status() });
     }
 
@@ -452,6 +475,9 @@ export class SentientGateway extends DurableObject {
     const nickname = message.member?.nick || message.author?.username || "someone";
     this.pushHistory(message.channel_id, `${nickname}: ${content.slice(0, 600)}`);
 
+    // Story beats can temporarily silence replies while keeping the Gateway connected.
+    // We still record public conversation so Bartender can pick up naturally afterwards.
+    if (this.isMuted()) return;
     if (this.replyBusy) return;
 
     const settings = this.liveSettings();
@@ -479,7 +505,7 @@ export class SentientGateway extends DurableObject {
         history,
         direct,
       });
-      if (!reply) return;
+      if (!reply || this.isMuted()) return;
 
       const sent = await sendMessage(this.env, message.channel_id, { content: reply });
       this.pushHistory(message.channel_id, `[ERR_] Th3_B4rt3nd3r: ${reply}`);
