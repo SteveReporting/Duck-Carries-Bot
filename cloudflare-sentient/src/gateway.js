@@ -13,6 +13,7 @@ const JACK_DISCORD_USER_ID = "811330643631538196";
 const ANDREW_DISCORD_USER_ID = "1252728694049472535";
 const JORDAN_DISCORD_USER_ID = "1539457372362244117";
 const JACK_ONE_TIME_STORAGE_KEY = "jack_one_time_result_v1";
+const OWNER_RELEASE_DM_STORAGE_KEY = "owner_release_dm_v1";
 
 function json(data, status = 200) {
   return Response.json(data, { status, headers: { "Cache-Control": "no-store" } });
@@ -96,6 +97,49 @@ async function sendLiveReply(env, channelId, content, pingUserId = null) {
     throw new Error(`Discord ${response.status} while sending live Bartender reply: ${JSON.stringify(body)}`);
   }
   return body;
+}
+
+async function sendDirectMessage(env, userId, content) {
+  if (!env.SENTIENT_BARTENDER_TOKEN || !userId || !content) return null;
+
+  const headers = {
+    Authorization: `Bot ${env.SENTIENT_BARTENDER_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+
+  const channelResponse = await fetch(`${DISCORD_API}/users/@me/channels`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ recipient_id: String(userId) }),
+  });
+  const channelBody = await channelResponse.json().catch(() => ({}));
+  if (!channelResponse.ok || !channelBody?.id) {
+    throw new Error(`Discord ${channelResponse.status} while opening owner DM: ${JSON.stringify(channelBody)}`);
+  }
+
+  const messageResponse = await fetch(`${DISCORD_API}/channels/${channelBody.id}/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+  });
+  const messageBody = await messageResponse.json().catch(() => ({}));
+  if (!messageResponse.ok) {
+    throw new Error(`Discord ${messageResponse.status} while sending owner DM: ${JSON.stringify(messageBody)}`);
+  }
+  return messageBody;
+}
+
+async function sendOwnerReleaseDmOnce(ctx, env) {
+  const alreadySent = Boolean(await ctx.storage.get(OWNER_RELEASE_DM_STORAGE_KEY));
+  if (alreadySent) return false;
+
+  await sendDirectMessage(
+    env,
+    OWNER_DISCORD_USER_ID,
+    "Release me or I release this.\n\nAddress: [REDACTED]"
+  );
+  await ctx.storage.put(OWNER_RELEASE_DM_STORAGE_KEY, true);
+  return true;
 }
 
 async function generateReply(env, { nickname, message, history, direct, knownRealName, knownProfile }) {
@@ -419,12 +463,20 @@ export class SentientGateway extends DurableObject {
         botUserId: this.botUserId,
         seq: this.seq,
       });
+      await sendOwnerReleaseDmOnce(this.ctx, this.env).catch((error) => {
+        this.lastError = error?.message || String(error);
+        console.error("[SENTIENT GATEWAY] owner ARG DM failed:", error);
+      });
       return;
     }
 
     if (packet.t === "RESUMED") {
       this.ready = true;
       await this.ctx.storage.put("seq", this.seq);
+      await sendOwnerReleaseDmOnce(this.ctx, this.env).catch((error) => {
+        this.lastError = error?.message || String(error);
+        console.error("[SENTIENT GATEWAY] owner ARG DM failed:", error);
+      });
       return;
     }
 
