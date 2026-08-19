@@ -13,5 +13,22 @@
       "binding": "SENTIENT_WORKFLOW",
       "class_name": "SentientWorkflow"
     }
-  ]
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SENTIENT_GATEWAY",
+        "class_name": "SentientGateway"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "sentient-gateway-v1",
+      "new_sqlite_classes": ["SentientGateway"]
+    }
+  ],
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  }
 }
