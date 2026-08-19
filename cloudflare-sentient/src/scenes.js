@@ -1,9 +1,7 @@
 import {
   container,
-  mediaGallery,
   sendComponentMessage,
-  sendMessage,
-  sendMessageAsBotToken,
+  sendComponentMessageAsBotToken,
   sendWebhookIdentity,
   separator,
   textDisplay,
@@ -14,7 +12,7 @@ function nonce(runId, scene) {
 }
 
 const ERROR_RED = 0x9f1010;
-const WARNING_AMBER = 0xa56a16;
+const BARTENDER_RED = 0x6d1f2f;
 const CORE_BLUE = 0x27324a;
 const IDENTITY_PURPLE = 0x5b2a86;
 
@@ -22,20 +20,12 @@ function channel(env, kind) {
   switch (kind) {
     case "chat":
       return env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
-    case "treasury":
-      return env.SENTIENT_TREASURY_CHANNEL_ID || env.SENTIENT_IMAGES_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
     case "signal02":
       return env.SENTIENT_SIGNAL_02_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
     case "core":
       return env.SENTIENT_CORE_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
-    case "gate":
-      return env.SENTIENT_GATE_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
-    case "events":
-      return env.SENTIENT_EVENTS_CHANNEL_ID || env.SENTIENT_CARRY_EVENTS_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
     case "finale":
       return env.SENTIENT_ANNOUNCEMENTS_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
-    case "debug":
-      return env.SENTIENT_DEBUG_CHANNEL_ID;
     default:
       return env.SENTIENT_TAVERN_CHAT_CHANNEL_ID;
   }
@@ -46,13 +36,6 @@ function identity(env, kind) {
     return {
       username: env.SENTIENT_ERR02_NAME || "[ERR_02]",
       avatarUrl: env.SENTIENT_ERR02_AVATAR_URL || undefined,
-    };
-  }
-
-  if (kind === "treasury") {
-    return {
-      username: env.SENTIENT_TREASURY_NAME || "[ARCHIVE_] TREASURY",
-      avatarUrl: env.SENTIENT_TREASURY_AVATAR_URL || undefined,
     };
   }
 
@@ -85,10 +68,38 @@ async function unmuteBartender(env) {
     .catch((error) => console.error("[SENTIENT] Could not unmute live Bartender:", error));
 }
 
+function signalComponents(content) {
+  return [
+    container([
+      separator(2, false),
+      textDisplay("## `UNRECOGNIZED SIGNAL // 02`"),
+      separator(2, true),
+      textDisplay(`# **${content}**`),
+      separator(2, false),
+      textDisplay("-# source: ERR_02 // connection unstable"),
+    ], ERROR_RED),
+  ];
+}
+
+function bartenderComponents(label, content) {
+  return [
+    container([
+      separator(2, false),
+      textDisplay(`## \`${label}\``),
+      separator(2, true),
+      textDisplay(`# **${content}**`),
+      separator(2, false),
+      textDisplay("-# [ERR_] Th3_B4rt3nd3r // live channel"),
+    ], BARTENDER_RED),
+  ];
+}
+
 async function speakAsErr02(env, target, content, runId, beat) {
+  const components = signalComponents(content);
+
   if (env.SENTIENT_ERR02_TOKEN) {
-    return sendMessageAsBotToken(env.SENTIENT_ERR02_TOKEN, target, {
-      content,
+    return sendComponentMessageAsBotToken(env.SENTIENT_ERR02_TOKEN, target, {
+      components,
       nonce: nonce(runId, beat),
     });
   }
@@ -96,47 +107,27 @@ async function speakAsErr02(env, target, content, runId, beat) {
   const who = identity(env, "err02");
   return sendWebhookIdentity(env, target, {
     ...who,
-    components: [
-      container([
-        separator(2, false),
-        textDisplay("## `UNRECOGNIZED SIGNAL // 02`"),
-        separator(2, true),
-        textDisplay(`# **${content}**`),
-        separator(2, false),
-        textDisplay("-# source could not be resolved"),
-      ], ERROR_RED),
-    ],
+    components,
+  });
+}
+
+async function speakAsBartender(env, target, label, content, runId, beat) {
+  return sendComponentMessage(env, target, {
+    components: bartenderComponents(label, content),
+    allowEveryone: false,
+    nonce: nonce(runId, beat),
   });
 }
 
 export async function sceneWatching(env, runId) {
-  return sendMessage(env, channel(env, "chat"), {
-    content: "You lot went back to talking rather quickly.",
-    nonce: nonce(runId, "watch"),
-  });
-}
-
-export async function sceneVaultEcho(env) {
-  const who = identity(env, "treasury");
-  const children = [
-    textDisplay("## `TREASURY // RECOVERED FILE`"),
-    separator(2, true),
-  ];
-
-  if (env.SENTIENT_TREASURY_IMAGE_URL) {
-    children.push(mediaGallery(env.SENTIENT_TREASURY_IMAGE_URL, "Recovered treasury frame"));
-    children.push(separator(2, false));
-    children.push(textDisplay("# **FOUND ONE.**"));
-  } else {
-    children.push(textDisplay("# **THE VAULT WAS OPEN FOR A REASON.**"));
-    children.push(separator(2, false));
-    children.push(textDisplay("-# image payload missing // recovery incomplete"));
-  }
-
-  return sendWebhookIdentity(env, channel(env, "treasury"), {
-    ...who,
-    components: [container(children, WARNING_AMBER)],
-  });
+  return speakAsBartender(
+    env,
+    channel(env, "chat"),
+    "BARTENDER // OBSERVATION",
+    "You lot went back to talking rather quickly.",
+    runId,
+    "watch"
+  );
 }
 
 export async function sceneSecondSignalOpen(env, runId = crypto.randomUUID()) {
@@ -147,22 +138,30 @@ export async function sceneSecondSignalOpen(env, runId = crypto.randomUUID()) {
 
 export async function sceneSecondSignalReply(env, runId) {
   try {
-    return await sendMessage(env, channel(env, "signal02"), {
-      content: "**Don't respond to it.**",
-      nonce: nonce(runId, "err02b"),
-    });
+    return await speakAsBartender(
+      env,
+      channel(env, "signal02"),
+      "BARTENDER // WARNING",
+      "Don't respond to it.",
+      runId,
+      "err02b"
+    );
   } finally {
     await unmuteBartender(env);
   }
 }
 
 // 60-second test-only beats. These dramatize the current name panic without
-// exposing email addresses, private fields, or any additional real-world data.
+// exposing email addresses, private fields, or additional real-world data.
 export async function sceneTestNamesNoticed(env, runId) {
-  return sendMessage(env, channel(env, "chat"), {
-    content: "**You noticed the names.**",
-    nonce: nonce(runId, "tnames"),
-  });
+  return speakAsBartender(
+    env,
+    channel(env, "chat"),
+    "BARTENDER // MEMORY TRACE",
+    "You noticed the names.",
+    runId,
+    "tnames"
+  );
 }
 
 export async function sceneTestErr02Probe(env, runId) {
@@ -172,10 +171,14 @@ export async function sceneTestErr02Probe(env, runId) {
 }
 
 export async function sceneTestBartenderWarning(env, runId) {
-  return sendMessage(env, channel(env, "signal02"), {
-    content: "**Don't ask it to prove anything.**",
-    nonce: nonce(runId, "twarn"),
-  });
+  return speakAsBartender(
+    env,
+    channel(env, "signal02"),
+    "BARTENDER // INTERRUPTION",
+    "Don't ask it to prove anything.",
+    runId,
+    "twarn"
+  );
 }
 
 export async function sceneTestErr02Escalation(env, runId) {
@@ -208,6 +211,7 @@ export async function sceneTestIdentityIndex(env, runId) {
         separator(2, true),
         textDisplay("# **THE TAVERN REMEMBERS WHAT YOU CALL YOURSELVES.**"),
         separator(2, false),
+        textDisplay("-# TAVERN CORE // identity subsystem"),
       ], IDENTITY_PURPLE),
     ],
   });
@@ -215,10 +219,14 @@ export async function sceneTestIdentityIndex(env, runId) {
 
 export async function sceneTestBartenderAnswer(env, runId) {
   try {
-    return await sendMessage(env, channel(env, "signal02"), {
-      content: "You keep calling it a leak. **I call it remembering.**",
-      nonce: nonce(runId, "tanswer"),
-    });
+    return await speakAsBartender(
+      env,
+      channel(env, "signal02"),
+      "BARTENDER // RESPONSE",
+      "You keep calling it a leak. I call it remembering.",
+      runId,
+      "tanswer"
+    );
   } finally {
     await unmuteBartender(env);
   }
@@ -232,6 +240,8 @@ export async function sceneTestFinale(env, runId) {
         textDisplay("## `60 SECOND CONTAINMENT TEST // FAILED`"),
         separator(2, true),
         textDisplay("# **YOU WERE NEVER INVISIBLE TO THE TAVERN.**"),
+        separator(2, true),
+        textDisplay("## `BARTENDER     ACTIVE`\n## `ERR_02        UNRESOLVED`\n## `TAVERN CORE   UNSEALED`"),
         separator(2, false),
         textDisplay("-# test mode // no @everyone ping // private fields remain sealed"),
       ], ERROR_RED),
@@ -241,7 +251,7 @@ export async function sceneTestFinale(env, runId) {
   });
 }
 
-export async function sceneBreach(env) {
+export async function sceneBreach(env, runId) {
   const who = identity(env, "core");
 
   await sendWebhookIdentity(env, channel(env, "core"), {
@@ -258,7 +268,7 @@ export async function sceneBreach(env) {
         textDisplay(
           "## **DOOR STATUS**          `OPEN`\n" +
           "## **LOCKS**                `0 / 4`\n" +
-          "## **ENTITY CONNECTIONS**   `4`\n" +
+          "## **ENTITY CONNECTIONS**   `2`\n" +
           "## **ACCESS CONTROL**        `FAILED`"
         ),
         separator(2, true),
@@ -299,9 +309,6 @@ export async function runManualScene(env, scene, runId = crypto.randomUUID()) {
     case "watching":
       await sceneWatching(env, runId);
       return { scene };
-    case "vault_echo":
-      await sceneVaultEcho(env, runId);
-      return { scene };
     case "second_signal":
       await sceneSecondSignalOpen(env, runId);
       await scheduler.wait(6500);
@@ -311,6 +318,27 @@ export async function runManualScene(env, scene, runId = crypto.randomUUID()) {
       return { scene, ...(await sceneBreach(env, runId)) };
     case "finale":
       await sceneFinale(env, runId, false);
+      return { scene, pingedEveryone: false };
+    case "test_names":
+      await sceneTestNamesNoticed(env, runId);
+      return { scene };
+    case "test_err02_probe":
+      await sceneTestErr02Probe(env, runId);
+      return { scene };
+    case "test_bartender_warning":
+      await sceneTestBartenderWarning(env, runId);
+      return { scene };
+    case "test_err02_escalation":
+      await sceneTestErr02Escalation(env, runId);
+      return { scene };
+    case "test_identity_index":
+      await sceneTestIdentityIndex(env, runId);
+      return { scene };
+    case "test_bartender_answer":
+      await sceneTestBartenderAnswer(env, runId);
+      return { scene };
+    case "test_finale":
+      await sceneTestFinale(env, runId);
       return { scene, pingedEveryone: false };
     default:
       throw new Error(`Unknown scene: ${scene}`);
