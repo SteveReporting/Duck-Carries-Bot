@@ -1,3 +1,37 @@
+export class SentientGateway {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    if (request.method === "GET" || request.method === "HEAD") {
+      const body = JSON.stringify({
+        ok: true,
+        service: "carry-tavern-sentient",
+        durableObject: "SentientGateway",
+        id: this.state?.id?.toString?.() || null,
+        path: url.pathname,
+      });
+
+      return new Response(request.method === "HEAD" ? null : body, {
+        status: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store",
+        },
+      });
+    }
+
+    return new Response("method not allowed", {
+      status: 405,
+      headers: { allow: "GET, HEAD" },
+    });
+  }
+}
+
 const HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -73,7 +107,7 @@ export default {
     }
 
     if (url.pathname === "/health") {
-      return new Response("ok", {
+      return new Response(request.method === "HEAD" ? null : "ok", {
         status: 200,
         headers: {
           "content-type": "text/plain; charset=utf-8",
@@ -83,6 +117,16 @@ export default {
     }
 
     if (url.pathname === "/api/status") {
+      if (request.method === "HEAD") {
+        return new Response(null, {
+          status: 200,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          },
+        });
+      }
+
       return json({
         ok: true,
         service: "carry-tavern-sentient",
