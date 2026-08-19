@@ -22,21 +22,24 @@ async function parseResponse(response, label) {
   return body;
 }
 
-async function discordRequest(env, path, options = {}) {
-  if (!env.SENTIENT_BARTENDER_TOKEN) {
-    throw new Error("SENTIENT_BARTENDER_TOKEN is not configured.");
-  }
-
+async function requestWithToken(token, path, options = {}, label = path) {
+  if (!token) throw new Error("Discord bot token is not configured.");
   const response = await fetch(`${DISCORD_API}${path}`, {
     ...options,
     headers: {
-      Authorization: `Bot ${env.SENTIENT_BARTENDER_TOKEN}`,
+      Authorization: `Bot ${token}`,
       "Content-Type": "application/json",
       ...(options.headers || {}),
     },
   });
+  return parseResponse(response, label);
+}
 
-  return parseResponse(response, path);
+async function discordRequest(env, path, options = {}) {
+  if (!env.SENTIENT_BARTENDER_TOKEN) {
+    throw new Error("SENTIENT_BARTENDER_TOKEN is not configured.");
+  }
+  return requestWithToken(env.SENTIENT_BARTENDER_TOKEN, path, options);
 }
 
 export async function sendMessage(env, channelId, {
@@ -65,6 +68,33 @@ export async function sendMessage(env, channelId, {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export async function sendMessageAsBotToken(token, channelId, {
+  content,
+  embeds,
+  allowEveryone = false,
+  nonce,
+}) {
+  if (!channelId) throw new Error("Missing Discord channel ID.");
+
+  const body = {
+    content,
+    allowed_mentions: {
+      parse: allowEveryone ? ["everyone"] : [],
+    },
+  };
+
+  if (Array.isArray(embeds) && embeds.length) body.embeds = embeds;
+  if (nonce) {
+    body.nonce = String(nonce).slice(0, 25);
+    body.enforce_nonce = true;
+  }
+
+  return requestWithToken(token, `/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  }, `/channels/${channelId}/messages (alternate bot)`);
 }
 
 export async function sendMessageWithAttachment(env, channelId, {
