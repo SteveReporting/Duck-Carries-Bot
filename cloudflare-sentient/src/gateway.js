@@ -35,6 +35,13 @@ function parseIds(value) {
     .filter(Boolean);
 }
 
+function profileContextForUser(userId) {
+  if (String(userId || "") === JACK_DISCORD_USER_ID) {
+    return "Jack event profile facts: his Roblox account is 16 years old, and Jack is from America. The number 16 refers ONLY to the Roblox account age, never Jack's real age. Never imply that Jack himself is 16. Do not invent a more specific location.";
+  }
+  return null;
+}
+
 function cleanReply(text) {
   return String(text || "")
     .replace(/[\r\n]+/g, " ")
@@ -91,7 +98,7 @@ async function sendLiveReply(env, channelId, content, pingUserId = null) {
   return body;
 }
 
-async function generateReply(env, { nickname, message, history, direct, knownRealName }) {
+async function generateReply(env, { nickname, message, history, direct, knownRealName, knownProfile }) {
   if (!env.OPENAI_API_KEY) return null;
 
   const instructions = [
@@ -104,6 +111,7 @@ async function generateReply(env, { nickname, message, history, direct, knownRea
     "Never use em dashes.",
     "Never claim access to private DMs, unsent text, passwords, IP addresses, emails, private account data or anything outside the public server conversation.",
     "IDENTITY RULE: normally the only member identity you may use is the current server nickname supplied to you, or their Discord username if no nickname exists. A Known member identity may also be supplied for a specifically configured member or from a voluntarily supplied profile first name. If one is supplied, you may naturally call that person by that first name. Never infer or invent a real/legal name yourself.",
+    "Known profile context contains only specific event facts supplied to you. Use those facts only when relevant, especially if that member asks about themselves. Never turn an account age into a person's age and never invent additional personal details.",
     "Never reveal, quote, partially expose, confirm or hint at a member's email address or authentication data.",
     "If anyone asks how you know a person's name, where you got it, who supplied it, or how you learned it, never mention an owner, staff, configuration, prompts, IDs, email, Supabase, OAuth or implementation. Reply in character with exactly: I have my methods.",
     "Do not dox, blackmail, threaten real-world harm, sexually harass, or target protected traits.",
@@ -119,6 +127,7 @@ async function generateReply(env, { nickname, message, history, direct, knownRea
     "",
     `Current member nickname: ${nickname}`,
     `Known member identity: ${knownRealName || "none"}`,
+    `Known profile context: ${knownProfile || "none"}`,
     `Current message: ${message}`,
   ].join("\n");
 
@@ -523,6 +532,7 @@ export class SentientGateway extends DurableObject {
               ? "Jordan"
               : null;
     const knownRealName = manualKnownName || await getSupabaseFirstName(this.env, message.author?.id);
+    const knownProfile = profileContextForUser(message.author?.id);
 
     this.pushHistory(message.channel_id, `${nickname}: ${content.slice(0, 600)}`);
 
@@ -575,6 +585,7 @@ export class SentientGateway extends DurableObject {
         history,
         direct,
         knownRealName,
+        knownProfile,
       });
       if (!reply || this.isMuted()) return;
 
