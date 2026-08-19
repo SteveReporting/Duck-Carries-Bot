@@ -5,31 +5,92 @@ import {
   sceneFinale,
   sceneSecondSignalOpen,
   sceneSecondSignalReply,
+  sceneTestBartenderAnswer,
+  sceneTestBartenderWarning,
+  sceneTestErr02Escalation,
+  sceneTestErr02Probe,
+  sceneTestFinale,
+  sceneTestIdentityIndex,
+  sceneTestNamesNoticed,
   sceneVaultEcho,
   sceneWatching,
 } from "./scenes.js";
 
 const PACES = {
-  // Private smoke test: entire remaining story in about one minute.
-  test: ["5 seconds", "10 seconds", "10 seconds", "15 seconds", "20 seconds"],
-
-  // Compressed live build-up: Day 1 already happened manually.
   fast: ["5 minutes", "30 minutes", "55 minutes", "1 hour 30 minutes", "2 hours"],
-
-  // Slower compressed version, still far shorter than the original week-long plan.
   normal: ["30 minutes", "2 hours 30 minutes", "4 hours", "5 hours", "6 hours"],
 };
 
 function paceFor(value) {
+  if (value === "test") return "test";
   return PACES[value] ? value : "test";
+}
+
+async function runSixtySecondTest(env, step, runId) {
+  // Exactly 60 seconds of staged beats from first delay to finale.
+  await step.sleep("test 00-05 wait", "5 seconds");
+  await step.do("test names noticed", async () => {
+    await sceneTestNamesNoticed(env, runId);
+    return { beat: 1, at: 5 };
+  });
+
+  await step.sleep("test 05-13 wait", "8 seconds");
+  await step.do("test err02 asks about names", async () => {
+    await sceneTestErr02Probe(env, runId);
+    return { beat: 2, at: 13 };
+  });
+
+  await step.sleep("test 13-21 wait", "8 seconds");
+  await step.do("test bartender warns", async () => {
+    await sceneTestBartenderWarning(env, runId);
+    return { beat: 3, at: 21 };
+  });
+
+  await step.sleep("test 21-28 wait", "7 seconds");
+  await step.do("test err02 escalates", async () => {
+    await sceneTestErr02Escalation(env, runId);
+    return { beat: 4, at: 28 };
+  });
+
+  await step.sleep("test 28-38 wait", "10 seconds");
+  await step.do("test identity index opens", async () => {
+    await sceneTestIdentityIndex(env, runId);
+    return { beat: 5, at: 38 };
+  });
+
+  await step.sleep("test 38-47 wait", "9 seconds");
+  await step.do("test bartender answers", async () => {
+    await sceneTestBartenderAnswer(env, runId);
+    return { beat: 6, at: 47 };
+  });
+
+  await step.sleep("test 47-60 wait", "13 seconds");
+  await step.do("test containment failure finale", async () => {
+    await sceneTestFinale(env, runId);
+    return { beat: 7, at: 60 };
+  });
+
+  return {
+    complete: true,
+    pace: "test",
+    durationSeconds: 60,
+    err02Collaboration: true,
+    pingedEveryone: false,
+    privateFieldsExposed: false,
+  };
 }
 
 export class SentientWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const pace = paceFor(event.payload?.pace);
     const liveRequested = event.payload?.live === true;
-    const delays = PACES[pace];
     const runId = event.instanceId;
+
+    if (pace === "test") {
+      return runSixtySecondTest(this.env, step, runId);
+    }
+
+    const delays = PACES[pace];
 
     await step.sleep("wait before watching", delays[0]);
     await step.do("scene watching", async () => {
