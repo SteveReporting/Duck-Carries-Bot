@@ -1,0 +1,3 @@
+Trigger Cloudflare production deployment from main for carry-tavern-sentient.
+Use the current Cloudflare dashboard variables and secrets, including the updated SENTIENT_ADMIN_SECRET.
+2026-08-19T14:39:00+01:00
