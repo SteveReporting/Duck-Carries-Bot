@@ -1,3 +1,3 @@
 Trigger Cloudflare production build for agent/project-sentient-cloudflare.
-Redeploy the Sentient Control Worker after updating SENTIENT_ADMIN_SECRET in Cloudflare so the live control page immediately validates the new operator key through the existing bearer-auth flow.
-2026-08-19T14:33:00+01:00
+Deploy the updated Sentient Control UI with explicit AUTH ATTEMPT / AUTH SUCCESS / AUTH FAILURE logging and HTTP status details for rejected login attempts.
+2026-08-19T14:47:00+01:00
