@@ -1,5 +1,5 @@
 Trigger Cloudflare production build for agent/project-sentient-cloudflare.
 Deploy the streamlined Project Sentient sequence scoped to Tavern Chat -> ERR_02 -> Tavern Core -> Announcements only.
-Deploy the fixed control-room UI with explicit DOM bindings, verified Arm authorization, health preflight, working manual beat controls, and working 60-second workflow start controls.
-Preserve the current live Bartender, ERR_02 integration, and profile-context behavior.
-2026-08-19T04:41:00+01:00
+Deploy the control-room authorization fix: Arm now validates SENTIENT_ADMIN_SECRET through a dedicated auth endpoint instead of depending on the live Bartender Durable Object status.
+Keep health preflight, manual beat controls, and the 60-second workflow start controls.
+2026-08-19T04:44:00+01:00
