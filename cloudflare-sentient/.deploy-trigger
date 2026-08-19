@@ -1,3 +1,3 @@
 Trigger Cloudflare production build for agent/project-sentient-cloudflare.
-Fix ERR_02 beat so Bartender's warning is delivered in the same signal channel instead of the separate Tavern chat channel.
-2026-08-19T02:10:00+01:00
+Guarantee the ERR_02 manual beat keeps Bartender connected, sends "Don't respond to it." in the same ERR_02 channel, then immediately resumes live AI replies.
+2026-08-19T02:14:00+01:00
