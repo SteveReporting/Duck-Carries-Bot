@@ -189,6 +189,10 @@ export default {
     }
 
     try {
+      if (url.pathname === "/api/auth-check" && request.method === "GET") {
+        return json({ ok: true, authorized: true });
+      }
+
       if (url.pathname === "/api/live-ai/status" && request.method === "GET") {
         const liveAi = liveAiHealth(env);
         if (!liveAi.configured) {
