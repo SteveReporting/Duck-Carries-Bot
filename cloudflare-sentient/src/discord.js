@@ -166,6 +166,35 @@ export async function sendComponentMessage(env, channelId, {
   });
 }
 
+export async function sendComponentMessageAsBotToken(token, channelId, {
+  components,
+  allowEveryone = false,
+  nonce,
+}) {
+  if (!channelId) throw new Error("Missing Discord channel ID.");
+  if (!Array.isArray(components) || components.length === 0) {
+    throw new Error("Components V2 message requires components.");
+  }
+
+  const body = {
+    flags: COMPONENTS_V2_FLAG,
+    components,
+    allowed_mentions: {
+      parse: allowEveryone ? ["everyone"] : [],
+    },
+  };
+
+  if (nonce) {
+    body.nonce = String(nonce).slice(0, 25);
+    body.enforce_nonce = true;
+  }
+
+  return requestWithToken(token, `/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  }, `/channels/${channelId}/messages (alternate bot components)`);
+}
+
 async function getOrCreateWebhook(env, channelId) {
   const hooks = await discordRequest(env, `/channels/${channelId}/webhooks`, { method: "GET" });
   let hook = Array.isArray(hooks)
