@@ -46,8 +46,12 @@ function normalizeTriggerText(value) {
 }
 
 function profileContextForUser(userId) {
-  if (String(userId || "") === JACK_DISCORD_USER_ID) {
+  const id = String(userId || "");
+  if (id === JACK_DISCORD_USER_ID) {
     return "Jack event profile facts: his Roblox account is 16 years old, and Jack is from America. The number 16 refers ONLY to the Roblox account age, never Jack's real age. Never imply that Jack himself is 16. Do not invent a more specific location.";
+  }
+  if (id === ANDREW_DISCORD_USER_ID) {
+    return "Andrew event profile fact: his Roblox account is 20 years old. The number 20 refers ONLY to the Roblox account age, never Andrew's real age. Never imply that Andrew himself is 20.";
   }
   return null;
 }
