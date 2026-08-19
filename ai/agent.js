@@ -118,7 +118,7 @@ function getModel() {
 async function runDiscordAgent({ interaction, mode, prompt }) {
     const tools = toolsForMode(mode);
     const model = getModel();
-    const maxToolRounds = Math.max(1, Math.min(Number(process.env.AI_MAX_TOOL_ROUNDS) || 3, 10));
+    const maxToolRounds = Math.max(1, Math.min(Number(process.env.AI_MAX_TOOL_ROUNDS) || 20, 20));
 
     console.log(`[AI AGENT] Model: ${model}`);
     console.log(`[AI AGENT] Max rounds: ${maxToolRounds}`);
