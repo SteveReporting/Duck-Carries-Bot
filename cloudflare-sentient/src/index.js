@@ -73,13 +73,10 @@ function coreRequiredConfig() {
 
 function storyRequiredConfig() {
   return [
-    "SENTIENT_TREASURY_CHANNEL_ID",
+    "SENTIENT_TAVERN_CHAT_CHANNEL_ID",
     "SENTIENT_SIGNAL_02_CHANNEL_ID",
     "SENTIENT_CORE_CHANNEL_ID",
-    "SENTIENT_GATE_CHANNEL_ID",
-    "SENTIENT_EVENTS_CHANNEL_ID",
     "SENTIENT_ANNOUNCEMENTS_CHANNEL_ID",
-    "SENTIENT_DEBUG_CHANNEL_ID",
   ];
 }
 
@@ -109,34 +106,42 @@ function liveAiHealth(env) {
 function routingStatus(env) {
   return {
     chat: Boolean(env.SENTIENT_TAVERN_CHAT_CHANNEL_ID),
-    treasury: Boolean(env.SENTIENT_TREASURY_CHANNEL_ID),
     signal02: Boolean(env.SENTIENT_SIGNAL_02_CHANNEL_ID),
     core: Boolean(env.SENTIENT_CORE_CHANNEL_ID),
-    gate: Boolean(env.SENTIENT_GATE_CHANNEL_ID),
-    events: Boolean(env.SENTIENT_EVENTS_CHANNEL_ID),
     finale: Boolean(env.SENTIENT_ANNOUNCEMENTS_CHANNEL_ID),
-    debug: Boolean(env.SENTIENT_DEBUG_CHANNEL_ID),
   };
 }
 
 function testHealth(env) {
-  const chat = Boolean(env.SENTIENT_TAVERN_CHAT_CHANNEL_ID);
   const workflow = Boolean(env.SENTIENT_WORKFLOW);
   const bartender = Boolean(env.SENTIENT_BARTENDER_TOKEN);
   const err02Bot = Boolean(env.SENTIENT_ERR02_TOKEN);
-  const err02Channel = Boolean(env.SENTIENT_SIGNAL_02_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID);
-  const coreChannel = Boolean(env.SENTIENT_CORE_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID);
-  const finaleChannel = Boolean(env.SENTIENT_ANNOUNCEMENTS_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID);
+  const chat = Boolean(env.SENTIENT_TAVERN_CHAT_CHANNEL_ID);
+  const err02Channel = Boolean(env.SENTIENT_SIGNAL_02_CHANNEL_ID);
+  const coreChannel = Boolean(env.SENTIENT_CORE_CHANNEL_ID);
+  const finaleChannel = Boolean(env.SENTIENT_ANNOUNCEMENTS_CHANNEL_ID);
+
+  const checks = {
+    workflow,
+    bartender,
+    err02Bot,
+    chat,
+    err02Channel,
+    coreChannel,
+    finaleChannel,
+  };
 
   return {
-    ready: workflow && bartender && chat && err02Channel && coreChannel && finaleChannel,
+    ready: Object.values(checks).every(Boolean),
     durationSeconds: 60,
     identityPanicMode: true,
+    scope: ["chat", "err02", "core", "announcements"],
+    treasuryEnabled: false,
     err02Bot,
-    err02Mode: err02Bot ? "real-bot" : "webhook-fallback",
+    err02Mode: err02Bot ? "real-bot" : "missing-token",
     noEveryonePing: true,
     privateFieldsExposed: false,
-    checks: { workflow, bartender, chat, err02Channel, coreChannel, finaleChannel },
+    checks,
   };
 }
 
@@ -164,6 +169,8 @@ export default {
         missing: coreMissing,
         storyReady: storyMissing.length === 0,
         storyMissing,
+        storyScope: ["chat", "err02", "core", "announcements"],
+        treasuryEnabled: false,
         routing: routingStatus(env),
         channelEditing: false,
         liveArmed: String(env.SENTIENT_LIVE_ARMED || "false").toLowerCase() === "true",
@@ -265,6 +272,8 @@ export default {
           instanceId: instance.id,
           pace,
           liveRequested: live,
+          scope: ["chat", "err02", "core", "announcements"],
+          treasuryEnabled: false,
           test: pace === "test" ? testHealth(env) : undefined,
           channelEditing: false,
           status: await instance.status(),
@@ -272,7 +281,19 @@ export default {
       }
 
       if (url.pathname === "/api/scene" && request.method === "POST") {
-        const allowed = ["watching", "vault_echo", "second_signal", "breach", "finale"];
+        const allowed = [
+          "watching",
+          "second_signal",
+          "breach",
+          "finale",
+          "test_names",
+          "test_err02_probe",
+          "test_bartender_warning",
+          "test_err02_escalation",
+          "test_identity_index",
+          "test_bartender_answer",
+          "test_finale",
+        ];
         if (!allowed.includes(payload.scene)) return json({ error: "Unknown scene" }, 400);
         const result = await runManualScene(env, payload.scene);
         return json({ ok: true, result });
