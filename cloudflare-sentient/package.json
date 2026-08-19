@@ -1,0 +1,12 @@
+{
+  "name": "carry-tavern-sentient-worker",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "preview": "wrangler versions upload"
+  },
+  "devDependencies": {
+    "wrangler": "^4.68.0"
+  }
+}
