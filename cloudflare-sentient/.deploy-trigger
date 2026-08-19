@@ -1,3 +1,3 @@
 Trigger Cloudflare production build for agent/project-sentient-cloudflare.
-Add dedicated ERR_02 bot-token delivery while keeping live Bartender AI unchanged.
-2026-08-19T01:45:00+01:00
+ERR_02 secret/channel configured by owner; redeploy dedicated ERR_02 delivery without interrupting live Bartender AI.
+2026-08-19T01:53:00+01:00
