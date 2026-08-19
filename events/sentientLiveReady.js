@@ -3,7 +3,7 @@ const { startLiveSentient } = require("../sentient/liveDirector");
 module.exports = {
     name: "ready",
     once: true,
-    async execute() {
-        await startLiveSentient();
+    async execute(client) {
+        await startLiveSentient(client);
     },
 };
