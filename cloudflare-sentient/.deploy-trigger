@@ -1,3 +1,3 @@
 Trigger Cloudflare production build for agent/project-sentient-cloudflare.
-Deploy the updated Sentient Control UI with explicit AUTH ATTEMPT / AUTH SUCCESS / AUTH FAILURE logging and HTTP status details for rejected login attempts.
-2026-08-19T14:47:00+01:00
+Deploy the updated Sentient Worker entrypoint with occasional ERR_02 ambient Tavern Chat interruptions alongside the live Bartender. ERR_02 uses its own bot token, only posts short lore lines, respects cooldown/chance controls, and avoids @mentions.
+2026-08-19T14:58:00+01:00
