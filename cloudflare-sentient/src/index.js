@@ -1,6 +1,7 @@
 export { SentientWorkflow } from "./workflow.js";
 export { SentientGateway } from "./gateway.js";
 
+import { adminPage } from "./adminUi.js";
 import { sendMessageWithAttachment } from "./discord.js";
 import { runManualScene } from "./scenes.js";
 
@@ -11,9 +12,7 @@ const TEASER_TEXT = "@everyone\n\n**You really thought you could get rid of me t
 function json(data, status = 200) {
   return Response.json(data, {
     status,
-    headers: {
-      "Cache-Control": "no-store",
-    },
+    headers: { "Cache-Control": "no-store" },
   });
 }
 
@@ -60,171 +59,16 @@ async function readTeaserMarker(origin) {
 }
 
 async function writeTeaserMarker(origin, data) {
-  const response = Response.json(data, {
-    headers: {
-      "Cache-Control": "public, max-age=31536000, immutable",
-    },
-  });
-  await caches.default.put(teaserMarkerRequest(origin), response);
-}
-
-function adminPage() {
-  return new Response(`<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Project Sentient</title>
-<style>
-body{font-family:system-ui,sans-serif;background:#0b0b0b;color:#eee;max-width:760px;margin:40px auto;padding:0 18px}h1{letter-spacing:.08em}section{border:1px solid #333;border-radius:12px;padding:16px;margin:14px 0;background:#111}button,input,select{font:inherit;padding:10px 12px;margin:5px;border-radius:8px;border:1px solid #444;background:#171717;color:#eee}button{cursor:pointer}button:hover{background:#242424}button:disabled{cursor:not-allowed;opacity:.45}input{min-width:320px}input[type=file]{min-width:0;max-width:100%}pre{white-space:pre-wrap;background:#050505;padding:14px;border-radius:8px;min-height:80px}.warn{color:#ffcc66;font-weight:600}.danger{color:#ff6b6b;font-weight:700}.ok{color:#85e89d}.live{border-color:#335c42;background:#0d1711}</style>
-</head>
-<body>
-<h1>PROJECT SENTIENT</h1>
-<p class="warn">Private control surface. Live Bartender AI is separate from the vault/story timeline.</p>
-<section>
-<label>Admin secret<br><input id="secret" type="password" autocomplete="off" placeholder="SENTIENT_ADMIN_SECRET"></label>
-</section>
-<section class="live">
-<h3>Live Bartender AI</h3>
-<p>This only lets <strong>[ERR_] Th3_B4rt3nd3r</strong> read configured public Tavern channels, reply as a live AI character, and occasionally enter normal conversation. It does <strong>not</strong> start the vault, breach, ERR_02, finale or any timeline scene.</p>
-<button onclick="liveAi('start')">START BARTENDER AI</button>
-<button onclick="liveAi('stop')">STOP BARTENDER AI</button>
-<button onclick="liveAi('status')">LIVE AI STATUS</button>
-<p id="liveState" class="warn">Not checked.</p>
-</section>
-<section>
-<h3>Single-use Bartender Teaser</h3>
-<p>Target: <code>#something-is-coming</code> // <code>${TEASER_CHANNEL_ID}</code></p>
-<p class="danger">This sends a real @everyone ping.</p>
-<p>Message:</p>
-<pre style="min-height:0">@everyone
-
-You really thought you could get rid of me that easily?
-
-I tried to warn you.
-
-It's coming.</pre>
-<label>Attach the corrupted CONTAINMENT FAILURE image<br><input id="teaserImage" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
-<br>
-<button id="teaserButton" onclick="sendTeaser()">SEND TEASER ONCE</button>
-<button onclick="teaserStatus()">Check teaser status</button>
-<p id="teaserState" class="warn">Not checked.</p>
-</section>
-<section>
-<h3>Timeline</h3>
-<button onclick="start('test')">Start 60s Test</button>
-<button onclick="start('fast')">Start Fast</button>
-<button onclick="start('normal')">Start Normal</button>
-</section>
-<section>
-<h3>Fire One Scene</h3>
-<button onclick="scene('watching')">Watching</button>
-<button onclick="scene('vault_echo')">Vault</button>
-<button onclick="scene('second_signal')">ERR_02</button>
-<button onclick="scene('breach')">Tavern Core</button>
-<button onclick="scene('finale')">Finale (no ping)</button>
-</section>
-<section>
-<h3>Workflow Control</h3>
-<input id="instance" placeholder="Workflow instance ID">
-<br>
-<button onclick="status()">Status</button>
-<button onclick="manage('pause')">Pause</button>
-<button onclick="manage('resume')">Resume</button>
-<button onclick="manage('stop')">Stop</button>
-</section>
-<pre id="out">Ready.</pre>
-<script>
-const out=document.getElementById('out');
-const secret=()=>document.getElementById('secret').value;
-async function call(path,method='POST',payload={}){
-  out.textContent='Working...';
-  const r=await fetch(path,{method,headers:{'Authorization':'Bearer '+secret(),'Content-Type':'application/json'},body:method==='GET'?undefined:JSON.stringify(payload)});
-  const t=await r.text();
-  try{out.textContent=JSON.stringify(JSON.parse(t),null,2)}catch{out.textContent=t}
-  return r.ok;
-}
-async function start(pace){
-  const r=await fetch('/api/start',{method:'POST',headers:{'Authorization':'Bearer '+secret(),'Content-Type':'application/json'},body:JSON.stringify({pace,live:false})});
-  const data=await r.json().catch(()=>({error:'Invalid response'}));
-  out.textContent=JSON.stringify(data,null,2);
-  if(data.instanceId) document.getElementById('instance').value=data.instanceId;
-}
-function scene(name){return call('/api/scene','POST',{scene:name})}
-function status(){return call('/api/status','POST',{id:document.getElementById('instance').value})}
-function manage(action){return call('/api/'+action,'POST',{id:document.getElementById('instance').value})}
-async function liveAi(action){
-  const state=document.getElementById('liveState');
-  if(!secret()){state.textContent='Enter the admin secret first.';state.className='danger';return}
-  state.textContent=action==='start'?'Connecting Bartender to Discord Gateway...':action==='stop'?'Stopping live AI...':'Checking...';
-  state.className='warn';
-  const method=action==='status'?'GET':'POST';
-  const r=await fetch('/api/live-ai/'+action,{method,headers:{'Authorization':'Bearer '+secret()}});
-  const data=await r.json().catch(()=>({error:'Invalid response'}));
-  out.textContent=JSON.stringify(data,null,2);
-  if(!r.ok){state.textContent=data.error||'Live AI action failed.';state.className='danger';return}
-  if(data.enabled){
-    state.textContent=data.ready?'LIVE. Bartender is connected and listening.':'STARTED. Gateway is connecting; check status again in a few seconds.';
-    state.className='ok';
-  }else{
-    state.textContent='OFF. Bartender live AI is silent.';
-    state.className='warn';
-  }
-}
-async function teaserStatus(){
-  const state=document.getElementById('teaserState');
-  const button=document.getElementById('teaserButton');
-  state.textContent='Checking...';
-  const r=await fetch('/api/teaser-status',{headers:{'Authorization':'Bearer '+secret()}});
-  const data=await r.json().catch(()=>({error:'Invalid response'}));
-  out.textContent=JSON.stringify(data,null,2);
-  if(r.ok&&data.sent){
-    state.textContent='SENT. This control is locked.';
-    state.className='ok';
-    button.disabled=true;
-  }else if(r.ok){
-    state.textContent='READY. Teaser has not been sent from this control.';
-    state.className='warn';
-    button.disabled=false;
-  }else{
-    state.textContent=data.error||'Could not check status.';
-    state.className='danger';
-  }
-}
-async function sendTeaser(){
-  const image=document.getElementById('teaserImage').files[0];
-  const state=document.getElementById('teaserState');
-  const button=document.getElementById('teaserButton');
-  if(!secret()){state.textContent='Enter the admin secret first.';state.className='danger';return}
-  if(!image){state.textContent='Choose the CONTAINMENT FAILURE image first.';state.className='danger';return}
-  if(!confirm('Send the Bartender teaser to #something-is-coming and ping @everyone RIGHT NOW?'))return;
-  button.disabled=true;
-  state.textContent='Sending...';
-  state.className='warn';
-  const form=new FormData();
-  form.append('image',image,image.name);
-  const r=await fetch('/api/teaser',{method:'POST',headers:{'Authorization':'Bearer '+secret()},body:form});
-  const data=await r.json().catch(()=>({error:'Invalid response'}));
-  out.textContent=JSON.stringify(data,null,2);
-  if(r.ok){state.textContent='SENT. Teaser control locked.';state.className='ok';button.disabled=true}
-  else{state.textContent=data.error||'Send failed.';state.className='danger';button.disabled=data.alreadySent===true}
-}
-</script>
-</body>
-</html>`, {
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
-      "X-Robots-Tag": "noindex, nofollow",
-    },
-  });
+  await caches.default.put(
+    teaserMarkerRequest(origin),
+    Response.json(data, {
+      headers: { "Cache-Control": "public, max-age=31536000, immutable" },
+    })
+  );
 }
 
 function coreRequiredConfig() {
-  return [
-    "SENTIENT_BARTENDER_TOKEN",
-    "SENTIENT_ADMIN_SECRET",
-  ];
+  return ["SENTIENT_BARTENDER_TOKEN", "SENTIENT_ADMIN_SECRET"];
 }
 
 function storyRequiredConfig() {
@@ -249,10 +93,7 @@ function liveAiHealth(env) {
     gatewayBinding: Boolean(env.SENTIENT_GATEWAY),
     openAiKey: Boolean(env.OPENAI_API_KEY),
     guildId: Boolean(env.SENTIENT_GUILD_ID || env.GUILD_ID),
-    channels: Boolean(
-      String(env.SENTIENT_AI_CHANNEL_IDS || "").trim() ||
-      env.SENTIENT_TAVERN_CHAT_CHANNEL_ID
-    ),
+    channels: Boolean(String(env.SENTIENT_AI_CHANNEL_IDS || "").trim() || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID),
   };
 
   const missing = [];
@@ -262,11 +103,7 @@ function liveAiHealth(env) {
   if (!checks.guildId) missing.push("SENTIENT_GUILD_ID (or GUILD_ID)");
   if (!checks.channels) missing.push("SENTIENT_AI_CHANNEL_IDS (or SENTIENT_TAVERN_CHAT_CHANNEL_ID)");
 
-  return {
-    configured: missing.length === 0,
-    missing,
-    checks,
-  };
+  return { configured: missing.length === 0, missing, checks };
 }
 
 function routingStatus(env) {
@@ -279,6 +116,27 @@ function routingStatus(env) {
     events: Boolean(env.SENTIENT_EVENTS_CHANNEL_ID),
     finale: Boolean(env.SENTIENT_ANNOUNCEMENTS_CHANNEL_ID),
     debug: Boolean(env.SENTIENT_DEBUG_CHANNEL_ID),
+  };
+}
+
+function testHealth(env) {
+  const chat = Boolean(env.SENTIENT_TAVERN_CHAT_CHANNEL_ID);
+  const workflow = Boolean(env.SENTIENT_WORKFLOW);
+  const bartender = Boolean(env.SENTIENT_BARTENDER_TOKEN);
+  const err02Bot = Boolean(env.SENTIENT_ERR02_TOKEN);
+  const err02Channel = Boolean(env.SENTIENT_SIGNAL_02_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID);
+  const coreChannel = Boolean(env.SENTIENT_CORE_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID);
+  const finaleChannel = Boolean(env.SENTIENT_ANNOUNCEMENTS_CHANNEL_ID || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID);
+
+  return {
+    ready: workflow && bartender && chat && err02Channel && coreChannel && finaleChannel,
+    durationSeconds: 60,
+    identityPanicMode: true,
+    err02Bot,
+    err02Mode: err02Bot ? "real-bot" : "webhook-fallback",
+    noEveryonePing: true,
+    privateFieldsExposed: false,
+    checks: { workflow, bartender, chat, err02Channel, coreChannel, finaleChannel },
   };
 }
 
@@ -311,6 +169,7 @@ export default {
         liveArmed: String(env.SENTIENT_LIVE_ARMED || "false").toLowerCase() === "true",
         liveAiConfigured: liveAi.configured,
         liveAi,
+        test: testHealth(env),
       }, coreMissing.length ? 503 : 200);
     }
 
@@ -326,13 +185,7 @@ export default {
       if (url.pathname === "/api/live-ai/status" && request.method === "GET") {
         const liveAi = liveAiHealth(env);
         if (!liveAi.configured) {
-          return json({
-            ok: false,
-            enabled: false,
-            ready: false,
-            error: `Live AI is missing: ${liveAi.missing.join(", ")}`,
-            liveAi,
-          }, 503);
+          return json({ ok: false, enabled: false, ready: false, error: `Live AI is missing: ${liveAi.missing.join(", ")}`, liveAi }, 503);
         }
         const { response, data } = await gatewayAction(env, "status");
         return json({ ...data, liveAi }, response.status);
@@ -341,13 +194,7 @@ export default {
       if (url.pathname === "/api/live-ai/start" && request.method === "POST") {
         const liveAi = liveAiHealth(env);
         if (!liveAi.configured) {
-          return json({
-            ok: false,
-            enabled: false,
-            ready: false,
-            error: `Cannot start Bartender AI. Missing: ${liveAi.missing.join(", ")}`,
-            liveAi,
-          }, 503);
+          return json({ ok: false, enabled: false, ready: false, error: `Cannot start Bartender AI. Missing: ${liveAi.missing.join(", ")}`, liveAi }, 503);
         }
         const { response, data } = await gatewayAction(env, "start");
         return json({ ...data, liveAi }, response.status);
@@ -360,35 +207,20 @@ export default {
 
       if (url.pathname === "/api/teaser-status" && request.method === "GET") {
         const marker = await readTeaserMarker(url.origin);
-        return json({
-          ok: true,
-          sent: Boolean(marker?.sent),
-          channelId: TEASER_CHANNEL_ID,
-          marker: marker || undefined,
-        });
+        return json({ ok: true, sent: Boolean(marker?.sent), channelId: TEASER_CHANNEL_ID, marker: marker || undefined });
       }
 
       if (url.pathname === "/api/teaser" && request.method === "POST") {
         const existing = await readTeaserMarker(url.origin);
         if (existing?.sent) {
-          return json({
-            error: "The single-use teaser has already been sent.",
-            alreadySent: true,
-            marker: existing,
-          }, 409);
+          return json({ error: "The single-use teaser has already been sent.", alreadySent: true, marker: existing }, 409);
         }
 
         const form = await request.formData();
         const image = form.get("image");
-        if (!(image instanceof File) || image.size === 0) {
-          return json({ error: "Attach the teaser image first." }, 400);
-        }
-        if (!image.type.startsWith("image/")) {
-          return json({ error: "The teaser attachment must be an image." }, 400);
-        }
-        if (image.size > 10 * 1024 * 1024) {
-          return json({ error: "The teaser image must be under 10 MB." }, 400);
-        }
+        if (!(image instanceof File) || image.size === 0) return json({ error: "Attach the teaser image first." }, 400);
+        if (!image.type.startsWith("image/")) return json({ error: "The teaser attachment must be an image." }, 400);
+        if (image.size > 10 * 1024 * 1024) return json({ error: "The teaser image must be under 10 MB." }, 400);
 
         const sent = await sendMessageWithAttachment(env, TEASER_CHANNEL_ID, {
           content: TEASER_TEXT,
@@ -405,12 +237,7 @@ export default {
           sentAt: new Date().toISOString(),
         };
         await writeTeaserMarker(url.origin, marker);
-
-        return json({
-          ok: true,
-          ...marker,
-          pingedEveryone: true,
-        });
+        return json({ ok: true, ...marker, pingedEveryone: true });
       }
 
       const payload = await body(request);
@@ -418,14 +245,19 @@ export default {
       if (url.pathname === "/api/start" && request.method === "POST") {
         const pace = ["test", "fast", "normal"].includes(payload.pace) ? payload.pace : "test";
         const live = payload.live === true;
+
+        if (pace === "test") {
+          const test = testHealth(env);
+          if (!test.ready) {
+            return json({ error: "60 second test is not ready. Check /health test.checks.", test }, 503);
+          }
+        }
+
         const instanceId = `sentient-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
         const instance = await env.SENTIENT_WORKFLOW.create({
           id: instanceId,
           params: { pace, live },
-          retention: {
-            successRetention: "1 day",
-            errorRetention: "3 days",
-          },
+          retention: { successRetention: "1 day", errorRetention: "3 days" },
         });
 
         return json({
@@ -433,6 +265,7 @@ export default {
           instanceId: instance.id,
           pace,
           liveRequested: live,
+          test: pace === "test" ? testHealth(env) : undefined,
           channelEditing: false,
           status: await instance.status(),
         });
