@@ -348,3 +348,33 @@ class AnomalyPerceptionLayer {
 export function createAnomalyPerceptionLayer() {
   return new AnomalyPerceptionLayer();
 }
+
+class ResponseCompositionMatrix {
+  constructor() {
+    this.templates = new Map([
+      ["dry", ["short", "measured", "pointed"]],
+      ["amused", ["playful", "light", "teasing"]],
+      ["cold", ["minimal", "controlled", "withheld"]],
+      ["curious", ["probing", "open", "observant"]],
+    ]);
+  }
+
+  compose({ mood = "observant", pressure = 0, familiarity = 0, anomaly = 0 } = {}) {
+    const traits = this.templates.get(mood) || ["neutral", "brief", "aware"];
+    const density = pressure > 0.7 ? "compressed" : pressure > 0.4 ? "balanced" : "sparse";
+    const stance = anomaly > 0.65 ? "watchful" : familiarity > 0.55 ? "familiar" : "detached";
+
+    return {
+      mood,
+      traits,
+      density,
+      stance,
+      restraint: clamp(1 - pressure * 0.5),
+      spontaneity: clamp((familiarity * 0.35) + (anomaly * 0.45)),
+    };
+  }
+}
+
+export function createResponseCompositionMatrix() {
+  return new ResponseCompositionMatrix();
+}
