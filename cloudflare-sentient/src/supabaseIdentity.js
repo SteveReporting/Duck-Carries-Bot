@@ -2,6 +2,7 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 const STATIC_FIRST_NAMES = new Map([
   ["608497545227927554", "Nguyen"],
   ["1001679436107755590", "Jayden"],
+  ["1256503719391137812", "Themis"],
 ]);
 
 let cacheExpiresAt = 0;
