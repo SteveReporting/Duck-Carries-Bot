@@ -44,7 +44,10 @@ const liveConfig = {
     directUserCooldownMs: Math.max(10000, envNumber("SENTIENT_DIRECT_USER_COOLDOWN_MS", 45000)),
     spontaneousGlobalCooldownMs: Math.max(30000, envNumber("SENTIENT_SPONTANEOUS_GLOBAL_COOLDOWN_MS", 90000)),
 
-    model: process.env.OPENAI_MODEL || "gpt-5.6",
+    historyStartAt: process.env.SENTIENT_HISTORY_START_AT || "2026-08-19T03:48:00.000Z",
+    introChannelId: process.env.SENTIENT_TAVERN_CHAT_CHANNEL_ID || process.env.SENTIENT_CHAOS_CHANNEL_ID || allowedChannelIds[0] || "",
+
+    model: process.env.OPENAI_MODEL || "gpt-5.6-sol",
     reasoningEffort: process.env.OPENAI_REASONING_EFFORT || "low",
 };
 
