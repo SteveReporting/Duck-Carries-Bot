@@ -3,6 +3,7 @@ import {
   mediaGallery,
   sendComponentMessage,
   sendMessage,
+  sendMessageAsBotToken,
   sendWebhookIdentity,
   separator,
   textDisplay,
@@ -90,10 +91,20 @@ export async function sceneVaultEcho(env) {
   });
 }
 
-export async function sceneSecondSignalOpen(env) {
-  const who = identity(env, "err02");
+export async function sceneSecondSignalOpen(env, runId = crypto.randomUUID()) {
+  const target = channel(env, "signal02");
 
-  return sendWebhookIdentity(env, channel(env, "signal02"), {
+  // If a dedicated ERR_02 bot token exists, use the real bot account.
+  // Otherwise keep the old webhook identity as a fallback.
+  if (env.SENTIENT_ERR02_TOKEN) {
+    return sendMessageAsBotToken(env.SENTIENT_ERR02_TOKEN, target, {
+      content: "hello?",
+      nonce: nonce(runId, "err02a"),
+    });
+  }
+
+  const who = identity(env, "err02");
+  return sendWebhookIdentity(env, target, {
     ...who,
     components: [
       container([
@@ -110,7 +121,7 @@ export async function sceneSecondSignalOpen(env) {
 
 export async function sceneSecondSignalReply(env, runId) {
   return sendMessage(env, channel(env, "chat"), {
-    content: "**Don't answer it.**",
+    content: "**Don't respond to it.**",
     nonce: nonce(runId, "err02b"),
   });
 }
@@ -142,7 +153,6 @@ export async function sceneBreach(env) {
     ],
   });
 
-  // Contained test mode deliberately does not rename, move, create or delete channels.
   return { originalName: null, channelEditing: false };
 }
 
