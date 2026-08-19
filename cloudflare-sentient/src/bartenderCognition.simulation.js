@@ -310,3 +310,41 @@ class CognitivePulseEngine {
 export function createCognitivePulseEngine(windowSize) {
   return new CognitivePulseEngine(windowSize);
 }
+
+class AnomalyPerceptionLayer {
+  constructor() {
+    this.baseline = 0.18;
+    this.events = [];
+  }
+
+  evaluate({ repetition = 0, contradiction = 0, attentionShift = 0, silenceGap = 0 } = {}) {
+    const score = clamp(
+      this.baseline +
+      repetition * 0.22 +
+      contradiction * 0.34 +
+      attentionShift * 0.26 +
+      silenceGap * 0.18
+    );
+
+    const classification = score > 0.82
+      ? "critical-pattern"
+      : score > 0.62
+        ? "unusual-pattern"
+        : score > 0.4
+          ? "weak-pattern"
+          : "background";
+
+    const event = { score, classification, timestamp: Date.now() };
+    this.events.push(event);
+    if (this.events.length > 20) this.events.shift();
+    return event;
+  }
+
+  recent() {
+    return this.events.slice(-6);
+  }
+}
+
+export function createAnomalyPerceptionLayer() {
+  return new AnomalyPerceptionLayer();
+}
