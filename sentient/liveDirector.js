@@ -45,6 +45,37 @@ function toBinary(text) {
         .join(" ");
 }
 
+async function readEventWindow(client) {
+    if (!client || !liveConfig.guildId) return { channels: 0, messages: 0 };
+    const guild = await client.guilds.fetch(liveConfig.guildId).catch(() => null);
+    if (!guild) return { channels: 0, messages: 0 };
+
+    const startMs = Date.parse(liveConfig.historyStartAt);
+    const ids = [...new Set([
+        ...liveConfig.allowedChannelIds,
+        liveConfig.introChannelId,
+    ].filter(Boolean))];
+
+    let channels = 0;
+    let messages = 0;
+
+    for (const channelId of ids) {
+        const channel = await guild.channels.fetch(channelId).catch(() => null);
+        if (!channel?.messages?.fetch) continue;
+        channels += 1;
+
+        const batch = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+        if (!batch) continue;
+        messages += [...batch.values()].filter((message) => {
+            if (!message.content?.trim()) return false;
+            if (!Number.isFinite(startMs)) return true;
+            return (message.createdTimestamp || 0) >= startMs;
+        }).length;
+    }
+
+    return { channels, messages };
+}
+
 async function runChaosSequence(client, channelId) {
     if (!channelId) throw new Error("No SENTIENT_CHAOS_CHANNEL_ID or Tavern chat channel configured.");
     await initLiveEntities();
@@ -79,8 +110,6 @@ async function runChaosSequence(client, channelId) {
         if (entity === "err02") await sendErr02(client, channelId, content);
         if (entity === "core") await sendCore(client, channelId, content);
 
-        // Cinematic burst, but still intentionally paced below Discord's normal
-        // anti-spam/rate-limit pressure. No mentions are allowed in entity sends.
         const delay = i < 5 ? 1900 : i < 13 ? 1250 : 1650;
         await sleep(delay);
     }
@@ -120,6 +149,8 @@ async function handleOwnerCommand(message, client) {
             `**Tavern Core connected:** ${entities.coreReady}`,
             `**Tavern Core delivery:** ${entities.coreMode}`,
             `**ERR_02 one-shot used:** ${Boolean(state.err02_used)}`,
+            `**Intro used:** ${Boolean(state.intro_used)}`,
+            `**Event memory starts:** ${liveConfig.historyStartAt}`,
             `**Allowed channels:** ${liveConfig.allowedChannelIds.length ? liveConfig.allowedChannelIds.map((id) => `<#${id}>`).join(", ") : "NONE"}`,
             `**Chaos channel:** ${liveConfig.chaosChannelId ? `<#${liveConfig.chaosChannelId}>` : "NOT CONFIGURED"}`,
             "**Identity rule:** server nickname only, otherwise Discord username. No real-name lookup or inference.",
@@ -245,14 +276,29 @@ async function handleLiveMessage(message, client) {
     await maybeReply(message, client);
 }
 
-async function startLiveSentient() {
+async function startLiveSentient(client) {
     if (!liveConfig.guildId) {
         console.warn("[SENTIENT LIVE] GUILD_ID missing. Live character layer disabled.");
         return;
     }
+
     await initLiveEntities();
-    const state = liveStore.get(liveConfig.guildId);
-    console.log(`[SENTIENT LIVE] Bartender AI ${state.enabled ? "enabled" : "disabled"}. Nickname-only identity mode active.`);
+    let state = liveStore.setEnabled(liveConfig.guildId, true);
+
+    const read = await readEventWindow(client);
+    console.log(`[SENTIENT LIVE] Read ${read.messages} public message(s) across ${read.channels} configured channel(s) since ${liveConfig.historyStartAt}.`);
+
+    if (!state.intro_used && liveConfig.introChannelId) {
+        try {
+            await sendBartender(client, liveConfig.introChannelId, "hm. i know all your names.");
+            liveStore.markIntroUsed(liveConfig.guildId);
+        } catch (error) {
+            console.warn(`[SENTIENT LIVE] Intro message failed and will retry next restart: ${error.message}`);
+        }
+    }
+
+    state = liveStore.get(liveConfig.guildId);
+    console.log(`[SENTIENT LIVE] Bartender AI ${state.enabled ? "enabled" : "disabled"}. Event-memory mode active.`);
 }
 
 module.exports = {
