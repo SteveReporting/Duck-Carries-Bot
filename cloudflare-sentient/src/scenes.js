@@ -61,6 +61,29 @@ function identity(env, kind) {
   };
 }
 
+function gatewayStub(env) {
+  if (!env.SENTIENT_GATEWAY) return null;
+  const id = env.SENTIENT_GATEWAY.idFromName("bartender-live");
+  return env.SENTIENT_GATEWAY.get(id);
+}
+
+async function muteBartender(env, durationMs = 10000) {
+  const stub = gatewayStub(env);
+  if (!stub) return;
+  await stub.fetch("https://sentient-gateway/mute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ durationMs }),
+  }).catch((error) => console.error("[SENTIENT] Could not mute live Bartender:", error));
+}
+
+async function unmuteBartender(env) {
+  const stub = gatewayStub(env);
+  if (!stub) return;
+  await stub.fetch("https://sentient-gateway/unmute", { method: "POST" })
+    .catch((error) => console.error("[SENTIENT] Could not unmute live Bartender:", error));
+}
+
 export async function sceneWatching(env, runId) {
   return sendMessage(env, channel(env, "chat"), {
     content: "You lot went back to talking rather quickly.",
@@ -94,11 +117,15 @@ export async function sceneVaultEcho(env) {
 export async function sceneSecondSignalOpen(env, runId = crypto.randomUUID()) {
   const target = channel(env, "signal02");
 
+  // Keep Bartender connected, but suppress normal AI replies during this beat.
+  // The mute auto-expires after 10 seconds as a fallback if the scene is interrupted.
+  await muteBartender(env, 10000);
+
   // If a dedicated ERR_02 bot token exists, use the real bot account.
   // Otherwise keep the old webhook identity as a fallback.
   if (env.SENTIENT_ERR02_TOKEN) {
     return sendMessageAsBotToken(env.SENTIENT_ERR02_TOKEN, target, {
-      content: "hello?",
+      content: "hello anyone there?",
       nonce: nonce(runId, "err02a"),
     });
   }
@@ -111,7 +138,7 @@ export async function sceneSecondSignalOpen(env, runId = crypto.randomUUID()) {
         separator(2, false),
         textDisplay("## `UNRECOGNIZED SIGNAL // 02`"),
         separator(2, true),
-        textDisplay("# **hello?**"),
+        textDisplay("# **hello anyone there?**"),
         separator(2, false),
         textDisplay("-# source could not be resolved"),
       ], ERROR_RED),
@@ -120,10 +147,15 @@ export async function sceneSecondSignalOpen(env, runId = crypto.randomUUID()) {
 }
 
 export async function sceneSecondSignalReply(env, runId) {
-  return sendMessage(env, channel(env, "chat"), {
-    content: "**Don't respond to it.**",
-    nonce: nonce(runId, "err02b"),
-  });
+  try {
+    return await sendMessage(env, channel(env, "chat"), {
+      content: "**Don't respond to it.**",
+      nonce: nonce(runId, "err02b"),
+    });
+  } finally {
+    // Resume normal live AI immediately after the warning is delivered.
+    await unmuteBartender(env);
+  }
 }
 
 export async function sceneBreach(env) {
