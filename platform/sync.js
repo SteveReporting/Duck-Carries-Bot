@@ -52,7 +52,9 @@ async function syncLegacyDiscordQueue(client) {
   const guildId = process.env.GUILD_ID;
   if (!guildId) return;
 
-  const rows = await loadLiveLegacyQueue(client, guildId, { maxMessages: 500 });
+  // SQLite is authoritative for the legacy Discord queue. The website mirror
+  // must never depend on Discord message history or component parsing.
+  const rows = await loadLiveLegacyQueue(client, guildId);
   const supabase = getSupabase();
   const now = new Date().toISOString();
 
@@ -64,31 +66,37 @@ async function syncLegacyDiscordQueue(client) {
   if (deactivateError) throw new Error(`Discord queue bridge deactivate failed: ${deactivateError.message}`);
 
   if (!rows.length) {
-    console.log("[QUEUE BRIDGE] No live Discord carry messages found.");
+    console.log("[QUEUE BRIDGE] No active SQLite carry requests found.");
     return;
   }
 
-  const payload = rows.map((row) => ({
-    guild_id: String(row.guild),
-    legacy_id: Number(row.id),
-    discord_user_id: row.user ? String(row.user) : null,
-    roblox_username: row.roblox || null,
-    dungeon: row.dungeon || "Unknown dungeon",
-    difficulty: row.difficulty || null,
-    runs: row.runs == null ? null : String(row.runs),
-    availability: row.availability || null,
-    discord_carrier_id: row.carrier ? String(row.carrier) : null,
-    status: row.status || "waiting",
-    active: true,
-    synced_at: now,
-  }));
+  const payload = rows.map((row) => {
+    const createdAtMs = Number(row.created_at);
+    return {
+      guild_id: String(row.guild),
+      legacy_id: Number(row.id),
+      discord_user_id: row.user ? String(row.user) : null,
+      roblox_username: row.roblox || null,
+      dungeon: row.dungeon || "Unknown dungeon",
+      difficulty: row.difficulty || null,
+      runs: row.runs == null ? null : String(row.runs),
+      availability: row.availability || null,
+      discord_carrier_id: row.carrier ? String(row.carrier) : null,
+      status: row.status || "waiting",
+      active: true,
+      synced_at: now,
+      created_at: Number.isFinite(createdAtMs) && createdAtMs > 0
+        ? new Date(createdAtMs).toISOString()
+        : now,
+    };
+  });
 
   const { error: upsertError } = await supabase
     .from("discord_carry_queue")
     .upsert(payload, { onConflict: "guild_id,legacy_id" });
   if (upsertError) throw new Error(`Discord queue bridge sync failed: ${upsertError.message}`);
 
-  console.log(`[QUEUE BRIDGE] Mirrored ${rows.length} live Discord carry request(s).`);
+  console.log(`[QUEUE BRIDGE] Mirrored ${rows.length} active SQLite carry request(s).`);
 }
 
 async function syncDiscordContentFeed(client, feedType, channelId) {
