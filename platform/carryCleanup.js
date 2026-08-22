@@ -13,7 +13,7 @@ function retentionHours() {
 function purgeLegacySqlite(beforeMs) {
   try {
     const result = db
-      .prepare("DELETE FROM queue WHERE created_at IS NOT NULL AND created_at < ?")
+      .prepare("DELETE FROM queue WHERE created_at IS NULL OR created_at < ?")
       .run(beforeMs);
     return Number(result.changes || 0);
   } catch (error) {
