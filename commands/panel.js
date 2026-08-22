@@ -12,7 +12,7 @@ module.exports = {
 
   async execute(interaction) {
     const button = new ButtonBuilder()
-      .setCustomId("carry_request_start_v3")
+      .setCustomId("carry_request_start_v4")
       .setLabel("🍺 Request a Carry")
       .setStyle(ButtonStyle.Primary);
 
@@ -22,12 +22,12 @@ module.exports = {
         "",
         "Need a carry? Use the button below.",
         "",
-        "**How requesting works:**",
-        "• Select your **Dungeon** from the dropdown, from **Desert Temple → Enchanted Forest**.",
-        "• Select the valid **Difficulty** from the next dropdown.",
-        "• **Desert Temple** and **Winter Outpost**: Easy, Medium, Hard, Insane or Nightmare.",
-        "• **Every other listed dungeon**: Insane or Nightmare only.",
-        "• You only type the number of runs, availability and optional notes.",
+        "**The request opens as one Discord popup:**",
+        "• Select your **Dungeon** from **Desert Temple → Enchanted Forest**.",
+        "• Select your **Difficulty** in the same popup.",
+        "• **Desert Temple / Winter Outpost:** Easy, Medium, Hard, Insane or Nightmare.",
+        "• **Every other listed dungeon:** Insane or Nightmare only.",
+        "• Type only your runs, availability and optional notes.",
         "• You can keep up to **2 active requests** at once.",
         "• You can request **1-15 runs** per request.",
         "• Requests and stale legacy queue data older than **24 hours** are automatically cleaned up.",
