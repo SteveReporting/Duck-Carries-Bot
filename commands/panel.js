@@ -12,7 +12,7 @@ module.exports = {
 
   async execute(interaction) {
     const button = new ButtonBuilder()
-      .setCustomId("create_carry")
+      .setCustomId("carry_request_start_v2")
       .setLabel("🍺 Request a Carry")
       .setStyle(ButtonStyle.Primary);
 
@@ -22,15 +22,17 @@ module.exports = {
         "",
         "Need a carry? Use the button below.",
         "",
-        "**Before requesting:**",
-        "• Your Roblox account must be verified with the Tavern bot.",
-        "• Requests have a **20 minute cooldown**.",
-        "• You can request **1-15 runs**.",
-        "• Dungeon abbreviations are cleaned automatically, for example `UW` → `Underworld`.",
-        "• Matching dungeon + difficulty requests are merged for Carriers.",
-        "• Unclaimed requests expire after **24 hours**.",
+        "**How requesting works:**",
+        "• Choose your **Dungeon** from a list.",
+        "• Choose the valid **Difficulty** for that dungeon.",
+        "• Enter only your runs, availability and optional notes.",
+        "• You can keep up to **2 active requests** at once.",
+        "• You can request **1-15 runs** per request.",
+        "• Desert Temple and Winter Outpost support **Easy, Medium, Hard, Insane and Nightmare**.",
+        "• Other progression dungeons support **Insane and Nightmare**.",
+        "• Requests and stale legacy queue data older than **24 hours** are automatically cleaned up.",
         "",
-        "When accepted, you and the Carrier get a private ticket. The carry only registers complete after **both sides confirm**.",
+        "When a Carrier claims the request, the shared Tavern queue and Discord ticket system handle the rest.",
       ].join("\n"),
       components: [new ActionRowBuilder().addComponents(button)],
     });
