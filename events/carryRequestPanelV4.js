@@ -1,0 +1,291 @@
+const {
+  LabelBuilder,
+  ModalBuilder,
+  StringSelectMenuBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+} = require("discord.js");
+
+const { getSupabase } = require("../marketplace/supabase");
+const { getLinkedProfile, marketplaceBaseUrl } = require("../platform/helpers");
+const { parseRuns } = require("../platform/dungeons");
+const {
+  maybeSendAbuseAlert,
+  notifyMatchingCarriers,
+  recordAbuseEvent,
+} = require("../platform/communitySystems");
+
+const START_ID = "carry_request_start_v4";
+const MODAL_ID = "carry_request_modal_v4";
+const MAX_ACTIVE_REQUESTS = 2;
+
+const DUNGEONS = [
+  "Desert Temple",
+  "Winter Outpost",
+  "Pirate Island",
+  "King's Castle",
+  "Underworld",
+  "Samurai Palace",
+  "Canals",
+  "Ghastly Harbor",
+  "Steampunk Sewers",
+  "Orbital Outpost",
+  "Volcanic Chambers",
+  "Aquatic Temple",
+  "Enchanted Forest",
+];
+
+const STANDARD_DIFFICULTIES = ["Insane", "Nightmare"];
+const EARLY_DIFFICULTIES = ["Easy", "Medium", "Hard", "Insane", "Nightmare"];
+const EARLY_DUNGEONS = new Set(["Desert Temple", "Winter Outpost"]);
+
+function difficultiesForDungeon(dungeon) {
+  return EARLY_DUNGEONS.has(dungeon) ? EARLY_DIFFICULTIES : STANDARD_DIFFICULTIES;
+}
+
+async function requireRequestProfile(interaction) {
+  const profile = await getLinkedProfile(interaction.user.id);
+  if (!profile) {
+    const base = marketplaceBaseUrl();
+    await interaction.reply({
+      content: `❌ Before requesting a carry, link your Tavern account.${base ? `\nSign in with Discord: ${base}/auth` : ""}`,
+      ephemeral: true,
+    });
+    return null;
+  }
+
+  if (!profile.roblox_verified_at || !profile.roblox_username) {
+    await interaction.reply({
+      content: "❌ Before requesting a carry, verify your Roblox account with `/roblox link` and `/roblox verify`.",
+      ephemeral: true,
+    });
+    return null;
+  }
+
+  return profile;
+}
+
+async function loadActiveRequests(profileId) {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("carry_requests")
+    .select("id,dungeon,difficulty,status,created_at")
+    .eq("requester_id", profileId)
+    .in("status", ["queued", "claimed", "in_progress"])
+    .order("created_at", { ascending: true })
+    .limit(MAX_ACTIVE_REQUESTS);
+
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+
+function buildCarryModal() {
+  const dungeonSelect = new StringSelectMenuBuilder()
+    .setCustomId("dungeon")
+    .setPlaceholder("Select a dungeon")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(
+      DUNGEONS.map((dungeon, index) => ({
+        label: dungeon,
+        value: dungeon,
+        description: `${index + 1}. ${dungeon}`,
+      })),
+    );
+
+  const difficultySelect = new StringSelectMenuBuilder()
+    .setCustomId("difficulty")
+    .setPlaceholder("Select a difficulty")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(
+      { label: "Easy", value: "Easy", description: "Desert Temple / Winter Outpost only" },
+      { label: "Medium", value: "Medium", description: "Desert Temple / Winter Outpost only" },
+      { label: "Hard", value: "Hard", description: "Desert Temple / Winter Outpost only" },
+      { label: "Insane", value: "Insane", description: "Available for every listed dungeon" },
+      { label: "Nightmare", value: "Nightmare", description: "Available for every listed dungeon" },
+    );
+
+  const runsInput = new TextInputBuilder()
+    .setCustomId("runs")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMinLength(1)
+    .setMaxLength(2)
+    .setPlaceholder("1-15");
+
+  const availabilityInput = new TextInputBuilder()
+    .setCustomId("availability")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(240)
+    .setPlaceholder("Available now / next 2 hours");
+
+  const notesInput = new TextInputBuilder()
+    .setCustomId("notes")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setMaxLength(1000)
+    .setPlaceholder("Anything the Carrier should know");
+
+  const dungeonLabel = new LabelBuilder()
+    .setLabel("Dungeon")
+    .setDescription("Select from Desert Temple through Enchanted Forest.")
+    .setStringSelectMenuComponent(dungeonSelect);
+
+  const difficultyLabel = new LabelBuilder()
+    .setLabel("Difficulty")
+    .setDescription("Easy/Medium/Hard are only valid for Desert Temple and Winter Outpost.")
+    .setStringSelectMenuComponent(difficultySelect);
+
+  const runsLabel = new LabelBuilder()
+    .setLabel("Number of Runs (1-15)")
+    .setTextInputComponent(runsInput);
+
+  const availabilityLabel = new LabelBuilder()
+    .setLabel("Availability")
+    .setTextInputComponent(availabilityInput);
+
+  const notesLabel = new LabelBuilder()
+    .setLabel("Extra Notes (optional)")
+    .setTextInputComponent(notesInput);
+
+  return new ModalBuilder()
+    .setCustomId(MODAL_ID)
+    .setTitle("Request Carry")
+    .addLabelComponents(
+      dungeonLabel,
+      difficultyLabel,
+      runsLabel,
+      availabilityLabel,
+      notesLabel,
+    );
+}
+
+async function startRequest(interaction) {
+  const profile = await requireRequestProfile(interaction);
+  if (!profile) return;
+
+  const active = await loadActiveRequests(profile.id);
+  if (active.length >= MAX_ACTIVE_REQUESTS) {
+    const current = active
+      .map((request) => `• **${request.dungeon}** • ${request.difficulty} • ${request.status.replace("_", " ")}`)
+      .join("\n");
+
+    return interaction.reply({
+      content: [
+        `❌ You already have **${MAX_ACTIVE_REQUESTS}/${MAX_ACTIVE_REQUESTS} active carry requests**.`,
+        current,
+        "",
+        "Finish or cancel one before creating another.",
+      ].join("\n"),
+      ephemeral: true,
+    });
+  }
+
+  return interaction.showModal(buildCarryModal());
+}
+
+async function submitRequest(interaction) {
+  if (!interaction.guild) {
+    return interaction.reply({ content: "❌ Carry requests must be created inside the server.", ephemeral: true });
+  }
+
+  const profile = await getLinkedProfile(interaction.user.id);
+  if (!profile || !profile.roblox_verified_at || !profile.roblox_username) {
+    return interaction.reply({ content: "❌ Verify your Roblox account before requesting a carry.", ephemeral: true });
+  }
+
+  const dungeon = interaction.fields.getStringSelectValues("dungeon")[0];
+  const difficulty = interaction.fields.getStringSelectValues("difficulty")[0];
+
+  if (!DUNGEONS.includes(dungeon)) {
+    return interaction.reply({ content: "❌ Invalid dungeon selection. Please open the carry form again.", ephemeral: true });
+  }
+
+  if (!difficultiesForDungeon(dungeon).includes(difficulty)) {
+    return interaction.reply({
+      content: `❌ **${difficulty}** is not available for **${dungeon}**. ${EARLY_DUNGEONS.has(dungeon) ? "Choose Easy, Medium, Hard, Insane or Nightmare." : "Choose Insane or Nightmare."}`,
+      ephemeral: true,
+    });
+  }
+
+  const runs = parseRuns(interaction.fields.getTextInputValue("runs").trim());
+  if (!runs) {
+    return interaction.reply({ content: "❌ Runs must be a number from **1 to 15**.", ephemeral: true });
+  }
+
+  const availability = interaction.fields.getTextInputValue("availability").trim().slice(0, 240);
+  const notes = interaction.fields.getTextInputValue("notes").trim() || null;
+
+  const active = await loadActiveRequests(profile.id);
+  if (active.length >= MAX_ACTIVE_REQUESTS) {
+    return interaction.reply({
+      content: `❌ You now have **${MAX_ACTIVE_REQUESTS} active carry requests**. Finish or cancel one before submitting another.`,
+      ephemeral: true,
+    });
+  }
+
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("carry_requests")
+    .insert({
+      requester_id: profile.id,
+      dungeon,
+      difficulty,
+      runs_requested: runs,
+      availability,
+      notes,
+      status: "queued",
+    })
+    .select("id,requester_id,dungeon,difficulty,runs_requested,availability,created_at")
+    .single();
+
+  if (error) {
+    return interaction.reply({ content: `❌ ${error.message}`, ephemeral: true });
+  }
+
+  recordAbuseEvent(interaction.guildId, interaction.user.id, "queue_request", 0, { requestId: data.id });
+  const matched = await notifyMatchingCarriers(interaction.client, interaction.guildId, data).catch(() => 0);
+  await maybeSendAbuseAlert(interaction.client, interaction.guildId, interaction.user.id, "carry request").catch(() => {});
+
+  const base = marketplaceBaseUrl();
+  return interaction.reply({
+    content: [
+      "✅ **Your carry is in the shared Tavern queue.**",
+      `🏰 **${dungeon}**`,
+      `⚔️ **${difficulty}**`,
+      `👥 **${runs}** run${runs === 1 ? "" : "s"}`,
+      `🕒 **${availability}**`,
+      `🎮 Roblox: **${profile.roblox_username}**`,
+      `🍻 Smart match: **${matched}** available matching Carrier${matched === 1 ? "" : "s"} notified.`,
+      `🆔 Request ID: \`${data.id}\``,
+      "",
+      `${active.length + 1}/${MAX_ACTIVE_REQUESTS} active request slots now in use.`,
+      base ? `${base}/queue` : null,
+    ].filter(Boolean).join("\n"),
+    ephemeral: true,
+  });
+}
+
+module.exports = {
+  name: "interactionCreate",
+  async execute(interaction) {
+    try {
+      if (interaction.isButton() && interaction.customId === START_ID) {
+        return await startRequest(interaction);
+      }
+
+      if (interaction.isModalSubmit() && interaction.customId === MODAL_ID) {
+        return await submitRequest(interaction);
+      }
+    } catch (error) {
+      console.error("[CARRY REQUEST PANEL V4]", error);
+      const message = `❌ ${error.message || "Something went wrong while creating the carry request."}`;
+      if (interaction.deferred || interaction.replied) {
+        return interaction.followUp({ content: message, ephemeral: true }).catch(() => {});
+      }
+      return interaction.reply({ content: message, ephemeral: true }).catch(() => {});
+    }
+  },
+};
