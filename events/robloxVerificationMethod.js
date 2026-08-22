@@ -3,8 +3,6 @@ const {
   ButtonBuilder,
   ButtonStyle,
   MessageFlags,
-  StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder,
 } = require("discord.js");
 
 const { getSupabase } = require("../marketplace/supabase");
@@ -12,32 +10,6 @@ const { getLinkedProfile } = require("../platform/helpers");
 const { verificationGameUrl } = require("../platform/robloxAccounts");
 
 const SELECT_PREFIX = "roblox_verify_method:";
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function methodSelector(requestId) {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`${SELECT_PREFIX}${requestId}`)
-      .setPlaceholder("Choose how you want to verify")
-      .setMinValues(1)
-      .setMaxValues(1)
-      .addOptions(
-        new StringSelectMenuOptionBuilder()
-          .setLabel("Verification Game")
-          .setDescription("Join the Roblox game and verify automatically")
-          .setEmoji("🎮")
-          .setValue("game"),
-        new StringSelectMenuOptionBuilder()
-          .setLabel("Roblox Bio / About")
-          .setDescription("Put a unique code in your Roblox About")
-          .setEmoji("📝")
-          .setValue("bio"),
-      ),
-  );
-}
 
 function joinGameButton() {
   return new ActionRowBuilder().addComponents(
@@ -49,52 +21,22 @@ function joinGameButton() {
   );
 }
 
-async function pendingForDiscordUser(discordId, requestId = null) {
+async function pendingForDiscordUser(discordId, requestId) {
   const profile = await getLinkedProfile(discordId).catch(() => null);
   if (!profile?.id) return null;
 
   const supabase = getSupabase();
-  let query = supabase
+  const { data, error } = await supabase
     .from("roblox_link_requests")
     .select("id,user_id,roblox_username,roblox_user_id,verification_code,status,created_at")
+    .eq("id", requestId)
     .eq("user_id", profile.id)
-    .eq("status", "pending");
-
-  if (requestId) query = query.eq("id", requestId);
-
-  const { data, error } = await query
-    .order("created_at", { ascending: false })
-    .limit(1)
+    .eq("status", "pending")
     .maybeSingle();
   if (error) throw new Error(error.message);
   if (!data) return null;
+
   return { profile, request: data };
-}
-
-async function replaceLinkReplyWithSelector(interaction) {
-  // /roblox link itself resolves the Roblox username and writes the pending
-  // request. Wait for that operation to finish, then replace its old two-method
-  // wall of text with one clean method picker.
-  let state = null;
-  for (let attempt = 0; attempt < 16; attempt += 1) {
-    await sleep(attempt === 0 ? 450 : 300);
-    state = await pendingForDiscordUser(interaction.user.id).catch(() => null);
-    if (state?.request?.roblox_user_id) break;
-  }
-  if (!state?.request) return;
-
-  const request = state.request;
-  await interaction.editReply({
-    content: [
-      `🟥 **Roblox verification started for @${request.roblox_username}.**`,
-      "",
-      "Choose how you want to verify this Roblox account:",
-      "",
-      "🎮 **Verification Game** — select this, then join the game. The moment this exact Roblox account joins, it verifies automatically.",
-      "📝 **Roblox Bio / About** — select this to receive a unique code for your Roblox About.",
-    ].join("\n"),
-    components: [methodSelector(request.id)],
-  });
 }
 
 async function chooseVerificationMethod(interaction) {
@@ -120,9 +62,9 @@ async function chooseVerificationMethod(interaction) {
       });
     }
 
-    // Re-arm the exact pending row at the moment Game Verification is selected.
-    // The Roblox place submits player.UserId, so the website verifier can now
-    // match this immutable ID immediately when the player joins.
+    // Re-arm the exact pending record when the user explicitly chooses game
+    // verification. The Roblox place sends player.UserId on PlayerAdded, so
+    // joining the game is the verification action after this point.
     const { error } = await supabase
       .from("roblox_link_requests")
       .update({
@@ -139,12 +81,11 @@ async function chooseVerificationMethod(interaction) {
       content: [
         `🎮 **Game Verification selected for @${request.roblox_username}.**`,
         "",
-        "✅ Your verification is ready.",
+        "✅ Your verification request is armed for this exact Roblox account.",
         "",
-        "Join the Carry Tavern verification game while logged into **this exact Roblox account**.",
-        "**As soon as you join, the game verifies you automatically.** You do not need to run `/roblox verify` afterwards.",
-        "",
-        `Roblox User ID locked to this request: \`${request.roblox_user_id}\``,
+        "Press **Join Verification Game** below while logged into that account.",
+        "**The instant the account joins the verification place, it is verified automatically.**",
+        "You do not need to run `/roblox verify` afterwards.",
       ].join("\n"),
       components: [joinGameButton()],
     });
@@ -174,21 +115,10 @@ module.exports = {
   name: "interactionCreate",
 
   async execute(interaction) {
-    try {
-      if (
-        interaction.isChatInputCommand?.() &&
-        interaction.commandName === "roblox" &&
-        interaction.options.getSubcommand(false) === "link"
-      ) {
-        return await replaceLinkReplyWithSelector(interaction);
-      }
+    if (!interaction.isStringSelectMenu?.() || !interaction.customId.startsWith(SELECT_PREFIX)) return;
 
-      if (
-        interaction.isStringSelectMenu?.() &&
-        interaction.customId.startsWith(SELECT_PREFIX)
-      ) {
-        return await chooseVerificationMethod(interaction);
-      }
+    try {
+      return await chooseVerificationMethod(interaction);
     } catch (error) {
       console.error("[ROBLOX METHOD SELECT]", error);
       const message = `❌ ${error.message || "Could not select a Roblox verification method."}`;
