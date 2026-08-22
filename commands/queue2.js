@@ -22,6 +22,7 @@ const {
 const STANDARD_DIFFICULTIES = ["Insane", "Nightmare"];
 const EARLY_DUNGEON_DIFFICULTIES = ["Easy", "Medium", "Hard", "Insane", "Nightmare"];
 const EARLY_DUNGEONS = new Set(["Desert Temple", "Winter Outpost"]);
+const MAX_ACTIVE_REQUESTS = 2;
 
 function difficultiesForDungeon(dungeon) {
   return EARLY_DUNGEONS.has(canonicalizeDungeon(dungeon))
@@ -47,25 +48,31 @@ async function createRequest(interaction) {
   if (!profile) return;
 
   const supabase = getSupabase();
-  const { data: active, error: activeError } = await supabase
+  const { data: active = [], error: activeError } = await supabase
     .from("carry_requests")
-    .select("id,dungeon,status")
+    .select("id,dungeon,difficulty,status,created_at")
     .eq("requester_id", profile.id)
     .in("status", ["queued", "claimed", "in_progress"])
-    .limit(1)
-    .maybeSingle();
+    .order("created_at", { ascending: true })
+    .limit(MAX_ACTIVE_REQUESTS);
 
   if (activeError) throw new Error(activeError.message);
-  if (active) {
-    recordAbuseEvent(interaction.guildId, interaction.user.id, "duplicate_request", 1, { active: active.id });
+  if (active.length >= MAX_ACTIVE_REQUESTS) {
+    recordAbuseEvent(interaction.guildId, interaction.user.id, "duplicate_request", 1, {
+      active: active.map((request) => request.id),
+    });
     await maybeSendAbuseAlert(
       interaction.client,
       interaction.guildId,
       interaction.user.id,
-      "duplicate carry request",
+      "more than two active carry requests",
     ).catch(() => {});
+
+    const current = active
+      .map((request) => `• **${request.dungeon}** (${request.difficulty}, ${request.status})`)
+      .join("\n");
     return interaction.editReply(
-      `❌ You already have an active request for **${active.dungeon}** (${active.status}).`,
+      `❌ You can have up to **${MAX_ACTIVE_REQUESTS} active carry requests** at once.\n${current}`,
     );
   }
 
@@ -120,6 +127,7 @@ async function createRequest(interaction) {
     [
       `✅ Added **${dungeon}** (${difficulty}, ${runs} run${runs === 1 ? "" : "s"}) to the Tavern queue.`,
       `🎮 Roblox: **${profile.roblox_username}**`,
+      `📌 Active requests: **${active.length + 1}/${MAX_ACTIVE_REQUESTS}**`,
       `🍻 Smart match: **${matched}** available matching Carrier${matched === 1 ? "" : "s"} notified.`,
       `Request ID: \`${data.id}\``,
       base ? `${base}/carry-queue` : null,
@@ -246,6 +254,7 @@ module.exports = {
 
     if (focused.name === "dungeon") {
       const choices = DUNGEONS
+        .filter((dungeon) => dungeon.name !== "Boss Raids")
         .filter(
           (dungeon) =>
             dungeon.name.toLowerCase().includes(typed) ||
