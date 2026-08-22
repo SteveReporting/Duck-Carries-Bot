@@ -96,6 +96,15 @@ local function getGameSecretWithRetry()
 	error(lastError or "Roblox secret could not be loaded")
 end
 
+local function responsePreview(body)
+	local text = tostring(body or "")
+	text = text:gsub("%s+", " ")
+	if #text > 240 then
+		text = text:sub(1, 240) .. "..."
+	end
+	return text
+end
+
 local function verifyPlayer(player)
 	showStatus(player, "🍺 Verifying...", "Checking your Roblox account with The Carry Tavern. Do not leave yet.")
 
@@ -130,14 +139,48 @@ local function verifyPlayer(player)
 
 	if response.Success and decodeSuccess and decoded and decoded.verified then
 		player:SetAttribute("CarryTavernVerified", true)
-		showStatus(player, "✅ VERIFIED", "Your Roblox account is now linked to The Carry Tavern. You can leave the game and return to Discord.")
+		if decoded.alreadyVerified then
+			showStatus(player, "✅ ALREADY VERIFIED", "This Roblox account is already linked to The Carry Tavern. You can leave the game and return to Discord.")
+		else
+			showStatus(player, "✅ VERIFIED", "Your Roblox account is now linked to The Carry Tavern. You can leave the game and return to Discord.")
+		end
 		return
 	end
 
-	local reason = "No pending verification was found for this Roblox account. Run /roblox link in Discord first, then rejoin."
-	if decodeSuccess and decoded and decoded.error then
-		reason = tostring(decoded.error)
+	-- Do not turn an HTML/Cloudflare 404 or another non-JSON server response into
+	-- the misleading 'no pending verification' message. That made valid pending
+	-- requests look broken when the API route itself was unavailable.
+	if not decodeSuccess then
+		local preview = responsePreview(response.Body)
+		warn(string.format(
+			"[Carry Tavern Verify] Non-JSON response HTTP %s: %s",
+			tostring(response.StatusCode),
+			preview
+		))
+
+		if response.StatusCode == 404 then
+			showStatus(
+				player,
+				"⚠️ Verification service unavailable",
+				"The Carry Tavern verification API returned HTTP 404. Your Discord link may be fine; the website verifier needs to be deployed."
+			)
+		else
+			showStatus(
+				player,
+				"⚠️ Verification service error",
+				string.format("The verification service returned HTTP %s. Rejoin shortly or contact Tavern staff.", tostring(response.StatusCode))
+			)
+		end
+		return
 	end
+
+	local reason = "The verification server rejected this request. Run /roblox link in Discord and try again."
+	if decoded and decoded.error then
+		reason = tostring(decoded.error)
+	elseif response.StatusCode == 404 then
+		reason = "No pending verification was found for this Roblox account. Run /roblox link in Discord first, then rejoin."
+	end
+
 	warn("[Carry Tavern Verify] Verification rejected:", response.StatusCode, reason)
 	showStatus(player, "❌ Not verified", reason)
 end
