@@ -1,5 +1,12 @@
 const { randomBytes } = require("node:crypto");
-const { EmbedBuilder, MessageFlags, SlashCommandBuilder } = require("discord.js");
+const {
+  ActionRowBuilder,
+  EmbedBuilder,
+  MessageFlags,
+  SlashCommandBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
+} = require("discord.js");
 
 const { getSupabase } = require("../marketplace/supabase");
 const { getLinkedProfile, requireLinkedProfile } = require("../platform/helpers");
@@ -15,6 +22,28 @@ const {
 
 function createVerificationCode() {
   return `CTV-${randomBytes(5).toString("hex").toUpperCase()}`;
+}
+
+function verificationMethodSelector(requestId) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`roblox_verify_method:${requestId}`)
+      .setPlaceholder("Choose your verification method")
+      .setMinValues(1)
+      .setMaxValues(1)
+      .addOptions(
+        new StringSelectMenuOptionBuilder()
+          .setLabel("Verification Game")
+          .setDescription("Join the Roblox game and verify automatically")
+          .setEmoji("🎮")
+          .setValue("game"),
+        new StringSelectMenuOptionBuilder()
+          .setLabel("Roblox Bio / About")
+          .setDescription("Use a unique code in your Roblox About")
+          .setEmoji("📝")
+          .setValue("bio"),
+      ),
+  );
 }
 
 async function ensureVerificationCode(supabase, pending) {
@@ -222,24 +251,17 @@ async function linkCommand(interaction) {
     request = data;
   }
 
-  const gameUrl = verificationGameUrl();
-
-  return interaction.editReply([
-    `🟥 **Roblox verification started for @${request.roblox_username}.**`,
-    "",
-    "Use **either** verification method below:",
-    "",
-    gameUrl
-      ? `🎮 **Method 1 — Verification game:** join while logged into @${request.roblox_username}\n${gameUrl}`
-      : "🎮 **Method 1 — Verification game:** currently unavailable. Use the bio method below.",
-    "",
-    "📝 **Method 2 — Roblox bio/About:** put this exact code anywhere in the account's About/description and save it:",
-    `\`${request.verification_code}\``,
-    "",
-    "Then run `/roblox verify`. The bot checks Roblox's public profile data several times to allow for update delay.",
-    "",
-    "Both methods verify the same pending request. You never need to give us your Roblox password or cookie.",
-  ].join("\n"));
+  return interaction.editReply({
+    content: [
+      `🟥 **Roblox verification started for @${request.roblox_username}.**`,
+      "",
+      "Select the verification method you want to use from the box below:",
+      "",
+      "🎮 **Verification Game** — once selected, joining the game on this Roblox account verifies you automatically.",
+      "📝 **Roblox Bio / About** — once selected, the bot gives you the code to place in your About.",
+    ].join("\n"),
+    components: [verificationMethodSelector(request.id)],
+  });
 }
 
 async function verifyCommand(interaction) {
@@ -318,8 +340,6 @@ async function verifyCommand(interaction) {
     });
   }
 
-  // The game verifier can finish while this command is waiting for Roblox's
-  // profile API. Re-check the profile before telling the user verification failed.
   const { data: gameVerified, error: gameVerifiedError } = await supabase
     .from("profiles")
     .select("roblox_username,roblox_verified_at")
