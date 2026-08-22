@@ -183,9 +183,9 @@ addColumn("queue", "message_id TEXT");
 addColumn("queue", "carrier_confirmed INTEGER DEFAULT 0");
 addColumn("queue", "requester_confirmed INTEGER DEFAULT 0");
 
-// Existing live legacy rows predate timestamps. Give them a safe migration timestamp
-// so the new timeout system does not instantly remove them on first boot.
-db.prepare("UPDATE queue SET created_at = ? WHERE created_at IS NULL").run(Date.now());
+// Do not refresh unknown-age legacy requests to "now". Rows without a timestamp
+// are treated as stale by the queue loader/cleanup instead of being resurrected
+// for another 24 hours every time the bot restarts.
 
 // Helpful indexes for leaderboard, moderation and matching reads.
 db.prepare("CREATE INDEX IF NOT EXISTS carrier_status_available_idx ON carrier_status(guild, available, updated_at)").run();
