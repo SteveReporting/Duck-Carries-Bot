@@ -12,6 +12,7 @@ const ALEX_DISCORD_USER_ID = "1005869667044311111";
 const JACK_DISCORD_USER_ID = "811330643631538196";
 const ANDREW_DISCORD_USER_ID = "1252728694049472535";
 const JORDAN_DISCORD_USER_ID = "1539457372362244117";
+const ABDUL_DISCORD_USER_ID = "1362716137783038022";
 const CAIRO_TARGET_USER_ID = "1137081101341433936";
 const JACK_ONE_TIME_STORAGE_KEY = "jack_one_time_result_v1";
 const OWNER_RELEASE_DM_STORAGE_KEY = "owner_release_dm_v1";
@@ -595,7 +596,9 @@ export class SentientGateway extends DurableObject {
             ? "Andrew"
             : message.author?.id === JORDAN_DISCORD_USER_ID
               ? "Jordan"
-              : null;
+              : message.author?.id === ABDUL_DISCORD_USER_ID
+                ? "Abdul"
+                : null;
     const knownRealName = manualKnownName || await getSupabaseFirstName(this.env, message.author?.id);
     const knownProfile = profileContextForUser(message.author?.id);
 
@@ -681,10 +684,18 @@ export class SentientGateway extends DurableObject {
             ? ANDREW_DISCORD_USER_ID
             : message.author?.id === JORDAN_DISCORD_USER_ID
               ? JORDAN_DISCORD_USER_ID
-              : null;
-      const replyContent = pingUserId && !reply.includes(`<@${pingUserId}>`) && !reply.includes(`<@!${pingUserId}>`)
-        ? `<@${pingUserId}> ${reply}`
-        : reply;
+              : message.author?.id === ABDUL_DISCORD_USER_ID
+                ? ABDUL_DISCORD_USER_ID
+                : null;
+
+      let finalReply = reply;
+      if (direct && message.author?.id === ABDUL_DISCORD_USER_ID && !/^\s*abdul\b/i.test(finalReply)) {
+        finalReply = `Abdul, ${finalReply}`;
+      }
+
+      const replyContent = pingUserId && !finalReply.includes(`<@${pingUserId}>`) && !finalReply.includes(`<@!${pingUserId}>`)
+        ? `<@${pingUserId}> ${finalReply}`
+        : finalReply;
       const sent = await sendLiveReply(
         this.env,
         message.channel_id,
