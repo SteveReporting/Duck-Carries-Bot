@@ -1,4 +1,5 @@
 const CARRY_TAVERN_ROBLOX_GROUP_ID = 738161741;
+const DEFAULT_VERIFICATION_PLACE_ID = "103088601656053";
 
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, { ...options, signal: AbortSignal.timeout(12_000) });
@@ -144,8 +145,12 @@ async function syncVerifiedMember(member, profile) {
 }
 
 function verificationGameUrl() {
-  const placeId = String(process.env.ROBLOX_VERIFICATION_PLACE_ID || "").trim();
-  return /^\d+$/.test(placeId) ? `https://www.roblox.com/games/${placeId}` : null;
+  // Keep the verification game available even if a replacement .env is missing
+  // ROBLOX_VERIFICATION_PLACE_ID. The env value can still override this if the
+  // Tavern moves verification to a different Roblox place later.
+  const configured = String(process.env.ROBLOX_VERIFICATION_PLACE_ID || "").trim();
+  const placeId = /^\d+$/.test(configured) ? configured : DEFAULT_VERIFICATION_PLACE_ID;
+  return `https://www.roblox.com/games/${placeId}`;
 }
 
 function joinInstructions() {
@@ -160,7 +165,7 @@ function joinInstructions() {
     base ? `1. Sign in once with Discord: ${base}/auth` : "1. Link your Tavern account with Discord.",
     `2. In ${verifyChannel}, run \`/roblox link username:YOUR_USERNAME\`.`,
     "3. The bot gives you two verification choices: the Roblox verification game and a unique About/bio code.",
-    gameUrl ? `4. **Game method:** join while logged into that Roblox account: ${gameUrl}` : "4. **Game method:** use the verification-game link shown by the bot.",
+    `4. **Game method:** join while logged into that Roblox account: ${gameUrl}`,
     "5. **Bio method:** put the exact code from `/roblox link` in the Roblox About/description, save it, then run `/roblox verify`.",
     "6. Either method completes the same pending request and then syncs your verification role and Roblox nickname.",
     "",
