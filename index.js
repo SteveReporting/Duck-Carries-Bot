@@ -179,7 +179,8 @@ async function start() {
         await syncSlashCommands();
     } catch (error) {
         console.error("❌ Slash command sync failed:", error);
-        process.exit(1);
+        console.warn("⚠️ Continuing startup with the slash commands already registered in Discord.");
+        console.warn("⚠️ Fix CLIENT_ID/GUILD_ID or bot guild access before the next command-schema update.");
     }
 
     console.log("🔐 Logging into Discord...");
