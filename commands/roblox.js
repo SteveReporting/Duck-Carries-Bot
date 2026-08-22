@@ -1,15 +1,137 @@
+const { randomBytes } = require("node:crypto");
 const { EmbedBuilder, MessageFlags, SlashCommandBuilder } = require("discord.js");
 
 const { getSupabase } = require("../marketplace/supabase");
 const { getLinkedProfile, requireLinkedProfile } = require("../platform/helpers");
 const { carrierReputation, tradeReputation } = require("../platform/communitySystems");
 const {
+  checkRobloxDescriptionVerification,
   getCommunityMembership,
   getRobloxAvatar,
   resolveRobloxUsername,
   syncVerifiedMember,
   verificationGameUrl,
 } = require("../platform/robloxAccounts");
+
+function createVerificationCode() {
+  return `CTV-${randomBytes(5).toString("hex").toUpperCase()}`;
+}
+
+async function ensureVerificationCode(supabase, pending) {
+  if (pending?.verification_code) return pending.verification_code;
+
+  const verificationCode = createVerificationCode();
+  const { error } = await supabase
+    .from("roblox_link_requests")
+    .update({ verification_code: verificationCode })
+    .eq("id", pending.id)
+    .eq("status", "pending");
+  if (error) throw new Error(error.message);
+  return verificationCode;
+}
+
+async function completeDescriptionVerification({
+  interaction,
+  profile,
+  pending,
+  account,
+  details,
+}) {
+  const supabase = getSupabase();
+
+  const { data: alreadyLinked, error: alreadyLinkedError } = await supabase
+    .from("profiles")
+    .select("id")
+    .eq("roblox_user_id", String(account.id))
+    .neq("id", profile.id)
+    .maybeSingle();
+  if (alreadyLinkedError) throw new Error(alreadyLinkedError.message);
+  if (alreadyLinked) {
+    return interaction.editReply("❌ That Roblox account is already linked to another Carry Tavern account.");
+  }
+
+  const [avatarUrl, membership] = await Promise.all([
+    getRobloxAvatar(account.id),
+    getCommunityMembership(account.id),
+  ]);
+
+  const verifiedAt = new Date().toISOString();
+  const username = details?.name || account.name || pending.roblox_username;
+  const displayName = details?.displayName || username;
+
+  const { error: profileUpdateError } = await supabase
+    .from("profiles")
+    .update({
+      roblox_username: username,
+      roblox_user_id: String(account.id),
+      roblox_display_name: displayName,
+      roblox_avatar_url: avatarUrl,
+      roblox_verified_at: verifiedAt,
+      roblox_account_created_at: details?.created || null,
+      roblox_community_member: membership.communityMember,
+      roblox_community_role: membership.communityRole,
+    })
+    .eq("id", profile.id);
+  if (profileUpdateError) throw new Error(profileUpdateError.message);
+
+  const { error: requestUpdateError } = await supabase
+    .from("roblox_link_requests")
+    .update({
+      status: "verified",
+      roblox_user_id: String(account.id),
+      roblox_username: username,
+      verified_at: verifiedAt,
+    })
+    .eq("id", pending.id)
+    .eq("user_id", profile.id)
+    .eq("status", "pending");
+  if (requestUpdateError) throw new Error(requestUpdateError.message);
+
+  const nicknameChanged = interaction.member
+    ? await syncVerifiedMember(interaction.member, {
+      roblox_username: username,
+      roblox_verified_at: verifiedAt,
+    })
+    : false;
+
+  const { error: notificationError } = await supabase.from("notifications").insert({
+    user_id: profile.id,
+    kind: "roblox_link",
+    title: "Roblox account verified",
+    body: `${username} was verified through your Roblox profile description.`,
+    link: "/hub",
+  });
+  if (notificationError) {
+    console.warn("[ROBLOX] Verification notification failed:", notificationError.message);
+  }
+
+  const { error: auditError } = await supabase.from("audit_log").insert({
+    actor_id: profile.id,
+    action: "roblox.discord_bio_verify",
+    target_type: "profile",
+    target_id: profile.id,
+    new_value: {
+      roblox_user_id: String(account.id),
+      roblox_username: username,
+      community_member: membership.communityMember,
+    },
+    source: "discord",
+  });
+  if (auditError) {
+    console.warn("[ROBLOX] Verification audit log failed:", auditError.message);
+  }
+
+  return interaction.editReply([
+    `✅ **Roblox verified: @${username}**`,
+    "✅ The verification code was found in the Roblox About/description.",
+    nicknameChanged
+      ? `✅ Your server nickname is now **${username}**.`
+      : "⚠️ Roblox is verified, but I could not change your nickname. Make sure the bot has Manage Nicknames and is above your highest role.",
+    membership.communityMember
+      ? `🍺 Carry Tavern Roblox community member${membership.communityRole ? ` • ${membership.communityRole}` : ""}`
+      : "",
+  ].filter(Boolean).join("\n"));
+}
 
 async function linkCommand(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -19,11 +141,6 @@ async function linkCommand(interaction) {
   const typed = interaction.options.getString("username", true).trim();
   const account = await resolveRobloxUsername(typed);
   if (!account?.id) return interaction.editReply(`❌ Roblox could not find **${typed}**.`);
-
-  const gameUrl = verificationGameUrl();
-  if (!gameUrl) {
-    return interaction.editReply("❌ The Roblox verification game has not been configured yet. Please contact Tavern staff.");
-  }
 
   const supabase = getSupabase();
 
@@ -51,24 +168,42 @@ async function linkCommand(interaction) {
     return interaction.editReply("❌ That Roblox account already has a pending verification request from another Tavern account.");
   }
 
+  const canonicalUsername = account.name || typed;
+  const { data: otherUsernamePending, error: otherUsernamePendingError } = await supabase
+    .from("roblox_link_requests")
+    .select("id,user_id,roblox_user_id")
+    .ilike("roblox_username", canonicalUsername)
+    .eq("status", "pending")
+    .neq("user_id", profile.id)
+    .limit(1)
+    .maybeSingle();
+  if (otherUsernamePendingError) throw new Error(otherUsernamePendingError.message);
+  if (otherUsernamePending) {
+    return interaction.editReply("❌ That Roblox username already has a pending verification request from another Tavern account.");
+  }
+
   const { data: existing, error: existingError } = await supabase
     .from("roblox_link_requests")
-    .select("id")
+    .select("id,verification_code")
     .eq("user_id", profile.id)
     .eq("status", "pending")
+    .order("created_at", { ascending: false })
+    .limit(1)
     .maybeSingle();
   if (existingError) throw new Error(existingError.message);
 
   let request;
   if (existing) {
+    const verificationCode = existing.verification_code || createVerificationCode();
     const { data, error } = await supabase.from("roblox_link_requests")
       .update({
-        roblox_username: account.name || typed,
+        roblox_username: canonicalUsername,
         roblox_user_id: String(account.id),
+        verification_code: verificationCode,
         created_at: new Date().toISOString(),
       })
       .eq("id", existing.id)
-      .select("id,roblox_username,roblox_user_id")
+      .select("id,roblox_username,roblox_user_id,verification_code")
       .single();
     if (error) throw new Error(error.message);
     request = data;
@@ -76,27 +211,34 @@ async function linkCommand(interaction) {
     const { data, error } = await supabase.from("roblox_link_requests")
       .insert({
         user_id: profile.id,
-        roblox_username: account.name || typed,
+        roblox_username: canonicalUsername,
         roblox_user_id: String(account.id),
+        verification_code: createVerificationCode(),
         status: "pending",
       })
-      .select("id,roblox_username,roblox_user_id")
+      .select("id,roblox_username,roblox_user_id,verification_code")
       .single();
     if (error) throw new Error(error.message);
     request = data;
   }
 
+  const gameUrl = verificationGameUrl();
+
   return interaction.editReply([
     `🟥 **Roblox verification started for @${request.roblox_username}.**`,
     "",
-    "🎮 **Join the Carry Tavern verification game while logged into that Roblox account:**",
-    gameUrl,
+    "Use **either** verification method below:",
     "",
-    "That's it. There is **no profile code** to copy or paste.",
-    "Once your Roblox account joins the game, the verification server confirms your Roblox User ID and saves the link automatically.",
-    "Your Discord verification role and nickname will sync automatically shortly after.",
+    gameUrl
+      ? `🎮 **Method 1 — Verification game:** join while logged into @${request.roblox_username}\n${gameUrl}`
+      : "🎮 **Method 1 — Verification game:** currently unavailable. Use the bio method below.",
     "",
-    "If you already joined and want to force the Discord-side sync, run `/roblox verify`.",
+    "📝 **Method 2 — Roblox bio/About:** put this exact code anywhere in the account's About/description and save it:",
+    `\`${request.verification_code}\``,
+    "",
+    "Then run `/roblox verify`. The bot checks Roblox's public profile data several times to allow for update delay.",
+    "",
+    "Both methods verify the same pending request. You never need to give us your Roblox password or cookie.",
   ].join("\n"));
 }
 
@@ -106,6 +248,7 @@ async function verifyCommand(interaction) {
   if (!profile) return;
 
   const supabase = getSupabase();
+
   const { data: verifiedProfile, error: verifiedError } = await supabase.from("profiles")
     .select("roblox_username,roblox_verified_at")
     .eq("id", profile.id)
@@ -125,7 +268,7 @@ async function verifyCommand(interaction) {
   }
 
   const { data: pending, error: pendingError } = await supabase.from("roblox_link_requests")
-    .select("id,roblox_username,roblox_user_id,status")
+    .select("id,roblox_username,roblox_user_id,verification_code,status")
     .eq("user_id", profile.id)
     .eq("status", "pending")
     .order("created_at", { ascending: false })
@@ -137,15 +280,83 @@ async function verifyCommand(interaction) {
     return interaction.editReply("❌ You do not have a pending Roblox link. Run `/roblox link` first.");
   }
 
+  pending.verification_code = await ensureVerificationCode(supabase, pending);
+
+  let account;
+  if (pending.roblox_user_id) {
+    account = { id: pending.roblox_user_id, name: pending.roblox_username };
+  } else {
+    account = await resolveRobloxUsername(pending.roblox_username);
+    if (account?.id) {
+      const { error } = await supabase.from("roblox_link_requests")
+        .update({
+          roblox_user_id: String(account.id),
+          roblox_username: account.name || pending.roblox_username,
+        })
+        .eq("id", pending.id)
+        .eq("status", "pending");
+      if (error) throw new Error(error.message);
+    }
+  }
+
+  if (!account?.id) {
+    return interaction.editReply(`❌ Roblox could not find **${pending.roblox_username}**.`);
+  }
+
+  const check = await checkRobloxDescriptionVerification(
+    account.id,
+    pending.verification_code,
+  );
+
+  if (check.found) {
+    return completeDescriptionVerification({
+      interaction,
+      profile,
+      pending,
+      account,
+      details: check.details,
+    });
+  }
+
+  // The game verifier can finish while this command is waiting for Roblox's
+  // profile API. Re-check the profile before telling the user verification failed.
+  const { data: gameVerified, error: gameVerifiedError } = await supabase
+    .from("profiles")
+    .select("roblox_username,roblox_verified_at")
+    .eq("id", profile.id)
+    .maybeSingle();
+  if (gameVerifiedError) throw new Error(gameVerifiedError.message);
+
+  if (gameVerified?.roblox_verified_at && gameVerified.roblox_username) {
+    const nicknameChanged = interaction.member
+      ? await syncVerifiedMember(interaction.member, gameVerified)
+      : false;
+    return interaction.editReply([
+      `✅ **Roblox is verified as @${gameVerified.roblox_username}.**`,
+      "✅ The verification game completed while I was checking your bio.",
+      nicknameChanged
+        ? "✅ Your server nickname and verification roles are synced."
+        : "✅ Your verification is saved. If your nickname did not change, make sure the bot has Manage Nicknames and is above your highest role.",
+    ].join("\n"));
+  }
+
   const gameUrl = verificationGameUrl();
+  const details = check.details;
+  const reason = check.descriptionEmpty
+    ? "Roblox returned an empty About/description. The update may still be propagating."
+    : "Roblox has not exposed the code through its public profile API yet.";
+
   return interaction.editReply([
-    `⏳ **@${pending.roblox_username} is still waiting for game verification.**`,
+    `⏳ **@${details?.name || pending.roblox_username} is not verified yet.**`,
     "",
-    gameUrl ? `🎮 Join the verification game: ${gameUrl}` : "❌ The verification game is not configured. Contact Tavern staff.",
+    `I checked the Roblox bio ${check.attempts} time${check.attempts === 1 ? "" : "s"}. ${reason}`,
     "",
-    "Make sure you join while logged into the exact Roblox account you linked.",
-    "The verification is completed automatically when that account joins the game.",
-  ].join("\n"));
+    "Keep this exact code in the Roblox About/description:",
+    `\`${pending.verification_code}\``,
+    "",
+    "Then run `/roblox verify` again.",
+    gameUrl ? `🎮 Or verify instantly by joining the game: ${gameUrl}` : "",
+  ].filter(Boolean).join("\n"));
 }
 
 async function profileCommand(interaction) {
@@ -208,7 +419,7 @@ module.exports = {
         .setMaxLength(20)))
     .addSubcommand((sub) => sub
       .setName("verify")
-      .setDescription("Check game verification and sync your nickname"))
+      .setDescription("Verify by game or Roblox bio and sync your nickname"))
     .addSubcommand((sub) => sub
       .setName("profile")
       .setDescription("View a member's Roblox + Tavern profile card")
