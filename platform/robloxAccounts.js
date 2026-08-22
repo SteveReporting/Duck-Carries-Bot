@@ -159,11 +159,12 @@ function joinInstructions() {
     "",
     base ? `1. Sign in once with Discord: ${base}/auth` : "1. Link your Tavern account with Discord.",
     `2. In ${verifyChannel}, run \`/roblox link username:YOUR_USERNAME\`.`,
-    gameUrl ? `3. Join the verification game while logged into that Roblox account: ${gameUrl}` : "3. Join the Carry Tavern Roblox verification game from the link the bot gives you.",
-    "4. The game verifies your Roblox User ID automatically. No profile code is needed.",
-    "5. Your verification role and Roblox nickname sync automatically shortly after.",
+    "3. The bot gives you two verification choices: the Roblox verification game and a unique About/bio code.",
+    gameUrl ? `4. **Game method:** join while logged into that Roblox account: ${gameUrl}` : "4. **Game method:** use the verification-game link shown by the bot.",
+    "5. **Bio method:** put the exact code from `/roblox link` in the Roblox About/description, save it, then run `/roblox verify`.",
+    "6. Either method completes the same pending request and then syncs your verification role and Roblox nickname.",
     "",
-    "If the Discord-side sync has not happened yet, run `/roblox verify` once after joining the game.",
+    "Never give anyone your Roblox password, cookie, or login token for verification.",
   ].filter(Boolean).join("\n");
 }
 
