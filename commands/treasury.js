@@ -1,4 +1,8 @@
 const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
   EmbedBuilder,
   MessageFlags,
   SlashCommandBuilder,
@@ -6,10 +10,9 @@ const {
 
 const { getSupabase } = require("../marketplace/supabase");
 
-const MAX_DESCRIPTION = 3900;
-const MAX_FIELD = 1000;
 const TREASURY_ACCOUNT = "CarryTester1";
 const REPORTED_LEGENDARY_TOTAL = 225;
+const PANEL_TIMEOUT = 15 * 60 * 1000;
 
 // Keep this snapshot aligned with the public TreasuryStockBrowser on the website.
 // The website currently uses this snapshot for Legendaries and Supabase for Collects.
@@ -42,6 +45,23 @@ const LEGENDARIES = [
   { label: "Mage EF", dungeon: "Enchanted Forest", itemName: "Eldenbark Greatstaff", quantity: 1, demand: "Very HIGH", situation: "Urgent restock", kind: "mage" },
 ];
 
+const DUNGEON_ORDER = [
+  "Desert Temple",
+  "Winter Outpost",
+  "Pirate Island",
+  "King's Castle",
+  "Underworld",
+  "Samurai Palace",
+  "The Canals",
+  "Ghastly Harbor",
+  "Steampunk Sewers",
+  "Boss Raids",
+  "Orbital Outpost",
+  "Volcanic Chambers",
+  "Aquatic Temple",
+  "Enchanted Forest",
+];
+
 function numberValue(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
@@ -55,35 +75,40 @@ function totalQuantity(item) {
   return Math.max(availableQuantity(item), numberValue(item.quantity_total));
 }
 
-function collectLine(item) {
-  const available = availableQuantity(item);
-  const total = totalQuantity(item);
-  const tier = String(item.value_tier || "").trim();
-  const qty = total > available
-    ? `**${available}/${total}** available`
-    : `**${available}** available`;
-  return `• **${item.item_name}**${tier ? ` · ${tier}` : ""}\n  ${qty}`;
+function chunk(items, size) {
+  const pages = [];
+  for (let index = 0; index < items.length; index += size) {
+    pages.push(items.slice(index, index + size));
+  }
+  return pages.length ? pages : [[]];
 }
 
-function clipLines(lines, limit = MAX_DESCRIPTION) {
-  if (!lines.length) return "*Nothing is currently in stock.*";
-
-  let output = "";
-  let used = 0;
-  for (const line of lines) {
-    const next = `${output ? "\n" : ""}${line}`;
-    if ((output + next).length > limit) break;
-    output += next;
-    used += 1;
-  }
-
-  if (used < lines.length) {
-    output += `\n\n*+ ${lines.length - used} more item${lines.length - used === 1 ? "" : "s"}*`;
-  }
-  return output;
+function kindIcon(kind) {
+  if (kind === "mage") return "✨";
+  if (kind === "hybrid") return "🔥";
+  return "⚔️";
 }
 
-function colorFields(items) {
+function stockBadge(quantity) {
+  if (quantity <= 0) return "🔴";
+  if (quantity <= 2) return "🟠";
+  if (quantity <= 5) return "🟡";
+  return "🟢";
+}
+
+function groupLegendaries() {
+  const groups = new Map();
+  for (const item of LEGENDARIES) {
+    if (!groups.has(item.dungeon)) groups.set(item.dungeon, []);
+    groups.get(item.dungeon).push(item);
+  }
+
+  return DUNGEON_ORDER
+    .filter((dungeon) => groups.has(dungeon))
+    .map((dungeon) => ({ dungeon, items: groups.get(dungeon) }));
+}
+
+function groupCollects(items) {
   const groups = new Map();
   for (const item of items) {
     const color = String(item.collect_color || "Other").trim() || "Other";
@@ -93,34 +118,10 @@ function colorFields(items) {
 
   return [...groups.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .slice(0, 25)
     .map(([color, entries]) => ({
-      name: `🏆 ${color} Collects`,
-      value: clipLines(
-        entries
-          .sort((a, b) => String(a.item_name).localeCompare(String(b.item_name)))
-          .map(collectLine),
-        MAX_FIELD,
-      ),
-      inline: false,
+      color,
+      items: entries.sort((a, b) => String(a.item_name).localeCompare(String(b.item_name))),
     }));
-}
-
-function kindIcon(kind) {
-  if (kind === "mage") return "✨";
-  if (kind === "hybrid") return "🔥";
-  return "⚔️";
-}
-
-function statusIcon(item) {
-  if (item.situation === "Urgent restock") return "🚨";
-  if (item.situation === "Great") return "🔹";
-  return "✅";
-}
-
-function legendaryLine(item) {
-  return `${kindIcon(item.kind)} **${item.itemName}** · ${item.dungeon}\n` +
-    `   **${item.quantity}** in stock · Demand: **${item.demand}** · ${statusIcon(item)} ${item.situation}`;
 }
 
 async function loadCollectStock() {
@@ -135,6 +136,7 @@ async function loadCollectStock() {
       .order("item_name");
 
     if (error) throw new Error(error.message);
+
     return {
       items: (data || []).filter((item) =>
         String(item.stock_category || "").toLowerCase() === "collect" || Boolean(item.collect_color),
@@ -147,68 +149,314 @@ async function loadCollectStock() {
   }
 }
 
-async function stockCommand(interaction) {
-  await interaction.deferReply();
+function renderOverview(state) {
+  const tracked = LEGENDARIES.reduce((sum, item) => sum + item.quantity, 0);
+  const typesInStock = LEGENDARIES.filter((item) => item.quantity > 0).length;
+  const urgent = LEGENDARIES.filter((item) => item.situation === "Urgent restock").length;
+  const collectUnits = state.collects.reduce((sum, item) => sum + availableQuantity(item), 0);
 
-  const { items: collects, error: collectError } = await loadCollectStock();
-  const trackedLegendaryUnits = LEGENDARIES.reduce((sum, item) => sum + item.quantity, 0);
-  const unclassifiedLegendaryUnits = Math.max(0, REPORTED_LEGENDARY_TOTAL - trackedLegendaryUnits);
-  const legendaryItemsInStock = LEGENDARIES.filter((item) => item.quantity > 0).length;
-  const urgentRestocks = LEGENDARIES.filter((item) => item.situation === "Urgent restock").length;
-  const collectUnits = collects.reduce((sum, item) => sum + availableQuantity(item), 0);
+  return {
+    totalPages: 1,
+    embed: new EmbedBuilder()
+      .setColor(0xc89532)
+      .setAuthor({
+        name: "The Carry Tavern • Treasury",
+        iconURL: state.botAvatar,
+      })
+      .setTitle("🏦 Treasury Stock")
+      .setDescription([
+        `Stock held on **${TREASURY_ACCOUNT}**`,
+        "Use the buttons below to browse without filling the channel with huge embeds.",
+      ].join("\n"))
+      .addFields(
+        {
+          name: "⚔️ Legendary Vault",
+          value: `**${REPORTED_LEGENDARY_TOTAL}** reported\n**${tracked}** tracked • **${typesInStock}** types in stock`,
+          inline: true,
+        },
+        {
+          name: "🏆 Collect Vault",
+          value: state.collectError
+            ? "⚠️ Live stock unavailable"
+            : `**${collectUnits}** units\n**${state.collects.length}** items available`,
+          inline: true,
+        },
+        {
+          name: "🚨 Restock Watch",
+          value: `**${urgent}** urgent\n${LEGENDARIES.filter((item) => item.quantity <= 2).length} low-stock entries`,
+          inline: true,
+        },
+      )
+      .setFooter({ text: "Choose a section below • Refresh updates live Collect stock" })
+      .setTimestamp(),
+  };
+}
 
-  const overview = new EmbedBuilder()
-    .setTitle("🏦 The Carry Tavern Treasury Stock")
-    .setDescription([
-      `**Treasury account:** \`${TREASURY_ACCOUNT}\``,
-      "Legendary stock mirrors the same snapshot shown on the website. Collect stock is loaded live from the Treasury database.",
-    ].join("\n"))
-    .addFields(
-      { name: "⚔️ Reported Legendaries", value: `**${REPORTED_LEGENDARY_TOTAL.toLocaleString()}**`, inline: true },
-      { name: "📋 Tracked Legendary Stock", value: `**${trackedLegendaryUnits.toLocaleString()}**`, inline: true },
-      { name: "📦 Legendary Entries", value: `**${legendaryItemsInStock}** in stock`, inline: true },
-      { name: "🚨 Urgent Restocks", value: `**${urgentRestocks}**`, inline: true },
-      { name: "🏆 Live Collect Stock", value: `**${collectUnits.toLocaleString()}** units · ${collects.length} item${collects.length === 1 ? "" : "s"}`, inline: true },
-      { name: "🧾 Other / Unclassified", value: `**${unclassifiedLegendaryUnits.toLocaleString()}** legendary units`, inline: true },
-    )
-    .setFooter({ text: "The Carry Tavern • Website-matched Treasury stock" })
-    .setTimestamp();
+function renderLegendaries(page) {
+  const groups = groupLegendaries();
+  const pages = chunk(groups, 4);
+  const safePage = Math.min(Math.max(page, 0), pages.length - 1);
+  const pageGroups = pages[safePage];
 
-  const legendaryLines = LEGENDARIES.map(legendaryLine);
-  const midpoint = Math.ceil(legendaryLines.length / 2);
+  const embed = new EmbedBuilder()
+    .setColor(0x8b5cf6)
+    .setTitle("⚔️ Legendary Vault")
+    .setDescription("Clean stock view by dungeon. Quantity is shown on the right.");
 
-  const embeds = [
-    overview,
-    new EmbedBuilder()
-      .setTitle("⚔️ Legendary Stock · Part 1")
-      .setDescription(clipLines(legendaryLines.slice(0, midpoint)))
-      .setFooter({ text: "⚔️ Warrior · ✨ Mage · 🔥 Hybrid" }),
-    new EmbedBuilder()
-      .setTitle("⚔️ Legendary Stock · Part 2")
-      .setDescription(clipLines(legendaryLines.slice(midpoint)))
-      .setFooter({ text: "🚨 Urgent restock items are still shown even when quantity is 0" }),
-  ];
+  for (const group of pageGroups) {
+    const value = group.items
+      .map((item) => `${kindIcon(item.kind)} **${item.itemName}**  ${stockBadge(item.quantity)} **${item.quantity}**`)
+      .join("\n");
 
-  if (collects.length) {
-    const collectEmbed = new EmbedBuilder()
-      .setTitle("🏆 Live Collect Stock")
-      .setDescription("Collects are grouped by colour, matching the website's live Treasury database view.")
-      .setFooter({ text: `${collectUnits.toLocaleString()} Collect unit${collectUnits === 1 ? "" : "s"} currently available` });
+    embed.addFields({
+      name: `▸ ${group.dungeon}`,
+      value,
+      inline: false,
+    });
+  }
 
-    const fields = colorFields(collects);
-    if (fields.length) collectEmbed.addFields(fields);
-    embeds.push(collectEmbed);
-  } else {
-    embeds.push(
-      new EmbedBuilder()
-        .setTitle("🏆 Live Collect Stock")
-        .setDescription(collectError
-          ? `Collect stock could not be loaded right now: \`${String(collectError).slice(0, 500)}\``
-          : "No Collect rows are currently published in the live Treasury database. This does **not** affect the Legendary snapshot above."),
+  embed.setFooter({
+    text: `Page ${safePage + 1}/${pages.length} • ⚔️ Warrior  ✨ Mage  🔥 Hybrid • 🟢 healthy  🟡 low  🟠 critical  🔴 empty`,
+  });
+
+  return { embed, totalPages: pages.length, page: safePage };
+}
+
+function renderCollects(state, page) {
+  if (state.collectError) {
+    return {
+      totalPages: 1,
+      page: 0,
+      embed: new EmbedBuilder()
+        .setColor(0x3b82f6)
+        .setTitle("🏆 Collect Vault")
+        .setDescription(`⚠️ Live Collect stock could not be loaded.\n\n\`${String(state.collectError).slice(0, 700)}\``)
+        .setFooter({ text: "Press Refresh to try again" }),
+    };
+  }
+
+  if (!state.collects.length) {
+    return {
+      totalPages: 1,
+      page: 0,
+      embed: new EmbedBuilder()
+        .setColor(0x3b82f6)
+        .setTitle("🏆 Collect Vault")
+        .setDescription("No Collect stock is currently published in the live Treasury database.")
+        .setFooter({ text: "Press Refresh to check again" }),
+    };
+  }
+
+  const groups = groupCollects(state.collects);
+  const pages = chunk(groups, 4);
+  const safePage = Math.min(Math.max(page, 0), pages.length - 1);
+  const pageGroups = pages[safePage];
+
+  const embed = new EmbedBuilder()
+    .setColor(0x3b82f6)
+    .setTitle("🏆 Collect Vault")
+    .setDescription("Live stock grouped by colour.");
+
+  for (const group of pageGroups) {
+    const value = group.items
+      .map((item) => {
+        const available = availableQuantity(item);
+        const total = totalQuantity(item);
+        const quantity = total > available ? `${available}/${total}` : `${available}`;
+        return `• **${item.item_name}**  📦 **${quantity}**`;
+      })
+      .join("\n");
+
+    embed.addFields({
+      name: `▸ ${group.color}`,
+      value: value.slice(0, 1024) || "None",
+      inline: false,
+    });
+  }
+
+  embed.setFooter({ text: `Page ${safePage + 1}/${pages.length} • Live Treasury database` });
+  return { embed, totalPages: pages.length, page: safePage };
+}
+
+function renderRestocks() {
+  const urgent = LEGENDARIES.filter((item) => item.situation === "Urgent restock");
+  const low = LEGENDARIES
+    .filter((item) => item.situation !== "Urgent restock" && item.quantity <= 2)
+    .sort((a, b) => a.quantity - b.quantity);
+
+  const embed = new EmbedBuilder()
+    .setColor(0xef4444)
+    .setTitle("🚨 Restock Watch")
+    .setDescription("Only stock that actually needs attention is shown here.");
+
+  embed.addFields({
+    name: "🔴 Urgent",
+    value: urgent.length
+      ? urgent
+          .map((item) => `${kindIcon(item.kind)} **${item.itemName}** • ${item.dungeon}\n   Stock **${item.quantity}** • Demand **${item.demand}**`)
+          .join("\n\n")
+      : "Nothing urgent right now.",
+    inline: false,
+  });
+
+  embed.addFields({
+    name: "🟠 Low Stock",
+    value: low.length
+      ? low
+          .map((item) => `${kindIcon(item.kind)} **${item.itemName}** • **${item.quantity}** left`)
+          .join("\n")
+      : "No other low-stock items.",
+    inline: false,
+  });
+
+  embed.setFooter({ text: "Demand and status are kept here instead of cluttering every stock page" });
+  return { embed, totalPages: 1, page: 0 };
+}
+
+function renderPanel(state) {
+  if (state.view === "legendaries") return renderLegendaries(state.page);
+  if (state.view === "collects") return renderCollects(state, state.page);
+  if (state.view === "restocks") return renderRestocks();
+  return renderOverview(state);
+}
+
+function navButton(id, label, emoji, currentView, targetView) {
+  return new ButtonBuilder()
+    .setCustomId(id)
+    .setLabel(label)
+    .setEmoji(emoji)
+    .setStyle(currentView === targetView ? ButtonStyle.Primary : ButtonStyle.Secondary);
+}
+
+function buildRows(state, totalPages, disabled = false) {
+  const main = new ActionRowBuilder().addComponents(
+    navButton("treasury_overview", "Overview", "🏦", state.view, "overview").setDisabled(disabled),
+    navButton("treasury_legendaries", "Legendaries", "⚔️", state.view, "legendaries").setDisabled(disabled),
+    navButton("treasury_collects", "Collects", "🏆", state.view, "collects").setDisabled(disabled),
+    navButton("treasury_restocks", "Restocks", "🚨", state.view, "restocks").setDisabled(disabled),
+    new ButtonBuilder()
+      .setCustomId("treasury_refresh")
+      .setLabel("Refresh")
+      .setEmoji("🔄")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(disabled),
+  );
+
+  const rows = [main];
+
+  if (totalPages > 1) {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("treasury_prev")
+          .setLabel("Previous")
+          .setEmoji("◀️")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(disabled || state.page <= 0),
+        new ButtonBuilder()
+          .setCustomId("treasury_next")
+          .setLabel("Next")
+          .setEmoji("▶️")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(disabled || state.page >= totalPages - 1),
+      ),
     );
   }
 
-  return interaction.editReply({ embeds: embeds.slice(0, 10) });
+  return rows;
+}
+
+async function refreshCollectState(state) {
+  const result = await loadCollectStock();
+  state.collects = result.items;
+  state.collectError = result.error;
+}
+
+async function stockCommand(interaction) {
+  await interaction.deferReply();
+
+  const state = {
+    view: "overview",
+    page: 0,
+    collects: [],
+    collectError: null,
+    botAvatar: interaction.client.user.displayAvatarURL(),
+  };
+
+  await refreshCollectState(state);
+
+  let rendered = renderPanel(state);
+  const message = await interaction.editReply({
+    embeds: [rendered.embed],
+    components: buildRows(state, rendered.totalPages),
+  });
+
+  const collector = message.createMessageComponentCollector({
+    componentType: ComponentType.Button,
+    time: PANEL_TIMEOUT,
+  });
+
+  collector.on("collect", async (buttonInteraction) => {
+    if (buttonInteraction.user.id !== interaction.user.id) {
+      return buttonInteraction.reply({
+        content: "Use `/treasury stock` to open your own Treasury panel.",
+        flags: MessageFlags.Ephemeral,
+      }).catch(() => null);
+    }
+
+    try {
+      if (buttonInteraction.customId === "treasury_overview") {
+        state.view = "overview";
+        state.page = 0;
+      } else if (buttonInteraction.customId === "treasury_legendaries") {
+        state.view = "legendaries";
+        state.page = 0;
+      } else if (buttonInteraction.customId === "treasury_collects") {
+        state.view = "collects";
+        state.page = 0;
+      } else if (buttonInteraction.customId === "treasury_restocks") {
+        state.view = "restocks";
+        state.page = 0;
+      } else if (buttonInteraction.customId === "treasury_prev") {
+        state.page = Math.max(0, state.page - 1);
+      } else if (buttonInteraction.customId === "treasury_next") {
+        state.page += 1;
+      } else if (buttonInteraction.customId === "treasury_refresh") {
+        await buttonInteraction.deferUpdate();
+        await refreshCollectState(state);
+        state.page = 0;
+        rendered = renderPanel(state);
+        return interaction.editReply({
+          embeds: [rendered.embed],
+          components: buildRows(state, rendered.totalPages),
+        });
+      }
+
+      rendered = renderPanel(state);
+      state.page = rendered.page ?? state.page;
+
+      return buttonInteraction.update({
+        embeds: [rendered.embed],
+        components: buildRows(state, rendered.totalPages),
+      });
+    } catch (error) {
+      console.error("[TREASURY STOCK PANEL]", error);
+      if (!buttonInteraction.deferred && !buttonInteraction.replied) {
+        await buttonInteraction.reply({
+          content: "❌ Could not update the Treasury panel.",
+          flags: MessageFlags.Ephemeral,
+        }).catch(() => null);
+      }
+    }
+  });
+
+  collector.on("end", async () => {
+    rendered = renderPanel(state);
+    await interaction.editReply({
+      embeds: [rendered.embed],
+      components: buildRows(state, rendered.totalPages, true),
+    }).catch(() => null);
+  });
 }
 
 module.exports = {
@@ -218,7 +466,7 @@ module.exports = {
     .addSubcommand((subcommand) =>
       subcommand
         .setName("stock")
-        .setDescription("Show the same Treasury stock displayed on the website"),
+        .setDescription("Open the interactive Treasury stock panel"),
     ),
 
   async execute(interaction) {
@@ -230,7 +478,7 @@ module.exports = {
       } catch (error) {
         console.error("[TREASURY STOCK COMMAND]", error);
         const message = `❌ ${error.message || "Could not load Treasury stock."}`;
-        if (interaction.deferred || interaction.replied) return interaction.editReply(message);
+        if (interaction.deferred || interaction.replied) return interaction.editReply({ content: message, embeds: [], components: [] });
         return interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
       }
     }
