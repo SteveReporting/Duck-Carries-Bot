@@ -30,6 +30,7 @@ const DUNGEONS = [
   "Canals",
   "Ghastly Harbor",
   "Steampunk Sewers",
+  "Boss Raids",
   "Orbital Outpost",
   "Volcanic Chambers",
   "Aquatic Temple",
@@ -122,7 +123,7 @@ function buildCarryModal() {
 
   const dungeonLabel = new LabelBuilder()
     .setLabel("Dungeon")
-    .setDescription("Select from Desert Temple through Enchanted Forest.")
+    .setDescription("Select a dungeon, including Boss Raids.")
     .setStringSelectMenuComponent(dungeonSelect);
 
   const difficultyLabel = new LabelBuilder()
