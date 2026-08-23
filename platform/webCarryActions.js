@@ -94,6 +94,41 @@ function ratingButtons(requestId) {
   return row;
 }
 
+async function sendWebsiteAcceptanceLog(client, request, ticketId) {
+  if (!process.env.MOD_LOG_CHANNEL_ID || !request) return;
+
+  const channel = await client.channels.fetch(process.env.MOD_LOG_CHANNEL_ID).catch(() => null);
+  if (!channel?.isTextBased?.()) return;
+
+  const carrierDiscordId = request.carrier?.discord_id || null;
+  const requesterDiscordId = request.requester?.discord_id || null;
+  const requesterRoblox = request.requester?.roblox_username || null;
+  const remaining = remainingRuns(request);
+
+  const embed = new EmbedBuilder()
+    .setColor(0x22c55e)
+    .setTitle("✅ Carry Request Accepted")
+    .setDescription([
+      "A carry request was accepted through the **Carry Tavern website**.",
+      "",
+      carrierDiscordId ? `**Carrier:** <@${carrierDiscordId}>` : `**Carrier profile:** \`${request.carrier_id}\``,
+      requesterDiscordId ? `**Requester:** <@${requesterDiscordId}>` : `**Requester profile:** \`${request.requester_id}\``,
+      requesterRoblox ? `**Roblox:** **@${requesterRoblox}**` : null,
+      `**Dungeon:** **${request.dungeon}**`,
+      `**Difficulty:** **${request.difficulty}**`,
+      `**Runs:** **${remaining}**`,
+      `**Request ID:** \`${request.id}\``,
+      ticketId ? `**Ticket:** <#${ticketId}>` : null,
+      "**Source:** Website",
+    ].filter(Boolean).join("\n"))
+    .setFooter({ text: "The Carry Tavern • Carry Logs" })
+    .setTimestamp();
+
+  await channel.send({ embeds: [embed] }).catch((error) => {
+    console.warn("[WEB CARRY] Could not send acceptance log:", error.message);
+  });
+}
+
 async function createWebsiteTicket(client, request, actorId) {
   if (!request || request.status !== "claimed" || request.carrier_id !== actorId) {
     throw new Error("Carry is no longer reserved for this Carrier.");
@@ -106,7 +141,6 @@ async function createWebsiteTicket(client, request, actorId) {
   if (!carrierDiscordId) throw new Error("Carrier Discord identity is missing.");
   if (!requesterDiscordId) throw new Error("Requester Discord identity is missing.");
 
-  // Ensure members are resolvable before creating permission overwrites.
   await Promise.all([
     guild.members.fetch(carrierDiscordId).catch(() => null),
     guild.members.fetch(requesterDiscordId).catch(() => null),
@@ -195,10 +229,9 @@ async function processClaim(client, action) {
   const request = await loadRequest(action.request_id);
   try {
     const ticketId = await createWebsiteTicket(client, request, action.actor_id);
+    await sendWebsiteAcceptanceLog(client, request, ticketId);
     return { ticket_channel_id: ticketId };
   } catch (error) {
-    // A website claim reserves the row before Discord performs its side effects.
-    // If ticket creation fails, safely return only that untouched reservation to the queue.
     const supabase = getSupabase();
     await supabase
       .from("carry_requests")
@@ -420,7 +453,6 @@ async function pollWebsiteCarryActions(client) {
       }
     }
   } catch (error) {
-    // Keep old deployments usable until the new migration is applied.
     if (!String(error.message || "").includes("carry_web_actions")) {
       console.error("[WEB CARRY] Poll failed:", error);
     }
