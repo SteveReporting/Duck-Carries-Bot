@@ -9,6 +9,12 @@ const {
 
 const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
+const {
+  finishServiceSession,
+  formatMinutes,
+  getServiceSnapshot,
+  stopServiceSession,
+} = require("./carryServiceTime");
 
 let timer = null;
 let running = false;
@@ -51,32 +57,14 @@ async function loadRequest(requestId) {
 function ticketButtons(requestId) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("carry_carrier_complete")
-        .setLabel("Carrier Complete Session")
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId("carry_release_claim")
-        .setLabel("Release Claim")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId("carry_show_ids")
-        .setLabel("Show Request IDs")
-        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("carry_carrier_complete").setLabel("Carrier Complete Session").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("carry_release_claim").setLabel("Release Claim").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId("carry_show_ids").setLabel("Show Request IDs").setStyle(ButtonStyle.Primary),
     ),
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`carry_cancel_${requestId}`)
-        .setLabel("Cancel Request")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(`carry_delete_${requestId}`)
-        .setLabel("Delete Request")
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId(`carry_noshow_${requestId}`)
-        .setLabel("Report No-Show")
-        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`carry_cancel_${requestId}`).setLabel("Cancel Request").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`carry_delete_${requestId}`).setLabel("Delete Request").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`carry_noshow_${requestId}`).setLabel("Report No-Show").setStyle(ButtonStyle.Danger),
     ),
   ];
 }
@@ -96,7 +84,6 @@ function ratingButtons(requestId) {
 
 async function sendWebsiteAcceptanceLog(client, request, ticketId) {
   if (!process.env.MOD_LOG_CHANNEL_ID || !request) return;
-
   const channel = await client.channels.fetch(process.env.MOD_LOG_CHANNEL_ID).catch(() => null);
   if (!channel?.isTextBased?.()) return;
 
@@ -104,7 +91,6 @@ async function sendWebsiteAcceptanceLog(client, request, ticketId) {
   const requesterDiscordId = request.requester?.discord_id || null;
   const requesterRoblox = request.requester?.roblox_username || null;
   const remaining = remainingRuns(request);
-
   const embed = new EmbedBuilder()
     .setColor(0x22c55e)
     .setTitle("✅ Carry Request Accepted")
@@ -123,7 +109,6 @@ async function sendWebsiteAcceptanceLog(client, request, ticketId) {
     ].filter(Boolean).join("\n"))
     .setFooter({ text: "The Carry Tavern • Carry Logs" })
     .setTimestamp();
-
   await channel.send({ embeds: [embed] }).catch((error) => {
     console.warn("[WEB CARRY] Could not send acceptance log:", error.message);
   });
@@ -154,14 +139,7 @@ async function createWebsiteTicket(client, request, actorId) {
       { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
       {
         id: client.user.id,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory,
-          PermissionFlagsBits.EmbedLinks,
-          PermissionFlagsBits.AttachFiles,
-          PermissionFlagsBits.ManageChannels,
-        ],
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.ManageChannels],
       },
       {
         id: carrierDiscordId,
@@ -196,8 +174,7 @@ async function createWebsiteTicket(client, request, actorId) {
       `**Request ID:** \`${request.id}\``,
       "",
       "This carry was claimed from **carrytavern.com**.",
-      "The same controls work from Discord or from the website.",
-      "When the runs are finished, the assigned Carrier can complete the carry from either place.",
+      "Use Ready Check and Start Carry in Discord before service time can be credited.",
     ].join("\n"))
     .setFooter({ text: "Website and Discord share the same live carry state." })
     .setTimestamp();
@@ -221,7 +198,6 @@ async function createWebsiteTicket(client, request, actorId) {
   } catch (error) {
     console.warn(`[WEB CARRY] Could not DM requester ${requesterDiscordId}:`, error.message);
   }
-
   return ticket.id;
 }
 
@@ -260,11 +236,21 @@ async function closeTicket(client, channelId, message) {
   setTimeout(() => channel.delete(message).catch(() => {}), 15_000).unref?.();
 }
 
+async function stopTimerIfTicketEmpty(channelId, reason) {
+  if (!channelId) return;
+  const supabase = getSupabase();
+  const { data } = await supabase
+    .from("carry_requests")
+    .select("id")
+    .eq("ticket_channel_id", String(channelId))
+    .in("status", ["claimed", "in_progress"])
+    .limit(1);
+  if (!(data || []).length) stopServiceSession(channelId, reason);
+}
+
 async function processRelease(client, action) {
   const request = await loadRequest(action.request_id);
-  if (!request || !["claimed", "in_progress"].includes(request.status)) {
-    throw new Error("Carry is no longer active.");
-  }
+  if (!request || !["claimed", "in_progress"].includes(request.status)) throw new Error("Carry is no longer active.");
   if (request.carrier_id !== action.actor_id) {
     const supabase = getSupabase();
     const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", action.actor_id);
@@ -276,45 +262,32 @@ async function processRelease(client, action) {
   const channelId = request.ticket_channel_id;
   const supabase = getSupabase();
   if (channelId) {
-    const { error } = await supabase.rpc("bot_release_carry_ticket", {
-      _channel_id: channelId,
-      _actor_id: action.actor_id,
-    });
+    const { error } = await supabase.rpc("bot_release_carry_ticket", { _channel_id: channelId, _actor_id: action.actor_id });
     if (error) throw new Error(error.message);
   } else {
     const { error } = await supabase
       .from("carry_requests")
-      .update({
-        carrier_id: null,
-        status: "queued",
-        claimed_at: null,
-        started_at: null,
-        ticket_channel_id: null,
-        session_runs: null,
-        updated_at: new Date().toISOString(),
-      })
+      .update({ carrier_id: null, status: "queued", claimed_at: null, started_at: null, ticket_channel_id: null, session_runs: null, updated_at: new Date().toISOString() })
       .eq("id", request.id)
       .eq("carrier_id", request.carrier_id)
       .in("status", ["claimed", "in_progress"]);
     if (error) throw new Error(error.message);
   }
 
+  await stopTimerIfTicketEmpty(channelId, "Carry claim released from website");
   if (request.requester?.discord_id) {
     try {
       const user = await client.users.fetch(request.requester.discord_id);
       await user.send(`🍺 Your **${request.dungeon} • ${request.difficulty}** carry was returned to the queue because the Carrier released the claim from the website.`);
     } catch {}
   }
-
   await closeTicket(client, channelId, "🔒 The Carrier released this carry from the website. The request is back in the queue.");
   return { released: true };
 }
 
 async function processCancel(client, action) {
   const request = await loadRequest(action.request_id);
-  if (!request || !["queued", "claimed", "in_progress"].includes(request.status)) {
-    throw new Error("Carry request is no longer active.");
-  }
+  if (!request || !["queued", "claimed", "in_progress"].includes(request.status)) throw new Error("Carry request is no longer active.");
 
   const supabase = getSupabase();
   const { data: actor } = await supabase.from("profiles").select("discord_id").eq("id", action.actor_id).maybeSingle();
@@ -332,26 +305,41 @@ async function processCancel(client, action) {
     .in("status", ["queued", "claimed", "in_progress"]);
   if (error) throw new Error(error.message);
 
-  const participants = [request.requester?.discord_id, request.carrier?.discord_id]
-    .filter(Boolean)
-    .filter((id) => id !== actor?.discord_id);
+  await stopTimerIfTicketEmpty(request.ticket_channel_id, "Carry request cancelled from website");
+  const participants = [request.requester?.discord_id, request.carrier?.discord_id].filter(Boolean).filter((id) => id !== actor?.discord_id);
   for (const id of participants) {
     try {
       const user = await client.users.fetch(id);
       await user.send(`❌ Carry request \`${request.id}\` for **${request.dungeon} • ${request.difficulty}** was cancelled from the Tavern website.`);
     } catch {}
   }
-
   await closeTicket(client, request.ticket_channel_id, "🔒 This carry request was cancelled from the website.");
   return { cancelled: true };
 }
 
+async function addVerifiedTimeToCarrierTotals(supabase, carrierId, minutes) {
+  const amount = Math.max(0, Math.floor(Number(minutes || 0)));
+  if (!carrierId || amount <= 0) return;
+  const { data: carrier } = await supabase.from("carrier_profiles").select("user_id,service_minutes").eq("user_id", carrierId).maybeSingle();
+  if (carrier) {
+    await supabase.from("carrier_profiles").update({ service_minutes: Number(carrier.service_minutes || 0) + amount, updated_at: new Date().toISOString() }).eq("user_id", carrierId);
+  }
+  const { data: profile } = await supabase.from("profiles").select("id,total_service_minutes").eq("id", carrierId).maybeSingle();
+  if (profile) {
+    await supabase.from("profiles").update({ total_service_minutes: Number(profile.total_service_minutes || 0) + amount }).eq("id", carrierId);
+  }
+}
+
 async function processFinish(client, action) {
   const request = await loadRequest(action.request_id);
-  if (!request || !["claimed", "in_progress"].includes(request.status)) {
-    throw new Error("Carry is no longer active.");
-  }
+  if (!request || !["claimed", "in_progress"].includes(request.status)) throw new Error("Carry is no longer active.");
   if (!request.ticket_channel_id) throw new Error("Discord ticket is not ready yet.");
+
+  const snapshot = getServiceSnapshot(request.ticket_channel_id);
+  if (!snapshot.exists || snapshot.status === "not_started") {
+    throw new Error("Verified service time has not started. Use Ready Check and Start Carry in the Discord ticket first.");
+  }
+  if (snapshot.status === "completed") throw new Error("This timed carry session was already completed.");
 
   const supabase = getSupabase();
   const { data, error } = await supabase.rpc("bot_complete_carry_session", {
@@ -372,6 +360,15 @@ async function processFinish(client, action) {
     if (finalError) throw new Error(finalError.message);
   }
 
+  const actualRuns = Math.max(1, Number(request.session_runs || remainingRuns(request) || 1));
+  const history = finishServiceSession(request.ticket_channel_id, {
+    guildId: process.env.GUILD_ID,
+    carrierId: request.carrier?.discord_id || "unknown",
+    runsCompleted: actualRuns,
+    requestCount: 1,
+  });
+  await addVerifiedTimeToCarrierTotals(supabase, request.carrier_id || action.actor_id, history.service_minutes).catch(() => {});
+
   const refreshed = await loadRequest(request.id);
   if (refreshed?.requester?.discord_id) {
     try {
@@ -379,7 +376,8 @@ async function processFinish(client, action) {
       await requester.send({
         content: [
           `✅ **Your ${refreshed.dungeon} carry is complete.**`,
-          `Runs completed: **${refreshed.runs_requested}/${refreshed.runs_requested}**`,
+          `Verified Carrier service time: **${formatMinutes(history.service_minutes)}**`,
+          `Runs completed: **${result.runs_completed}/${result.runs_requested}**`,
           `Request ID: \`${refreshed.id}\``,
           "The assigned Carrier finished it from the Tavern website.",
           "You can rate the Carrier below.",
@@ -389,8 +387,8 @@ async function processFinish(client, action) {
     } catch {}
   }
 
-  await closeTicket(client, request.ticket_channel_id, "✅ The Carrier marked this carry complete from the website.");
-  return { completed: true, runs_completed: result.runs_completed };
+  await closeTicket(client, request.ticket_channel_id, `✅ Carry complete. **${formatMinutes(history.service_minutes)}** of verified service time was recorded.`);
+  return { completed: true, runs_completed: result.runs_completed, verified_service_minutes: history.service_minutes };
 }
 
 async function processAction(client, action) {
@@ -432,30 +430,19 @@ async function pollWebsiteCarryActions(client) {
         const result = await processAction(client, action);
         await supabase
           .from("carry_web_actions")
-          .update({
-            status: "completed",
-            result: result || {},
-            error: null,
-            processed_at: new Date().toISOString(),
-          })
+          .update({ status: "completed", result: result || {}, error: null, processed_at: new Date().toISOString() })
           .eq("id", action.id);
         console.log(`[WEB CARRY] ${action.action} completed for ${action.request_id}`);
       } catch (actionError) {
         console.error(`[WEB CARRY] ${action.action} failed for ${action.request_id}:`, actionError);
         await supabase
           .from("carry_web_actions")
-          .update({
-            status: "failed",
-            error: String(actionError?.message || actionError).slice(0, 1500),
-            processed_at: new Date().toISOString(),
-          })
+          .update({ status: "failed", error: String(actionError?.message || actionError).slice(0, 1500), processed_at: new Date().toISOString() })
           .eq("id", action.id);
       }
     }
   } catch (error) {
-    if (!String(error.message || "").includes("carry_web_actions")) {
-      console.error("[WEB CARRY] Poll failed:", error);
-    }
+    if (!String(error.message || "").includes("carry_web_actions")) console.error("[WEB CARRY] Poll failed:", error);
   } finally {
     running = false;
   }
