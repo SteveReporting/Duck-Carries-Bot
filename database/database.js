@@ -34,6 +34,7 @@ db.prepare(`
         difficulty TEXT,
         runs TEXT,
         availability TEXT,
+        notes TEXT,
         carrier TEXT,
         status TEXT DEFAULT 'waiting'
     )
@@ -182,6 +183,7 @@ addColumn("queue", "message_channel TEXT");
 addColumn("queue", "message_id TEXT");
 addColumn("queue", "carrier_confirmed INTEGER DEFAULT 0");
 addColumn("queue", "requester_confirmed INTEGER DEFAULT 0");
+addColumn("queue", "notes TEXT");
 
 // Do not refresh unknown-age legacy requests to "now". Rows without a timestamp
 // are treated as stale by the queue loader/cleanup instead of being resurrected
