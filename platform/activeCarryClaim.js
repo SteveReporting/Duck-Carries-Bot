@@ -9,7 +9,7 @@ const {
 
 const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
-const { requireLinkedProfile } = require("./helpers");
+const { getLinkedProfile } = require("./helpers");
 const { canonicalizeDungeon, canonicalizeDifficulty } = require("./dungeons");
 
 function safeChannelName(value) {
@@ -21,7 +21,7 @@ function safeChannelName(value) {
 }
 
 function remainingRuns(request) {
-  return Math.max(1, Number(request.runs_requested || 1) - Number(request.runs_completed || 0));
+  return Math.max(1, Number(request.runs_requested || request.runs || 1) - Number(request.runs_completed || 0));
 }
 
 async function getTicketParent(guild, interaction) {
@@ -39,7 +39,7 @@ async function getTicketParent(guild, interaction) {
   return interaction.channel?.parentId || null;
 }
 
-function ticketButtons(requestId) {
+function platformTicketButtons(requestId) {
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
@@ -72,7 +72,27 @@ function ticketButtons(requestId) {
   ];
 }
 
-async function loadActiveClaims(carrierId) {
+function legacyTicketButtons(requestId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`complete_${requestId}`)
+        .setLabel("Carrier Complete")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`requester_complete_${requestId}`)
+        .setLabel("Requester Complete")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`legacy_release_${requestId}`)
+        .setLabel("Release Claim")
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
+async function loadPlatformClaims(carrierId) {
+  if (!carrierId) return [];
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("carry_requests")
@@ -81,18 +101,45 @@ async function loadActiveClaims(carrierId) {
     .in("status", ["claimed", "in_progress"])
     .order("claimed_at", { ascending: true });
 
-  if (error) throw new Error(`Could not load your active carries: ${error.message}`);
+  if (error) throw new Error(`Could not load your shared-queue carries: ${error.message}`);
   return data || [];
 }
 
-async function resolveExistingTicket(guild, request) {
-  if (!request.ticket_channel_id) return null;
-  const channel = await guild.channels.fetch(String(request.ticket_channel_id)).catch(() => null);
+function loadLegacyClaims(guildId, carrierDiscordId) {
+  if (!guildId || !carrierDiscordId) return [];
+  return db.prepare(`
+    SELECT
+      id,
+      guild,
+      user,
+      roblox,
+      dungeon,
+      difficulty,
+      runs,
+      availability,
+      notes,
+      carrier,
+      status,
+      ticket_channel,
+      message_channel,
+      message_id,
+      created_at
+    FROM queue
+    WHERE guild = ?
+      AND carrier = ?
+      AND status = 'claimed'
+    ORDER BY id ASC
+  `).all(guildId, carrierDiscordId);
+}
+
+async function resolveTicket(guild, channelId) {
+  if (!channelId) return null;
+  const channel = await guild.channels.fetch(String(channelId)).catch(() => null);
   if (!channel || channel.type !== ChannelType.GuildText) return null;
   return channel;
 }
 
-async function createMissingTicket(interaction, request, carrierProfile) {
+async function createMissingPlatformTicket(interaction, request, carrierProfile) {
   const supabase = getSupabase();
   const dungeon = canonicalizeDungeon(request.dungeon);
   const difficulty = canonicalizeDifficulty(request.difficulty);
@@ -189,7 +236,7 @@ async function createMissingTicket(interaction, request, carrierProfile) {
         requesterDiscordId ? `<@${requesterDiscordId}>` : null,
       ].filter(Boolean).join(" "),
       embeds: [embed],
-      components: ticketButtons(request.id),
+      components: platformTicketButtons(request.id),
     });
 
     if (requesterDiscordId) {
@@ -214,6 +261,111 @@ async function createMissingTicket(interaction, request, carrierProfile) {
   }
 }
 
+async function createMissingLegacyTicket(interaction, request) {
+  const dungeon = canonicalizeDungeon(request.dungeon);
+  const difficulty = canonicalizeDifficulty(request.difficulty);
+  const requesterDiscordId = String(request.user || "").trim() || null;
+
+  const overwrites = [
+    { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+    {
+      id: interaction.client.user.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+        PermissionFlagsBits.EmbedLinks,
+      ],
+    },
+    {
+      id: interaction.user.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+      ],
+    },
+  ];
+
+  if (requesterDiscordId && requesterDiscordId !== interaction.user.id) {
+    overwrites.push({
+      id: requesterDiscordId,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+      ],
+    });
+  }
+
+  let ticket;
+  try {
+    ticket = await interaction.guild.channels.create({
+      name: `carry-${safeChannelName(dungeon)}-${request.id}`,
+      type: ChannelType.GuildText,
+      parent: await getTicketParent(interaction.guild, interaction),
+      permissionOverwrites: overwrites,
+      reason: `Repairing legacy Carry Tavern ticket #${request.id} for ${interaction.user.tag}`,
+    });
+
+    const updated = db.prepare(`
+      UPDATE queue
+      SET ticket_channel = ?
+      WHERE id = ? AND guild = ? AND carrier = ? AND status = 'claimed'
+    `).run(ticket.id, request.id, interaction.guildId, interaction.user.id);
+
+    if (updated.changes !== 1) {
+      throw new Error("The legacy claim changed before its repaired ticket could be attached.");
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(0xc89532)
+      .setTitle(`🍺 ${dungeon} • ${difficulty}`)
+      .setDescription([
+        "**Recovered Legacy Carry Ticket**",
+        "This older Discord carry was already claimed but its private channel was missing.",
+        "",
+        `**Carrier:** <@${interaction.user.id}>`,
+        requesterDiscordId ? `**Requester:** <@${requesterDiscordId}>` : "**Requester:** Unknown",
+        request.roblox ? `**Roblox:** **${request.roblox}**` : null,
+        `**Runs:** **${request.runs || 1}**`,
+        `**Legacy Request ID:** \`${request.id}\``,
+        request.availability ? `**Availability:** ${request.availability}` : null,
+      ].filter(Boolean).join("\n"))
+      .setFooter({ text: "The Carry Tavern • Recovered Legacy Ticket" })
+      .setTimestamp();
+
+    await ticket.send({
+      content: [
+        `<@${interaction.user.id}>`,
+        requesterDiscordId ? `<@${requesterDiscordId}>` : null,
+      ].filter(Boolean).join(" "),
+      embeds: [embed],
+      components: legacyTicketButtons(request.id),
+    });
+
+    if (requesterDiscordId) {
+      try {
+        const requester = await interaction.client.users.fetch(requesterDiscordId);
+        await requester.send([
+          `🍺 **Your ${dungeon} carry ticket has been restored.**`,
+          `Difficulty: **${difficulty}**`,
+          `Runs: **${request.runs || 1}**`,
+          `Carrier: <@${interaction.user.id}>`,
+          `Private ticket: <#${ticket.id}>`,
+        ].join("\n"));
+      } catch (error) {
+        console.warn(`[ACTIVE LEGACY CARRY] Could not DM ${requesterDiscordId}:`, error.message);
+      }
+    }
+
+    return ticket;
+  } catch (error) {
+    if (ticket) await ticket.delete("Recovered legacy carry ticket setup failed").catch(() => {});
+    throw error;
+  }
+}
+
 async function viewOrRepairActiveClaims(interaction) {
   await interaction.deferReply({ ephemeral: true });
 
@@ -222,14 +374,13 @@ async function viewOrRepairActiveClaims(interaction) {
     return null;
   }
 
-  const carrierProfile = await requireLinkedProfile(interaction, {
-    alreadyDeferred: true,
-    requireRoblox: false,
-  });
-  if (!carrierProfile) return null;
+  const carrierProfile = await getLinkedProfile(interaction.user.id).catch(() => null);
+  const [platformClaims, legacyClaims] = await Promise.all([
+    carrierProfile ? loadPlatformClaims(carrierProfile.id) : Promise.resolve([]),
+    Promise.resolve(loadLegacyClaims(interaction.guildId, interaction.user.id)),
+  ]);
 
-  const claims = await loadActiveClaims(carrierProfile.id);
-  if (!claims.length) {
+  if (!platformClaims.length && !legacyClaims.length) {
     await interaction.editReply("🍺 You do not currently have any active carry claims.");
     return [];
   }
@@ -237,27 +388,27 @@ async function viewOrRepairActiveClaims(interaction) {
   const lines = [];
   let repaired = 0;
 
-  for (const request of claims) {
+  for (const request of platformClaims) {
     const dungeon = canonicalizeDungeon(request.dungeon);
     const difficulty = canonicalizeDifficulty(request.difficulty);
     const runs = remainingRuns(request);
 
-    let ticket = await resolveExistingTicket(interaction.guild, request);
+    let ticket = await resolveTicket(interaction.guild, request.ticket_channel_id);
     let repairError = null;
 
     if (!ticket) {
       try {
-        ticket = await createMissingTicket(interaction, request, carrierProfile);
+        ticket = await createMissingPlatformTicket(interaction, request, carrierProfile);
         repaired += 1;
       } catch (error) {
         repairError = error;
-        console.error(`[ACTIVE CARRY] Could not repair ${request.id}:`, error);
+        console.error(`[ACTIVE CARRY] Could not repair shared request ${request.id}:`, error);
       }
     }
 
     lines.push([
       `**🍺 ${dungeon} • ${difficulty}**`,
-      `🏃 **${runs}** run${runs === 1 ? "" : "s"} remaining • 📌 ${request.status}`,
+      `🏃 **${runs}** run${runs === 1 ? "" : "s"} remaining • 📌 ${request.status} • shared queue`,
       ticket
         ? `🎟️ Ticket: <#${ticket.id}>${request.ticket_channel_id ? "" : " • **recovered now**"}`
         : `⚠️ Ticket could not be recovered: ${repairError?.message || "unknown error"}`,
@@ -265,14 +416,43 @@ async function viewOrRepairActiveClaims(interaction) {
     ].join("\n"));
   }
 
+  for (const request of legacyClaims) {
+    const dungeon = canonicalizeDungeon(request.dungeon);
+    const difficulty = canonicalizeDifficulty(request.difficulty);
+    const runs = Number.parseInt(request.runs, 10) || 1;
+
+    let ticket = await resolveTicket(interaction.guild, request.ticket_channel);
+    let repairError = null;
+
+    if (!ticket) {
+      try {
+        ticket = await createMissingLegacyTicket(interaction, request);
+        repaired += 1;
+      } catch (error) {
+        repairError = error;
+        console.error(`[ACTIVE LEGACY CARRY] Could not repair legacy request ${request.id}:`, error);
+      }
+    }
+
+    lines.push([
+      `**🍺 ${dungeon} • ${difficulty}**`,
+      `🏃 **${runs}** run${runs === 1 ? "" : "s"} • 📌 claimed • legacy Discord queue`,
+      ticket
+        ? `🎟️ Ticket: <#${ticket.id}>${request.ticket_channel ? "" : " • **recovered now**"}`
+        : `⚠️ Ticket could not be recovered: ${repairError?.message || "unknown error"}`,
+      `Legacy ID: \`${request.id}\``,
+    ].join("\n"));
+  }
+
+  const total = platformClaims.length + legacyClaims.length;
   await interaction.editReply([
-    `⚔️ **Your Active Carry Claim${claims.length === 1 ? "" : "s"}**`,
+    `⚔️ **Your Active Carry Claim${total === 1 ? "" : "s"}**`,
     repaired ? `✅ Recovered **${repaired}** missing private ticket${repaired === 1 ? "" : "s"}.` : null,
     "",
     ...lines,
   ].filter(Boolean).join("\n\n").slice(0, 1900));
 
-  return claims;
+  return [...platformClaims, ...legacyClaims];
 }
 
 module.exports = {
