@@ -9,6 +9,12 @@ const {
 
 const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
+const {
+  START_ID,
+  formatMinutes,
+  getServiceSnapshot,
+} = require("./carryServiceTime");
+const { COMPLETE_ID } = require("./carryServiceCompletion");
 
 const SELECT_ID = "carry_control_select";
 const CENTER_FOOTER = "The Carry Tavern • Carry Control Center";
@@ -56,12 +62,6 @@ function carrierMention(request) {
   return id ? `<@${id}>` : "Carrier";
 }
 
-function statusText(requests) {
-  return requests.some((request) => request.status === "in_progress")
-    ? "🟢 In Progress"
-    : "🟡 Claimed";
-}
-
 function shortId(id) {
   return String(id || "").slice(0, 8);
 }
@@ -70,6 +70,44 @@ function cleanOptional(value, max = 300) {
   const text = String(value || "").trim();
   if (!text) return null;
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function discordRelative(ms) {
+  return `<t:${Math.floor(Number(ms) / 1000)}:R>`;
+}
+
+function statusText(snapshot) {
+  if (snapshot.status === "running") return "🟢 Carrying Now";
+  if (snapshot.status === "checkpoint") return "🟠 Awaiting Time Verification";
+  if (snapshot.status === "stopped") return "⏸️ Service Time Frozen";
+  return "🟡 Claimed • Not Started";
+}
+
+function serviceTimeText(snapshot) {
+  if (!snapshot.exists || snapshot.status === "not_started") {
+    return "⏱️ **Service time:** Not started yet";
+  }
+  if (snapshot.status === "running") {
+    return [
+      `⏱️ **Service time:** **${formatMinutes(snapshot.minutes)}** currently creditable`,
+      snapshot.firstStartedAt ? `**First started:** ${discordRelative(snapshot.firstStartedAt)}` : null,
+      snapshot.nextCheckAt ? `**Next verification:** ${discordRelative(snapshot.nextCheckAt)}` : null,
+    ].filter(Boolean).join("\n");
+  }
+  if (snapshot.status === "checkpoint") {
+    return [
+      `⏱️ **Verified time cap:** **${formatMinutes(snapshot.minutes)}**`,
+      snapshot.checkDeadline ? `**Requester confirmation due:** ${discordRelative(snapshot.checkDeadline)}` : null,
+      "Time cannot increase past the current cap until everyone confirms.",
+    ].filter(Boolean).join("\n");
+  }
+  if (snapshot.status === "stopped") {
+    return [
+      `⏱️ **Verified time:** **${formatMinutes(snapshot.minutes)}**`,
+      "**Timer:** Frozen. Run a fresh Ready Check before resuming.",
+    ].join("\n");
+  }
+  return `⏱️ **Verified time:** **${formatMinutes(snapshot.minutes)}**`;
 }
 
 async function loadPlatformRequests(channelId) {
@@ -128,6 +166,8 @@ async function loadActiveRequests(channelId) {
 function requestField(request, index) {
   const remaining = remainingRuns(request);
   const session = plannedRuns(request);
+  const total = Math.max(0, Number(request.runs_requested || request.runs || 0));
+  const completed = Math.max(0, Number(request.runs_completed || 0));
   const after = Math.max(0, remaining - session);
   const roblox = request.requester?.roblox_username || request.roblox || null;
   const availability = cleanOptional(request.availability, 180);
@@ -136,7 +176,7 @@ function requestField(request, index) {
     `**Discord:** ${requesterMention(request)}`,
     roblox ? `**Roblox:** @${roblox}` : null,
     request.source === "platform"
-      ? `**Runs:** ${remaining} remaining • ${session} this session • ${after === 0 ? "✅ finishes" : `🔁 ${after} left after`}`
+      ? `**Runs:** ${completed}/${total} completed • ${session} planned now${after > 0 ? ` • ${after} left after` : " • ✅ finishes"}`
       : `**Runs:** ${remaining}`,
     availability ? `**Availability:** ${availability}` : null,
     notes ? `**Notes:** ${notes}` : null,
@@ -150,34 +190,33 @@ function requestField(request, index) {
   };
 }
 
-function controlCenterEmbed(requests) {
+function controlCenterEmbed(requests, channelId) {
   const first = requests[0];
-  const totalSessionRuns = Math.max(...requests.map((request) => plannedRuns(request)), 0);
+  const snapshot = getServiceSnapshot(channelId);
   const fields = requests.slice(0, 20).map(requestField);
 
   return new EmbedBuilder()
-    .setColor(0xc89532)
-    .setTitle(
-      `🍺 ${first?.dungeon || "Carry"} • ${first?.difficulty || ""}`.trim(),
-    )
+    .setColor(snapshot.status === "running" ? 0x22c55e : snapshot.status === "checkpoint" ? 0xf59e0b : 0xc89532)
+    .setTitle(`🍺 ${first?.dungeon || "Carry"} • ${first?.difficulty || ""}`.trim())
     .setDescription([
       "### Carry Control Center",
-      "Everything for this carry is managed from this one panel.",
-      "",
       `**Carrier:** ${carrierMention(first)}`,
-      `**Status:** ${statusText(requests)}`,
+      `**Status:** ${statusText(snapshot)}`,
       `**Requesters:** ${requests.length}`,
-      first?.source === "platform" ? `**Session:** ${totalSessionRuns} run${totalSessionRuns === 1 ? "" : "s"}` : null,
-    ].filter(Boolean).join("\n"))
+      "",
+      serviceTimeText(snapshot),
+      "",
+      "Service time is the primary Carrier metric. Runs are shown below only as session progress.",
+    ].join("\n"))
     .addFields(fields)
     .addFields({
-      name: "How to use this ticket",
+      name: "Verified time rules",
       value: [
-        "📣 **Ready Check** when you are ready to start.",
-        "✅ **Complete Session** after the planned runs are finished.",
-        requests.length > 1
-          ? "Use the requester dropdown for cancel, delete or no-show actions."
-          : "Use the request controls below for cancel, delete or no-show actions.",
+        "1. 📣 Run **Ready Check** and wait for every requester to confirm.",
+        "2. ▶️ Press **Start Carry** when the actual carrying begins.",
+        "3. ⏱️ Every **20 minutes**, requesters must verify the carry is still happening within **5 minutes**.",
+        "4. ✅ **Complete Session** records only the verified wall-clock time.",
+        "Missing a time check freezes credit until a fresh Ready Check is completed.",
       ].join("\n"),
       inline: false,
     })
@@ -185,18 +224,32 @@ function controlCenterEmbed(requests) {
     .setTimestamp();
 }
 
-function globalPlatformRow() {
-  return new ActionRowBuilder().addComponents(
+function platformRows(channelId) {
+  const snapshot = getServiceSnapshot(channelId);
+  const active = snapshot.status === "running" || snapshot.status === "checkpoint";
+  const canComplete = snapshot.exists && snapshot.status !== "completed" && snapshot.status !== "not_started";
+
+  const primary = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("carry_readycheck_start")
       .setLabel("Ready Check")
       .setEmoji("📣")
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
-      .setCustomId("carry_carrier_complete")
+      .setCustomId(START_ID)
+      .setLabel(active ? "Carry Running" : snapshot.status === "stopped" ? "Resume Carry" : "Start Carry")
+      .setEmoji("▶️")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(active),
+    new ButtonBuilder()
+      .setCustomId(COMPLETE_ID)
       .setLabel("Complete Session")
       .setEmoji("✅")
-      .setStyle(ButtonStyle.Success),
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(!canComplete),
+  );
+
+  const secondary = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("carry_release_claim")
       .setLabel("Release Claim")
@@ -213,6 +266,8 @@ function globalPlatformRow() {
       .setEmoji("🔒")
       .setStyle(ButtonStyle.Danger),
   );
+
+  return [primary, secondary];
 }
 
 function legacyGlobalRow(request) {
@@ -248,7 +303,7 @@ function requestSelectRow(requests, selectedId) {
         requests.slice(0, 25).map((request, index) => ({
           label: `${index + 1}. ${requesterLabel(request)}`.slice(0, 100),
           value: String(request.id),
-          description: `${remainingRuns(request)} run${remainingRuns(request) === 1 ? "" : "s"} left • ${request.status}`.slice(0, 100),
+          description: `${Number(request.runs_completed || 0)}/${Number(request.runs_requested || request.runs || 0)} runs completed • ${request.status}`.slice(0, 100),
           default: String(request.id) === String(selectedId),
         })),
       ),
@@ -275,19 +330,14 @@ function requestActionRow(requestId) {
   );
 }
 
-function buildComponents(requests, selectedId = null) {
+function buildComponents(requests, channelId, selectedId = null) {
   if (!requests.length) return [];
   const first = requests[0];
 
-  if (first.source === "legacy") {
-    return [legacyGlobalRow(first)];
-  }
+  if (first.source === "legacy") return [legacyGlobalRow(first)];
 
-  const selected =
-    requests.find((request) => String(request.id) === String(selectedId)) ||
-    requests[0];
-
-  const rows = [globalPlatformRow()];
+  const selected = requests.find((request) => String(request.id) === String(selectedId)) || requests[0];
+  const rows = [...platformRows(channelId)];
   const select = requestSelectRow(requests, selected.id);
   if (select) rows.push(select);
   rows.push(requestActionRow(selected.id));
@@ -297,37 +347,31 @@ function buildComponents(requests, selectedId = null) {
 function messageIsUnified(message) {
   return Boolean(
     message?.author?.bot &&
-      ((message.embeds || []).some((embed) =>
-        String(embed.footer?.text || "").includes(CENTER_FOOTER),
-      ) ||
+      ((message.embeds || []).some((embed) => String(embed.footer?.text || "").includes(CENTER_FOOTER)) ||
         (message.components || []).some((row) =>
-          (row.components || []).some(
-            (component) => component.customId === SELECT_ID,
-          ),
+          (row.components || []).some((component) => component.customId === SELECT_ID),
         )),
   );
 }
 
 function hasPersistentOldControls(message) {
   if (!message?.author?.bot || messageIsUnified(message)) return false;
-
   const ids = (message.components || [])
     .flatMap((row) => row.components || [])
     .map((component) => String(component.customId || ""));
 
-  return ids.some(
-    (id) =>
-      id === "carry_carrier_complete" ||
-      id === "carry_release_claim" ||
-      id === "carry_show_ids" ||
-      id === "carry_readycheck_start" ||
-      id === "carry_close_ticket" ||
-      id.startsWith("carry_cancel_") ||
-      id.startsWith("carry_delete_") ||
-      id.startsWith("carry_noshow_") ||
-      id.startsWith("complete_") ||
-      id.startsWith("requester_complete_") ||
-      id.startsWith("legacy_release_"),
+  return ids.some((id) =>
+    id === "carry_carrier_complete" ||
+    id === "carry_release_claim" ||
+    id === "carry_show_ids" ||
+    id === "carry_readycheck_start" ||
+    id === "carry_close_ticket" ||
+    id.startsWith("carry_cancel_") ||
+    id.startsWith("carry_delete_") ||
+    id.startsWith("carry_noshow_") ||
+    id.startsWith("complete_") ||
+    id.startsWith("requester_complete_") ||
+    id.startsWith("legacy_release_"),
   );
 }
 
@@ -338,29 +382,17 @@ async function findRecentMessages(channel) {
 async function existingControlCenter(channel) {
   const messages = await findRecentMessages(channel);
   if (!messages) return null;
-  return (
-    messages.find(
-      (message) =>
-        message.author?.id === channel.client.user.id &&
-        messageIsUnified(message),
-    ) || null
-  );
+  return messages.find((message) => message.author?.id === channel.client.user.id && messageIsUnified(message)) || null;
 }
 
 async function deleteOldPersistentPanels(channel, keepMessageId = null) {
   const messages = await findRecentMessages(channel);
   if (!messages) return 0;
-
   let deleted = 0;
   for (const message of messages.values()) {
     if (keepMessageId && String(message.id) === String(keepMessageId)) continue;
     if (!hasPersistentOldControls(message)) continue;
-    await message
-      .delete()
-      .then(() => {
-        deleted += 1;
-      })
-      .catch(() => {});
+    await message.delete().then(() => { deleted += 1; }).catch(() => {});
   }
   return deleted;
 }
@@ -378,14 +410,13 @@ function participantMentions(requests) {
 
 async function ensureCarryControlCenter(channel, { replace = true, ping = false } = {}) {
   if (!isCarryTicket(channel) || !channel.isTextBased?.()) return null;
-
   const requests = await loadActiveRequests(channel.id);
   if (!requests.length) return null;
 
   let message = await existingControlCenter(channel);
   const payload = {
-    embeds: [controlCenterEmbed(requests)],
-    components: buildComponents(requests),
+    embeds: [controlCenterEmbed(requests, channel.id)],
+    components: buildComponents(requests, channel.id),
   };
 
   if (message) {
@@ -404,82 +435,53 @@ async function ensureCarryControlCenter(channel, { replace = true, ping = false 
 }
 
 async function handleControlCenterSelect(interaction) {
-  if (
-    !interaction.isStringSelectMenu() ||
-    interaction.customId !== SELECT_ID
-  ) {
-    return false;
-  }
-
+  if (!interaction.isStringSelectMenu() || interaction.customId !== SELECT_ID) return false;
   const requests = await loadActiveRequests(interaction.channelId);
   if (!requests.length) {
-    await interaction.reply({
-      content: "❌ This carry no longer has any active requests.",
-      ephemeral: true,
-    });
+    await interaction.reply({ content: "❌ This carry no longer has any active requests.", ephemeral: true });
     return true;
   }
 
   const selectedId = interaction.values[0];
-  if (
-    !requests.some((request) => String(request.id) === String(selectedId))
-  ) {
-    await interaction.reply({
-      content: "❌ That request is no longer active in this ticket.",
-      ephemeral: true,
-    });
+  if (!requests.some((request) => String(request.id) === String(selectedId))) {
+    await interaction.reply({ content: "❌ That request is no longer active in this ticket.", ephemeral: true });
     return true;
   }
 
   await interaction.update({
-    embeds: [controlCenterEmbed(requests)],
-    components: buildComponents(requests, selectedId),
+    embeds: [controlCenterEmbed(requests, interaction.channelId)],
+    components: buildComponents(requests, interaction.channelId, selectedId),
   });
   return true;
 }
 
 async function retrofitCarryControlCenters(client) {
   if (!process.env.GUILD_ID) return { updated: 0, deleted: 0 };
-
-  const guild = await client.guilds
-    .fetch(process.env.GUILD_ID)
-    .catch(() => null);
+  const guild = await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
   if (!guild) return { updated: 0, deleted: 0 };
-
   const channels = await guild.channels.fetch().catch(() => null);
   if (!channels) return { updated: 0, deleted: 0 };
 
   let updated = 0;
   let deleted = 0;
-
   for (const channel of channels.values()) {
     if (!isCarryTicket(channel)) continue;
-
     try {
       const requests = await loadActiveRequests(channel.id);
       if (!requests.length) continue;
-
       let message = await existingControlCenter(channel);
       const payload = {
-        embeds: [controlCenterEmbed(requests)],
-        components: buildComponents(requests),
+        embeds: [controlCenterEmbed(requests, channel.id)],
+        components: buildComponents(requests, channel.id),
       };
-
       if (message) await message.edit(payload);
       else message = await channel.send(payload);
-
       updated += 1;
       deleted += await deleteOldPersistentPanels(channel, message.id);
     } catch (error) {
-      console.warn(
-        `[CARRY CONTROL CENTER] Could not update #${
-          channel?.name || channel?.id
-        }:`,
-        error.message,
-      );
+      console.warn(`[CARRY CONTROL CENTER] Could not update #${channel?.name || channel?.id}:`, error.message);
     }
   }
-
   return { updated, deleted };
 }
 
