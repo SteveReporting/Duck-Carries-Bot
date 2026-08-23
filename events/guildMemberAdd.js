@@ -1,28 +1,18 @@
-const { getLinkedProfile } = require("../platform/helpers");
-const {
-  applyVerificationRoles,
-  joinInstructions,
-  syncVerifiedMember,
-} = require("../platform/robloxAccounts");
-
 module.exports = {
   name: "guildMemberAdd",
 
   async execute(member) {
     try {
-      const profile = await getLinkedProfile(member.id).catch(() => null);
-      if (profile?.roblox_verified_at && profile?.roblox_username) {
-        await syncVerifiedMember(member, profile);
-        await member.send(`🍺 Welcome back to The Carry Tavern. Your verified Roblox account **${profile.roblox_username}** was detected and your nickname has been synced.`).catch(() => {});
-        return;
-      }
-
-      await applyVerificationRoles(member, false);
-      await member.send(joinInstructions()).catch((error) => {
-        console.warn(`[JOIN VERIFY] Could not DM ${member.id}:`, error.message);
-      });
+      await member.send([
+        "🍺 **Welcome to The Carry Tavern!**",
+        "",
+        "Roblox identity for the carry queue is handled through **Bloxlink**.",
+        "Make sure your Roblox account is linked through Bloxlink, then the Tavern bot will automatically use the correct Roblox username when you request a carry.",
+        "",
+        "There is no separate Carry Tavern Roblox verification step anymore.",
+      ].join("\n")).catch(() => {});
     } catch (error) {
-      console.error(`[JOIN VERIFY] ${member.id}:`, error);
+      console.error(`[JOIN] ${member.id}:`, error);
     }
   },
 };
