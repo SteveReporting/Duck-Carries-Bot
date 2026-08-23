@@ -56,6 +56,22 @@ function carrierMention(request) {
   return id ? `<@${id}>` : "Carrier";
 }
 
+function statusText(requests) {
+  return requests.some((request) => request.status === "in_progress")
+    ? "🟢 In Progress"
+    : "🟡 Claimed";
+}
+
+function shortId(id) {
+  return String(id || "").slice(0, 8);
+}
+
+function cleanOptional(value, max = 300) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 async function loadPlatformRequests(channelId) {
   const supabase = getSupabase();
   const { data, error } = await supabase
@@ -109,44 +125,62 @@ async function loadActiveRequests(channelId) {
   return [...platform, ...legacy];
 }
 
+function requestField(request, index) {
+  const remaining = remainingRuns(request);
+  const session = plannedRuns(request);
+  const after = Math.max(0, remaining - session);
+  const roblox = request.requester?.roblox_username || request.roblox || null;
+  const availability = cleanOptional(request.availability, 180);
+  const notes = cleanOptional(request.notes, 220);
+  const lines = [
+    `**Discord:** ${requesterMention(request)}`,
+    roblox ? `**Roblox:** @${roblox}` : null,
+    request.source === "platform"
+      ? `**Runs:** ${remaining} remaining • ${session} this session • ${after === 0 ? "✅ finishes" : `🔁 ${after} left after`}`
+      : `**Runs:** ${remaining}`,
+    availability ? `**Availability:** ${availability}` : null,
+    notes ? `**Notes:** ${notes}` : null,
+    `**Request:** \`${shortId(request.id)}…\``,
+  ].filter(Boolean);
+
+  return {
+    name: `${index + 1}. ${requesterLabel(request)}`.slice(0, 256),
+    value: lines.join("\n").slice(0, 1024),
+    inline: false,
+  };
+}
+
 function controlCenterEmbed(requests) {
   const first = requests[0];
-  const requestLines = requests.map((request, index) => {
-    const remaining = remainingRuns(request);
-    const session = plannedRuns(request);
-    const roblox = request.requester?.roblox_username
-      ? ` • @${request.requester.roblox_username}`
-      : "";
-
-    return [
-      `**${index + 1}. ${requesterMention(request)}${roblox}**`,
-      `Runs: **${remaining} left**${
-        request.source === "platform" ? ` • **${session} this session**` : ""
-      }`,
-      `ID: \`${request.id}\``,
-    ].join("\n");
-  });
+  const totalSessionRuns = Math.max(...requests.map((request) => plannedRuns(request)), 0);
+  const fields = requests.slice(0, 20).map(requestField);
 
   return new EmbedBuilder()
     .setColor(0xc89532)
     .setTitle(
-      `🍺 Carry Control Center • ${first?.dungeon || "Carry"} • ${
-        first?.difficulty || ""
-      }`.trim(),
+      `🍺 ${first?.dungeon || "Carry"} • ${first?.difficulty || ""}`.trim(),
     )
-    .setDescription(
-      [
-        `**Carrier:** ${carrierMention(first)}`,
-        `**Requests:** ${requests.length}`,
-        "",
-        ...requestLines.flatMap((line, index) => (index ? ["", line] : [line])),
-        "",
-        "Use the controls below for the entire carry.",
+    .setDescription([
+      "### Carry Control Center",
+      "Everything for this carry is managed from this one panel.",
+      "",
+      `**Carrier:** ${carrierMention(first)}`,
+      `**Status:** ${statusText(requests)}`,
+      `**Requesters:** ${requests.length}`,
+      first?.source === "platform" ? `**Session:** ${totalSessionRuns} run${totalSessionRuns === 1 ? "" : "s"}` : null,
+    ].filter(Boolean).join("\n"))
+    .addFields(fields)
+    .addFields({
+      name: "How to use this ticket",
+      value: [
+        "📣 **Ready Check** when you are ready to start.",
+        "✅ **Complete Session** after the planned runs are finished.",
         requests.length > 1
-          ? "Choose a requester from the dropdown for request-specific controls."
-          : "Request-specific controls are directly below.",
+          ? "Use the requester dropdown for cancel, delete or no-show actions."
+          : "Use the request controls below for cancel, delete or no-show actions.",
       ].join("\n"),
-    )
+      inline: false,
+    })
     .setFooter({ text: CENTER_FOOTER })
     .setTimestamp();
 }
@@ -207,16 +241,14 @@ function requestSelectRow(requests, selectedId) {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(SELECT_ID)
-      .setPlaceholder("Choose a request to manage")
+      .setPlaceholder("Choose a requester to manage")
       .setMinValues(1)
       .setMaxValues(1)
       .addOptions(
         requests.slice(0, 25).map((request, index) => ({
           label: `${index + 1}. ${requesterLabel(request)}`.slice(0, 100),
           value: String(request.id),
-          description: `${request.dungeon} • ${request.difficulty} • ${remainingRuns(
-            request,
-          )} run${remainingRuns(request) === 1 ? "" : "s"} left`.slice(0, 100),
+          description: `${remainingRuns(request)} run${remainingRuns(request) === 1 ? "" : "s"} left • ${request.status}`.slice(0, 100),
           default: String(request.id) === String(selectedId),
         })),
       ),
@@ -333,7 +365,18 @@ async function deleteOldPersistentPanels(channel, keepMessageId = null) {
   return deleted;
 }
 
-async function ensureCarryControlCenter(channel, { replace = true } = {}) {
+function participantMentions(requests) {
+  const ids = new Set();
+  for (const request of requests) {
+    const carrierId = request.carrier?.discord_id || request.carrier;
+    const requesterId = request.requester?.discord_id || request.user;
+    if (carrierId) ids.add(String(carrierId));
+    if (requesterId) ids.add(String(requesterId));
+  }
+  return [...ids];
+}
+
+async function ensureCarryControlCenter(channel, { replace = true, ping = false } = {}) {
   if (!isCarryTicket(channel) || !channel.isTextBased?.()) return null;
 
   const requests = await loadActiveRequests(channel.id);
@@ -345,8 +388,16 @@ async function ensureCarryControlCenter(channel, { replace = true } = {}) {
     components: buildComponents(requests),
   };
 
-  if (message) await message.edit(payload);
-  else message = await channel.send(payload);
+  if (message) {
+    await message.edit(payload);
+  } else {
+    const mentions = ping ? participantMentions(requests) : [];
+    message = await channel.send({
+      ...payload,
+      content: mentions.length ? mentions.map((id) => `<@${id}>`).join(" ") : undefined,
+      allowedMentions: mentions.length ? { users: mentions } : undefined,
+    });
+  }
 
   if (replace) await deleteOldPersistentPanels(channel, message.id);
   return message;
