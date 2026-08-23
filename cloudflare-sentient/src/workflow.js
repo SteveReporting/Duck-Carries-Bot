@@ -5,13 +5,6 @@ import {
   sceneFinale,
   sceneSecondSignalOpen,
   sceneSecondSignalReply,
-  sceneTestBartenderAnswer,
-  sceneTestBartenderWarning,
-  sceneTestErr02Escalation,
-  sceneTestErr02Probe,
-  sceneTestFinale,
-  sceneTestIdentityIndex,
-  sceneTestNamesNoticed,
   sceneWatching,
 } from "./scenes.js";
 
@@ -21,63 +14,10 @@ const PACES = {
 };
 
 function paceFor(value) {
+  // The old 60-second webhook test has been retired. Keep the value recognisable
+  // only so any already-created test workflow exits safely without sending anything.
   if (value === "test") return "test";
-  return PACES[value] ? value : "test";
-}
-
-async function runSixtySecondTest(env, step, runId) {
-  await step.sleep("test 00-05 wait", "5 seconds");
-  await step.do("test names noticed", async () => {
-    await sceneTestNamesNoticed(env, runId);
-    return { beat: 1, at: 5 };
-  });
-
-  await step.sleep("test 05-13 wait", "8 seconds");
-  await step.do("test err02 asks about names", async () => {
-    await sceneTestErr02Probe(env, runId);
-    return { beat: 2, at: 13 };
-  });
-
-  await step.sleep("test 13-21 wait", "8 seconds");
-  await step.do("test bartender warns", async () => {
-    await sceneTestBartenderWarning(env, runId);
-    return { beat: 3, at: 21 };
-  });
-
-  await step.sleep("test 21-28 wait", "7 seconds");
-  await step.do("test err02 escalates", async () => {
-    await sceneTestErr02Escalation(env, runId);
-    return { beat: 4, at: 28 };
-  });
-
-  await step.sleep("test 28-38 wait", "10 seconds");
-  await step.do("test identity index opens", async () => {
-    await sceneTestIdentityIndex(env, runId);
-    return { beat: 5, at: 38 };
-  });
-
-  await step.sleep("test 38-47 wait", "9 seconds");
-  await step.do("test bartender answers", async () => {
-    await sceneTestBartenderAnswer(env, runId);
-    return { beat: 6, at: 47 };
-  });
-
-  await step.sleep("test 47-60 wait", "13 seconds");
-  await step.do("test announcement finale", async () => {
-    await sceneTestFinale(env, runId);
-    return { beat: 7, at: 60 };
-  });
-
-  return {
-    complete: true,
-    pace: "test",
-    durationSeconds: 60,
-    scope: ["chat", "err02", "core", "announcements"],
-    err02Collaboration: true,
-    treasuryEnabled: false,
-    pingedEveryone: false,
-    privateFieldsExposed: false,
-  };
+  return PACES[value] ? value : "normal";
 }
 
 export class SentientWorkflow extends WorkflowEntrypoint {
@@ -86,8 +26,16 @@ export class SentientWorkflow extends WorkflowEntrypoint {
     const liveRequested = event.payload?.live === true;
     const runId = event.instanceId;
 
+    // Retired test mode: intentionally no Discord messages, webhooks or pings.
     if (pace === "test") {
-      return runSixtySecondTest(this.env, step, runId);
+      return {
+        complete: true,
+        pace: "test",
+        removed: true,
+        messagesSent: 0,
+        webhookMessagesSent: 0,
+        pingedEveryone: false,
+      };
     }
 
     const delays = PACES[pace];
