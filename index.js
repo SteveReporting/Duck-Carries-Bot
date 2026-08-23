@@ -68,13 +68,30 @@ function loadCommands() {
     }
 }
 
-async function warmGuildMemberCache(interaction) {
-    if (!interaction?.guild) return;
-    try {
-        await interaction.guild.members.fetch();
-    } catch (error) {
-        console.warn(`[DISCORD CACHE] Could not prefetch guild members before carry ticket creation: ${error.message}`);
-    }
+const guildMemberWarmups = new Map();
+
+function warmGuildMemberCache(interaction) {
+    if (!interaction?.guild) return Promise.resolve();
+
+    const guildId = String(interaction.guild.id);
+    const existing = guildMemberWarmups.get(guildId);
+    if (existing) return existing;
+
+    const promise = interaction.guild.members.fetch()
+        .catch((error) => {
+            console.warn(`[DISCORD CACHE] Could not prefetch guild members before carry ticket creation: ${error.message}`);
+        })
+        .finally(() => {
+            const timer = setTimeout(() => {
+                if (guildMemberWarmups.get(guildId) === promise) {
+                    guildMemberWarmups.delete(guildId);
+                }
+            }, 30_000);
+            timer.unref?.();
+        });
+
+    guildMemberWarmups.set(guildId, promise);
+    return promise;
 }
 
 function loadEvents() {
@@ -97,13 +114,12 @@ function loadEvents() {
                 if (event.name === "interactionCreate") {
                     const interaction = args[0];
 
-                    // Discord.js resolves channel permission overwrites through the
-                    // guild member/role cache when a grouped carry ticket is created.
-                    // Freshly restarted bots may not have every requester cached yet,
-                    // which caused "Supplied parameter is not a cached User or Role."
-                    // Fetch members before the run-tier selection reaches ticket creation.
+                    // Warm the Discord member cache in the background for grouped
+                    // carry ticket permission overwrites. Never block the component
+                    // interaction here, because Discord only gives us a few seconds
+                    // to acknowledge a select-menu click.
                     if (interaction?.isStringSelectMenu?.() && interaction.customId === "queue_run_select") {
-                        await warmGuildMemberCache(interaction);
+                        void warmGuildMemberCache(interaction);
                     }
 
                     const allowed = await guardCarryClaimInteraction(interaction);
