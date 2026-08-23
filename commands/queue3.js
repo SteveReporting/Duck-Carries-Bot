@@ -2,9 +2,16 @@ const { MessageFlags } = require("discord.js");
 
 const queue2 = require("./queue2");
 const { claimSpecificCarryWithTicket } = require("../platform/singleCarryTicket");
+const { viewOrRepairActiveClaims } = require("../platform/activeCarryClaim");
+
+const data = queue2.data.addSubcommand((subcommand) =>
+  subcommand
+    .setName("active")
+    .setDescription("View your active carry claims and recover any missing ticket"),
+);
 
 module.exports = {
-  data: queue2.data,
+  data,
 
   async autocomplete(interaction) {
     return queue2.autocomplete(interaction);
@@ -13,15 +20,23 @@ module.exports = {
   async execute(interaction) {
     const subcommand = interaction.options.getSubcommand();
 
-    if (subcommand !== "claim") {
-      return queue2.execute(interaction);
-    }
-
     try {
-      return await claimSpecificCarryWithTicket(interaction);
+      if (subcommand === "claim") {
+        return await claimSpecificCarryWithTicket(interaction);
+      }
+
+      if (subcommand === "active") {
+        return await viewOrRepairActiveClaims(interaction);
+      }
+
+      return queue2.execute(interaction);
     } catch (error) {
-      console.error("[QUEUE CLAIM TICKET]", error);
-      const message = `❌ ${error.message || "Could not claim the carry and create its private ticket."}`;
+      const scope = subcommand === "active" ? "ACTIVE" : "CLAIM TICKET";
+      console.error(`[QUEUE ${scope}]`, error);
+      const message = subcommand === "active"
+        ? `❌ ${error.message || "Could not load or recover your active carry claims."}`
+        : `❌ ${error.message || "Could not claim the carry and create its private ticket."}`;
+
       if (interaction.deferred || interaction.replied) {
         return interaction.editReply({ content: message, components: [], embeds: [] }).catch(() => null);
       }
