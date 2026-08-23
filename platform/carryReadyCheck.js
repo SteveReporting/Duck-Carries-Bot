@@ -36,10 +36,6 @@ db.exec(`
   );
 `);
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function unixSeconds(ms) {
   return Math.floor(Number(ms) / 1000);
 }
@@ -49,6 +45,15 @@ function requesterName(request) {
     request.requester?.discord_display_name ||
     request.requester?.discord_username ||
     "Requester";
+}
+
+async function refreshControlCenter(channel) {
+  try {
+    const { ensureCarryControlCenter } = require("./carryControlCenter");
+    await ensureCarryControlCenter(channel, { replace: true, ping: false });
+  } catch (error) {
+    console.warn("[READY CHECK] Could not refresh Control Center:", error.message);
+  }
 }
 
 async function loadTicketRequests(channelId) {
@@ -79,46 +84,42 @@ function panelEmbed() {
     .setColor(0xc89532)
     .setTitle("📣 Ready Check")
     .setDescription([
-      "When you are ready to start the carry, press **Start Ready Check**.",
+      "Use this before the actual carry starts.",
       "",
-      "The bot will ping each requester in this ticket and give them **15 minutes** to respond.",
-      "They can choose **I'm Ready** or **Can't Join**. If they do not respond by the deadline, the Carrier can record a no-show from the ready-check message.",
+      "Each requester gets **15 minutes** to confirm they are present.",
+      "Ready Check does **not** start service time. Once everyone confirms, the Carrier must press **Start Carry** in the Control Center.",
     ].join("\n"))
     .setFooter({ text: "The Carry Tavern • Ready Check" });
 }
 
 function panelComponents() {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(PANEL_ID)
-        .setLabel("Start Ready Check")
-        .setEmoji("📣")
-        .setStyle(ButtonStyle.Primary),
-    ),
-  ];
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(PANEL_ID)
+      .setLabel("Start Ready Check")
+      .setEmoji("📣")
+      .setStyle(ButtonStyle.Primary),
+  )];
 }
 
 function readyCheckComponents(requestId) {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`carry_ready_yes_${requestId}`)
-        .setLabel("I'm Ready")
-        .setEmoji("✅")
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId(`carry_ready_no_${requestId}`)
-        .setLabel("Can't Join")
-        .setEmoji("❌")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(`carry_ready_missed_${requestId}`)
-        .setLabel("No Response")
-        .setEmoji("🚫")
-        .setStyle(ButtonStyle.Danger),
-    ),
-  ];
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`carry_ready_yes_${requestId}`)
+      .setLabel("I'm Ready")
+      .setEmoji("✅")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`carry_ready_no_${requestId}`)
+      .setLabel("Can't Join")
+      .setEmoji("❌")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`carry_ready_missed_${requestId}`)
+      .setLabel("No Response")
+      .setEmoji("🚫")
+      .setStyle(ButtonStyle.Danger),
+  )];
 }
 
 function readyCheckEmbed(request, carrierDiscordId, deadline) {
@@ -130,10 +131,10 @@ function readyCheckEmbed(request, carrierDiscordId, deadline) {
       `**Requester:** ${request.requester?.discord_id ? `<@${request.requester.discord_id}>` : requesterName(request)}`,
       `**Carrier:** <@${carrierDiscordId}>`,
       "",
-      "Your Carrier is ready to start.",
+      "Your Carrier is preparing to start.",
       `Please respond by **<t:${deadlineUnix}:t>** (<t:${deadlineUnix}:R>).`,
       "",
-      "If there is no response by the deadline, the Carrier can press **No Response** and the no-show will be added to staff history.",
+      "Confirming here only proves you are present. The verified carry timer begins later when the Carrier presses **Start Carry**.",
     ].join("\n"))
     .setFooter({ text: `Request ${request.id}` })
     .setTimestamp();
@@ -150,8 +151,8 @@ function responseEmbed(request, carrierDiscordId, status, late) {
       `**Dungeon:** **${request.dungeon} • ${request.difficulty}**`,
       "",
       ready
-        ? "The requester confirmed they are ready to start the carry."
-        : "The requester said they cannot join right now. The Carrier can release the claim to return it to the queue.",
+        ? "Presence confirmed. Once every requester is ready, the Carrier can press **Start Carry** to begin verified service time."
+        : "The requester cannot join right now. The Carrier can release the claim to return it to the queue.",
       late ? "⚠️ This response arrived after the original ready-check deadline." : null,
     ].filter(Boolean).join("\n"))
     .setFooter({ text: `Request ${request.id}` })
@@ -169,15 +170,9 @@ async function actorCanManage(interaction, requests) {
   return isStaff(interaction);
 }
 
-async function ensureReadyCheckPanel(channel, { retries = 0, retryDelay = 1500 } = {}) {
+async function ensureReadyCheckPanel(channel) {
   if (!channel?.isTextBased?.() || !String(channel.name || "").startsWith("carry-")) return null;
-
-  let requests = [];
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    requests = await loadTicketRequests(channel.id).catch(() => []);
-    if (requests.length) break;
-    if (attempt < retries) await sleep(retryDelay);
-  }
+  const requests = await loadTicketRequests(channel.id).catch(() => []);
   if (!requests.length) return null;
 
   const existing = db.prepare("SELECT message_id FROM carry_ready_panels WHERE ticket_channel = ?").get(String(channel.id));
@@ -187,19 +182,12 @@ async function ensureReadyCheckPanel(channel, { retries = 0, retryDelay = 1500 }
     db.prepare("DELETE FROM carry_ready_panels WHERE ticket_channel = ?").run(String(channel.id));
   }
 
-  const message = await channel.send({
-    embeds: [panelEmbed()],
-    components: panelComponents(),
-  });
-
+  const message = await channel.send({ embeds: [panelEmbed()], components: panelComponents() });
   db.prepare(`
     INSERT INTO carry_ready_panels(ticket_channel,message_id,created_at)
     VALUES(?,?,?)
-    ON CONFLICT(ticket_channel) DO UPDATE SET
-      message_id=excluded.message_id,
-      created_at=excluded.created_at
+    ON CONFLICT(ticket_channel) DO UPDATE SET message_id=excluded.message_id,created_at=excluded.created_at
   `).run(String(channel.id), String(message.id), Date.now());
-
   return message;
 }
 
@@ -232,7 +220,6 @@ async function startReadyCheck(interaction) {
     await interaction.editReply("❌ There are no active carry requests attached to this ticket.");
     return true;
   }
-
   if (!(await actorCanManage(interaction, requests))) {
     await interaction.editReply("❌ Only the assigned Carrier or staff can start a ready check.");
     return true;
@@ -241,7 +228,6 @@ async function startReadyCheck(interaction) {
   let started = 0;
   let alreadyActive = 0;
   let unavailable = 0;
-
   for (const request of requests) {
     const requesterDiscordId = request.requester?.discord_id;
     const carrierDiscordId = request.carrier?.discord_id || interaction.user.id;
@@ -269,15 +255,9 @@ async function startReadyCheck(interaction) {
         request_id,guild,ticket_channel,requester,carrier,deadline,status,message_id,created_at,responded_at
       ) VALUES(?,?,?,?,?,?,'pending',?,?,NULL)
       ON CONFLICT(request_id) DO UPDATE SET
-        guild=excluded.guild,
-        ticket_channel=excluded.ticket_channel,
-        requester=excluded.requester,
-        carrier=excluded.carrier,
-        deadline=excluded.deadline,
-        status='pending',
-        message_id=excluded.message_id,
-        created_at=excluded.created_at,
-        responded_at=NULL
+        guild=excluded.guild,ticket_channel=excluded.ticket_channel,requester=excluded.requester,
+        carrier=excluded.carrier,deadline=excluded.deadline,status='pending',message_id=excluded.message_id,
+        created_at=excluded.created_at,responded_at=NULL
     `).run(
       String(request.id),
       String(interaction.guildId || process.env.GUILD_ID || ""),
@@ -291,24 +271,22 @@ async function startReadyCheck(interaction) {
 
     try {
       const requester = await interaction.client.users.fetch(String(requesterDiscordId));
-      const deadlineUnix = unixSeconds(deadline);
       await requester.send([
-        `📣 **Your Carrier is ready for ${request.dungeon} • ${request.difficulty}.**`,
+        `📣 **Ready Check for ${request.dungeon} • ${request.difficulty}.**`,
         `Carrier: <@${carrierDiscordId}>`,
-        `Please respond in <#${interaction.channelId}> by <t:${deadlineUnix}:t> (<t:${deadlineUnix}:R>).`,
+        `Please respond in <#${interaction.channelId}> by <t:${unixSeconds(deadline)}:t> (<t:${unixSeconds(deadline)}:R>).`,
+        "Your response does not start the carry timer.",
       ].join("\n"));
     } catch {}
-
     started += 1;
   }
 
-  const lines = [
+  await interaction.editReply([
     started ? `✅ Started **${started}** ready check${started === 1 ? "" : "s"}.` : null,
     alreadyActive ? `📣 **${alreadyActive}** request${alreadyActive === 1 ? " already has" : "s already have"} an active ready check.` : null,
     unavailable ? `⚠️ **${unavailable}** requester${unavailable === 1 ? " has" : "s have"} no linked Discord account.` : null,
-  ].filter(Boolean);
-
-  await interaction.editReply(lines.join("\n") || "🍺 Nothing needed a new ready check.");
+    started ? "After everyone confirms, press **Start Carry** in the Control Center." : null,
+  ].filter(Boolean).join("\n") || "🍺 Nothing needed a new ready check.");
   return true;
 }
 
@@ -339,24 +317,13 @@ async function handleRequesterResponse(interaction, requestId, response) {
   db.prepare("UPDATE carry_ready_checks SET status = ?, responded_at = ? WHERE request_id = ?")
     .run(nextStatus, now, String(requestId));
 
-  if (response === "ready" && request.status === "claimed") {
-    const stamp = new Date().toISOString();
-    const supabase = getSupabase();
-    const { error } = await supabase
-      .from("carry_requests")
-      .update({ status: "in_progress", started_at: stamp, updated_at: stamp })
-      .eq("id", request.id)
-      .eq("status", "claimed");
-    if (error) console.warn("[READY CHECK] Could not mark carry in progress:", error.message);
-  }
-
   await interaction.update({
     content: `<@${check.requester}>`,
     embeds: [responseEmbed(request, check.carrier, nextStatus, late)],
     components: [],
     allowedMentions: { users: [String(check.requester)] },
   });
-
+  await refreshControlCenter(interaction.channel);
   return true;
 }
 
@@ -376,16 +343,13 @@ async function handleMissedResponse(interaction, requestId) {
     await interaction.reply({ content: "❌ This carry request is no longer active in this ticket.", flags: MessageFlags.Ephemeral });
     return true;
   }
-
   if (!(await actorCanManage(interaction, [request]))) {
     await interaction.reply({ content: "❌ Only the assigned Carrier or staff can record a missed ready check.", flags: MessageFlags.Ephemeral });
     return true;
   }
-
   if (Date.now() < Number(check.deadline)) {
-    const deadlineUnix = unixSeconds(check.deadline);
     await interaction.reply({
-      content: `⏳ Give the requester until <t:${deadlineUnix}:t> (<t:${deadlineUnix}:R>) to respond.`,
+      content: `⏳ Give the requester until <t:${unixSeconds(check.deadline)}:t> (<t:${unixSeconds(check.deadline)}:R>) to respond.`,
       flags: MessageFlags.Ephemeral,
     });
     return true;
@@ -399,16 +363,9 @@ async function handleMissedResponse(interaction, requestId) {
     offenderSide: "requester",
     reason: `No response to 15-minute ready check in ticket ${interaction.channelId}.`,
   });
-
-  db.prepare("UPDATE carry_ready_checks SET status = 'no_show', responded_at = ? WHERE request_id = ?")
+  db.prepare("UPDATE carry_ready_checks SET status='no_show', responded_at=? WHERE request_id=?")
     .run(Date.now(), String(requestId));
-
-  await maybeSendAbuseAlert(
-    interaction.client,
-    interaction.guildId || check.guild,
-    check.requester,
-    `missed carry ready check ${request.id}`,
-  ).catch(() => {});
+  await maybeSendAbuseAlert(interaction.client, interaction.guildId || check.guild, check.requester, `missed carry ready check ${request.id}`).catch(() => {});
 
   const missedEmbed = new EmbedBuilder()
     .setColor(0xdc2626)
@@ -419,7 +376,7 @@ async function handleMissedResponse(interaction, requestId) {
       `**Dungeon:** **${request.dungeon} • ${request.difficulty}**`,
       "",
       "The requester did not respond before the 15-minute deadline.",
-      "A no-show has been added to staff history. The Carrier can now use **Release Claim** if the request should return to the queue.",
+      "A no-show has been added to staff history. The Carrier can use **Release Claim** if needed.",
     ].join("\n"))
     .setFooter({ text: `Request ${request.id}` })
     .setTimestamp();
@@ -450,23 +407,20 @@ async function handleMissedResponse(interaction, requestId) {
     content: `✅ No-show recorded for <@${check.requester}>. Use **Release Claim** if you want the request returned to the queue.`,
     flags: MessageFlags.Ephemeral,
   });
+  await refreshControlCenter(interaction.channel);
   return true;
 }
 
 async function handleReadyCheckInteraction(interaction) {
   if (!interaction.isButton()) return false;
-
   if (interaction.customId === PANEL_ID) return startReadyCheck(interaction);
 
   let match = /^carry_ready_yes_([0-9a-f-]{36})$/i.exec(interaction.customId || "");
   if (match) return handleRequesterResponse(interaction, match[1], "ready");
-
   match = /^carry_ready_no_([0-9a-f-]{36})$/i.exec(interaction.customId || "");
   if (match) return handleRequesterResponse(interaction, match[1], "unavailable");
-
   match = /^carry_ready_missed_([0-9a-f-]{36})$/i.exec(interaction.customId || "");
   if (match) return handleMissedResponse(interaction, match[1]);
-
   return false;
 }
 
