@@ -1,6 +1,7 @@
 const { EmbedBuilder, SlashCommandBuilder } = require("discord.js");
 const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
+const { verifiedServiceBoard } = require("../platform/carryServiceTime");
 
 function sinceFor(timeframe) {
   const now = Date.now();
@@ -10,12 +11,24 @@ function sinceFor(timeframe) {
   return null;
 }
 
+function sinceMsFor(timeframe) {
+  const iso = sinceFor(timeframe);
+  return iso ? new Date(iso).getTime() : 0;
+}
+
 function timeframeLabel(value) {
   return { day: "Last 24 Hours", week: "Last 7 Days", month: "Last 30 Days", all: "All Time" }[value] || "All Time";
 }
 
 function metricLabel(value) {
-  return { runs: "Runs Completed", carries: "Carry Requests", service: "Service Time", rating: "Carrier Rating" }[value] || "Runs Completed";
+  return { runs: "Runs Completed", carries: "Carry Requests", service: "Verified Service Time", rating: "Carrier Rating" }[value] || "Verified Service Time";
+}
+
+function formatTime(seconds) {
+  const totalMinutes = Math.floor(Math.max(0, Number(seconds || 0)) / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
 async function activityBoard(timeframe, metric) {
@@ -31,10 +44,9 @@ async function activityBoard(timeframe, metric) {
 
   const scores = new Map();
   for (const row of data || []) {
-    const current = scores.get(row.carrier_id) || { carrierId: row.carrier_id, runs: 0, carries: 0, service: 0 };
+    const current = scores.get(row.carrier_id) || { carrierId: row.carrier_id, runs: 0, carries: 0 };
     current.runs += Number(row.runs || 0);
     current.carries += 1;
-    current.service += Number(row.service_minutes || 0);
     scores.set(row.carrier_id, current);
   }
   const rows = [...scores.values()].sort((a, b) => b[metric] - a[metric]).slice(0, 10);
@@ -49,8 +61,7 @@ async function activityBoard(timeframe, metric) {
 }
 
 function ratingBoard(guildId, timeframe) {
-  const sinceIso = sinceFor(timeframe);
-  const since = sinceIso ? new Date(sinceIso).getTime() : 0;
+  const since = sinceMsFor(timeframe);
   return db.prepare(`
     SELECT carrier,COUNT(*) AS ratings,ROUND(AVG(score),2) AS average,
       SUM(CASE WHEN score=5 THEN 1 ELSE 0 END) AS five_star
@@ -80,9 +91,9 @@ module.exports = {
       ))
     .addStringOption((o) => o.setName("metric").setDescription("What to rank")
       .addChoices(
+        { name: "Verified service time", value: "service" },
         { name: "Runs completed", value: "runs" },
         { name: "Carry requests completed", value: "carries" },
-        { name: "Service time", value: "service" },
         { name: "Carrier rating", value: "rating" },
       )),
 
@@ -90,19 +101,23 @@ module.exports = {
     try {
       await interaction.deferReply();
       const timeframe = interaction.options.getString("timeframe") || "week";
-      const metric = interaction.options.getString("metric") || "runs";
+      const metric = interaction.options.getString("metric") || "service";
       let lines = [];
 
       if (metric === "rating") {
         const rows = ratingBoard(interaction.guildId, timeframe);
         lines = rows.map((row, index) => `${index + 1}. <@${row.carrier}> • ⭐ **${row.average}/5** • ${row.ratings} rating${row.ratings === 1 ? "" : "s"}`);
+      } else if (metric === "service") {
+        const rows = verifiedServiceBoard(interaction.guildId, sinceMsFor(timeframe), 10);
+        lines = rows.map((row, index) => [
+          `${index + 1}. <@${row.carrier}> • ⏱️ **${formatTime(row.service_seconds)}**`,
+          `   ${row.sessions} verified session${Number(row.sessions) === 1 ? "" : "s"} • ${row.runs_completed} dungeon run${Number(row.runs_completed) === 1 ? "" : "s"}`,
+        ].join("\n"));
       } else {
         const rows = await activityBoard(timeframe, metric);
         lines = rows.map((row, index) => {
           const who = row.profile?.discord_id ? `<@${row.profile.discord_id}>` : (row.profile?.roblox_username ? `@${row.profile.roblox_username}` : "Unknown Carrier");
-          const value = metric === "service"
-            ? `${Math.floor(row.service / 60)}h ${row.service % 60}m`
-            : metric === "carries" ? `${row.carries} carries` : `${row.runs} runs`;
+          const value = metric === "carries" ? `${row.carries} carries` : `${row.runs} runs`;
           return `${index + 1}. ${who} • **${value}**`;
         });
       }
@@ -113,12 +128,12 @@ module.exports = {
 
       const embed = new EmbedBuilder()
         .setTitle("🏆 The Carry Tavern Carrier Leaderboard")
-        .setDescription(lines.length ? lines.join("\n") : "No Carrier activity has been recorded for this period yet.")
+        .setDescription(lines.length ? lines.join("\n\n") : "No Carrier activity has been recorded for this period yet.")
         .addFields(
           { name: "Period", value: timeframeLabel(timeframe), inline: true },
           { name: "Metric", value: metricLabel(metric), inline: true },
         )
-        .setFooter({ text: "Completed carries only count after both Carrier and requester confirm completion." })
+        .setFooter({ text: metric === "service" ? "Service time only counts verified carry windows. Grouped requesters never multiply time." : "Verified service time is the Tavern's primary Carrier metric." })
         .setTimestamp();
       return interaction.editReply({ embeds: [embed] });
     } catch (error) {
