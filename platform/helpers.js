@@ -1,5 +1,6 @@
 const { MessageFlags } = require("discord.js");
 const { getSupabase } = require("../marketplace/supabase");
+const { getBloxlinkRobloxAccount } = require("./bloxlink");
 
 function marketplaceBaseUrl() {
   const value = (process.env.MARKETPLACE_URL || "").trim();
@@ -10,11 +11,50 @@ async function getLinkedProfile(discordId) {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, discord_id, discord_username, discord_display_name, roblox_username, roblox_display_name, roblox_verified_at, dq_level, total_carries, total_service_minutes, completed_trades, trust_score, verified_trader")
+    .select("id, discord_id, discord_username, discord_display_name, roblox_username, roblox_user_id, roblox_display_name, roblox_verified_at, roblox_account_created_at, dq_level, total_carries, total_service_minutes, completed_trades, trust_score, verified_trader")
     .eq("discord_id", String(discordId))
     .maybeSingle();
   if (error) throw new Error(`Could not load Tavern profile: ${error.message}`);
   return data;
+}
+
+async function sendProfileRequirement(interaction, alreadyDeferred, message) {
+  if (alreadyDeferred) await interaction.editReply(message);
+  else await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
+}
+
+async function syncRobloxFromBloxlink(interaction, profile) {
+  const account = await getBloxlinkRobloxAccount(interaction.guildId, interaction.user.id);
+  if (!account) return null;
+
+  const verifiedAt = new Date().toISOString();
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from("profiles")
+    .update({
+      roblox_username: account.username,
+      roblox_user_id: account.id,
+      roblox_display_name: account.displayName,
+      roblox_verified_at: verifiedAt,
+      roblox_account_created_at: account.createdAt,
+    })
+    .eq("id", profile.id);
+
+  if (error) {
+    if (String(error.message || "").toLowerCase().includes("duplicate")) {
+      throw new Error("That Bloxlink Roblox account is already attached to another Tavern profile.");
+    }
+    throw new Error(`Could not sync Bloxlink Roblox account: ${error.message}`);
+  }
+
+  return {
+    ...profile,
+    roblox_username: account.username,
+    roblox_user_id: account.id,
+    roblox_display_name: account.displayName,
+    roblox_verified_at: verifiedAt,
+    roblox_account_created_at: account.createdAt,
+  };
 }
 
 async function requireLinkedProfile(interaction, { alreadyDeferred = false, requireRoblox = false } = {}) {
@@ -22,16 +62,23 @@ async function requireLinkedProfile(interaction, { alreadyDeferred = false, requ
   if (!profile) {
     const base = marketplaceBaseUrl();
     const message = `❌ Your Discord account is not linked to a Tavern account.${base ? `\nSign in with Discord first: ${base}/auth` : ""}`;
-    if (alreadyDeferred) await interaction.editReply(message);
-    else await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
+    await sendProfileRequirement(interaction, alreadyDeferred, message);
     return null;
   }
-  if (requireRoblox && (!profile.roblox_verified_at || !profile.roblox_username)) {
-    const message = "❌ Verify your Roblox account first with `/tavern link-roblox` and `/tavern verify-roblox`.";
-    if (alreadyDeferred) await interaction.editReply(message);
-    else await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
-    return null;
+
+  if (requireRoblox) {
+    const synced = await syncRobloxFromBloxlink(interaction, profile);
+    if (!synced) {
+      await sendProfileRequirement(
+        interaction,
+        alreadyDeferred,
+        "❌ Bloxlink could not find a Roblox account linked to your Discord account in this server. Use Bloxlink to link your Roblox account, then try again. The Carry Tavern no longer has a separate Roblox verification step.",
+      );
+      return null;
+    }
+    return synced;
   }
+
   return profile;
 }
 
@@ -66,4 +113,5 @@ module.exports = {
   hasAnyPlatformRole,
   marketplaceBaseUrl,
   requireLinkedProfile,
+  syncRobloxFromBloxlink,
 };
