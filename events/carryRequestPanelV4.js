@@ -1,5 +1,6 @@
 const {
   LabelBuilder,
+  MessageFlags,
   ModalBuilder,
   StringSelectMenuBuilder,
   TextInputBuilder,
@@ -7,7 +8,7 @@ const {
 } = require("discord.js");
 
 const { getSupabase } = require("../marketplace/supabase");
-const { getLinkedProfile, marketplaceBaseUrl } = require("../platform/helpers");
+const { getLinkedProfile, marketplaceBaseUrl, requireLinkedProfile } = require("../platform/helpers");
 const { parseRuns } = require("../platform/dungeons");
 const {
   maybeSendAbuseAlert,
@@ -49,19 +50,10 @@ async function requireRequestProfile(interaction) {
     const base = marketplaceBaseUrl();
     await interaction.reply({
       content: `❌ Before requesting a carry, link your Tavern account.${base ? `\nSign in with Discord: ${base}/auth` : ""}`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return null;
   }
-
-  if (!profile.roblox_verified_at || !profile.roblox_username) {
-    await interaction.reply({
-      content: "❌ Before requesting a carry, verify your Roblox account with `/roblox link` and `/roblox verify`.",
-      ephemeral: true,
-    });
-    return null;
-  }
-
   return profile;
 }
 
@@ -179,7 +171,7 @@ async function startRequest(interaction) {
         "",
         "Finish or cancel one before creating another.",
       ].join("\n"),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -188,31 +180,33 @@ async function startRequest(interaction) {
 
 async function submitRequest(interaction) {
   if (!interaction.guild) {
-    return interaction.reply({ content: "❌ Carry requests must be created inside the server.", ephemeral: true });
+    return interaction.reply({ content: "❌ Carry requests must be created inside the server.", flags: MessageFlags.Ephemeral });
   }
 
-  const profile = await getLinkedProfile(interaction.user.id);
-  if (!profile || !profile.roblox_verified_at || !profile.roblox_username) {
-    return interaction.reply({ content: "❌ Verify your Roblox account before requesting a carry.", ephemeral: true });
-  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  // No Carry Tavern Roblox verification is required anymore. Bloxlink is the
+  // source of truth for the Discord -> Roblox identity and the profile is synced
+  // from Bloxlink immediately before the queue request is created.
+  const profile = await requireLinkedProfile(interaction, { alreadyDeferred: true, requireRoblox: true });
+  if (!profile) return;
 
   const dungeon = interaction.fields.getStringSelectValues("dungeon")[0];
   const difficulty = interaction.fields.getStringSelectValues("difficulty")[0];
 
   if (!DUNGEONS.includes(dungeon)) {
-    return interaction.reply({ content: "❌ Invalid dungeon selection. Please open the carry form again.", ephemeral: true });
+    return interaction.editReply("❌ Invalid dungeon selection. Please open the carry form again.");
   }
 
   if (!difficultiesForDungeon(dungeon).includes(difficulty)) {
-    return interaction.reply({
-      content: `❌ **${difficulty}** is not available for **${dungeon}**. ${EARLY_DUNGEONS.has(dungeon) ? "Choose Easy, Medium, Hard, Insane or Nightmare." : "Choose Insane or Nightmare."}`,
-      ephemeral: true,
-    });
+    return interaction.editReply(
+      `❌ **${difficulty}** is not available for **${dungeon}**. ${EARLY_DUNGEONS.has(dungeon) ? "Choose Easy, Medium, Hard, Insane or Nightmare." : "Choose Insane or Nightmare."}`,
+    );
   }
 
   const runs = parseRuns(interaction.fields.getTextInputValue("runs").trim());
   if (!runs) {
-    return interaction.reply({ content: "❌ Runs must be a number from **1 to 15**.", ephemeral: true });
+    return interaction.editReply("❌ Runs must be a number from **1 to 15**.");
   }
 
   const availability = interaction.fields.getTextInputValue("availability").trim().slice(0, 240);
@@ -220,10 +214,9 @@ async function submitRequest(interaction) {
 
   const active = await loadActiveRequests(profile.id);
   if (active.length >= MAX_ACTIVE_REQUESTS) {
-    return interaction.reply({
-      content: `❌ You now have **${MAX_ACTIVE_REQUESTS} active carry requests**. Finish or cancel one before submitting another.`,
-      ephemeral: true,
-    });
+    return interaction.editReply(
+      `❌ You now have **${MAX_ACTIVE_REQUESTS} active carry requests**. Finish or cancel one before submitting another.`,
+    );
   }
 
   const supabase = getSupabase();
@@ -242,7 +235,7 @@ async function submitRequest(interaction) {
     .single();
 
   if (error) {
-    return interaction.reply({ content: `❌ ${error.message}`, ephemeral: true });
+    return interaction.editReply(`❌ ${error.message}`);
   }
 
   recordAbuseEvent(interaction.guildId, interaction.user.id, "queue_request", 0, { requestId: data.id });
@@ -250,22 +243,21 @@ async function submitRequest(interaction) {
   await maybeSendAbuseAlert(interaction.client, interaction.guildId, interaction.user.id, "carry request").catch(() => {});
 
   const base = marketplaceBaseUrl();
-  return interaction.reply({
-    content: [
+  return interaction.editReply(
+    [
       "✅ **Your carry is in the shared Tavern queue.**",
       `🏰 **${dungeon}**`,
       `⚔️ **${difficulty}**`,
       `👥 **${runs}** run${runs === 1 ? "" : "s"}`,
       `🕒 **${availability}**`,
-      `🎮 Roblox: **${profile.roblox_username}**`,
+      `🎮 Roblox via Bloxlink: **${profile.roblox_username}**`,
       `🍻 Smart match: **${matched}** available matching Carrier${matched === 1 ? "" : "s"} notified.`,
       `🆔 Request ID: \`${data.id}\``,
       "",
       `${active.length + 1}/${MAX_ACTIVE_REQUESTS} active request slots now in use.`,
       base ? `${base}/queue` : null,
     ].filter(Boolean).join("\n"),
-    ephemeral: true,
-  });
+  );
 }
 
 module.exports = {
@@ -283,9 +275,9 @@ module.exports = {
       console.error("[CARRY REQUEST PANEL V4]", error);
       const message = `❌ ${error.message || "Something went wrong while creating the carry request."}`;
       if (interaction.deferred || interaction.replied) {
-        return interaction.followUp({ content: message, ephemeral: true }).catch(() => {});
+        return interaction.editReply(message).catch(() => {});
       }
-      return interaction.reply({ content: message, ephemeral: true }).catch(() => {});
+      return interaction.reply({ content: message, flags: MessageFlags.Ephemeral }).catch(() => {});
     }
   },
 };
