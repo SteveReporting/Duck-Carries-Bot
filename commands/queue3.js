@@ -10,6 +10,13 @@ const data = queue2.data.addSubcommand((subcommand) =>
     .setDescription("View your active carry claims and recover any missing ticket"),
 );
 
+async function warmGuildMembers(interaction) {
+  if (!interaction.guild) return;
+  await interaction.guild.members.fetch().catch((error) => {
+    console.warn(`[QUEUE TICKET CACHE] Could not prefetch guild members: ${error.message}`);
+  });
+}
+
 module.exports = {
   data,
 
@@ -22,10 +29,12 @@ module.exports = {
 
     try {
       if (subcommand === "claim") {
+        await warmGuildMembers(interaction);
         return await claimSpecificCarryWithTicket(interaction);
       }
 
       if (subcommand === "active") {
+        await warmGuildMembers(interaction);
         return await viewOrRepairActiveClaims(interaction);
       }
 
