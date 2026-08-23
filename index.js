@@ -8,9 +8,11 @@ const {
     GatewayIntentBits,
     REST,
     Routes,
+    TextChannel,
 } = require("discord.js");
 const db = require("./database/database");
 const { guardCarryClaimInteraction } = require("./platform/carryClaimAccess");
+const { ensureCarryControlCenter } = require("./platform/carryControlCenter");
 
 console.log("=================================");
 console.log("🍺 Starting The Carry Tavern...");
@@ -43,6 +45,91 @@ const client = new Client({
 });
 
 client.commands = new Collection();
+
+function embedFooterText(embed) {
+    if (!embed) return "";
+    if (embed.data?.footer?.text) return String(embed.data.footer.text);
+    if (embed.footer?.text) return String(embed.footer.text);
+    if (typeof embed.toJSON === "function") {
+        try {
+            return String(embed.toJSON()?.footer?.text || "");
+        } catch {}
+    }
+    return "";
+}
+
+function componentCustomIds(payload) {
+    const rows = Array.isArray(payload?.components) ? payload.components : [];
+    const ids = [];
+    for (const row of rows) {
+        const components = row?.components || row?.data?.components || [];
+        for (const component of components) {
+            const id = component?.customId || component?.custom_id || component?.data?.custom_id || component?.data?.customId;
+            if (id) ids.push(String(id));
+        }
+    }
+    return ids;
+}
+
+function isUnifiedCarryPayload(payload) {
+    return (payload?.embeds || []).some((embed) =>
+        embedFooterText(embed).includes("The Carry Tavern • Carry Control Center"),
+    );
+}
+
+function isOldCarryControlPayload(channel, payload) {
+    if (!channel || !String(channel.name || "").toLowerCase().startsWith("carry-")) return false;
+    if (!payload || isUnifiedCarryPayload(payload)) return false;
+
+    const ids = componentCustomIds(payload);
+    return ids.some((id) =>
+        id === "carry_carrier_complete" ||
+        id === "carry_release_claim" ||
+        id === "carry_show_ids" ||
+        id === "carry_readycheck_start" ||
+        id === "carry_close_ticket" ||
+        id.startsWith("carry_cancel_") ||
+        id.startsWith("carry_delete_") ||
+        id.startsWith("carry_noshow_") ||
+        id.startsWith("complete_") ||
+        id.startsWith("requester_complete_") ||
+        id.startsWith("legacy_release_"),
+    );
+}
+
+function installUnifiedCarrySendInterceptor() {
+    if (!TextChannel?.prototype?.send || TextChannel.prototype.__carryUnifiedPatched) return;
+
+    const originalSend = TextChannel.prototype.send;
+    Object.defineProperty(TextChannel.prototype, "__carryUnifiedPatched", {
+        value: true,
+        configurable: false,
+        enumerable: false,
+        writable: false,
+    });
+
+    TextChannel.prototype.send = async function patchedCarrySend(payload) {
+        if (!isOldCarryControlPayload(this, payload)) {
+            return originalSend.call(this, payload);
+        }
+
+        try {
+            const unified = await ensureCarryControlCenter(this, { replace: true, ping: true });
+            if (unified) return unified;
+        } catch (error) {
+            console.warn(`[CARRY CONTROL CENTER] Could not replace legacy ticket panel in #${this.name}:`, error.message);
+        }
+
+        // Fail open if the request has not been attached yet or the unified panel
+        // cannot be loaded for some other reason. The normal ticket message is safer
+        // than silently losing the controls.
+        return originalSend.call(this, payload);
+    };
+
+    console.log("🍺 Unified carry-ticket send interceptor enabled.");
+}
+
+installUnifiedCarrySendInterceptor();
 
 function loadCommands() {
     const directory = path.join(__dirname, "commands");
