@@ -1,7 +1,5 @@
-const MARKET_IMAGE_BUCKET = "market-item-images";
-const MAX_MARKET_IMAGE_BYTES = 5 * 1024 * 1024;
-
-let marketImageBucketReady = false;
+const DUNGEON_QUEST_WIKI_API = "https://dungeonquestroblox.fandom.com/api.php";
+const WIKI_TIMEOUT_MS = 10_000;
 
 function normalizeItemName(value) {
   return String(value || "")
@@ -64,6 +62,94 @@ async function loadCatalogue(supabase) {
   return data || [];
 }
 
+function isSellerProofCatalogueImage(value) {
+  const url = String(value || "").toLowerCase();
+  return url.includes("/market-item-images/") || url.includes("market-item-images");
+}
+
+function wikiPageImage(payload) {
+  const pages = Object.values(payload?.query?.pages || {});
+  const page = pages.find((candidate) => candidate && candidate.missing === undefined);
+  return page?.original?.source || page?.thumbnail?.source || null;
+}
+
+async function fetchWikiArtwork(params) {
+  const search = new URLSearchParams({
+    action: "query",
+    format: "json",
+    formatversion: "2",
+    redirects: "1",
+    prop: "pageimages",
+    piprop: "original|thumbnail",
+    pithumbsize: "700",
+    ...params,
+  });
+
+  const response = await fetch(`${DUNGEON_QUEST_WIKI_API}?${search.toString()}`, {
+    headers: {
+      accept: "application/json",
+      "user-agent": "TheCarryTavern-Marketplace/1.0",
+    },
+    signal: AbortSignal.timeout(WIKI_TIMEOUT_MS),
+  });
+  if (!response.ok) return null;
+  const payload = await response.json();
+  return wikiPageImage(payload);
+}
+
+async function resolveDungeonQuestArtwork(itemName) {
+  const cleanName = String(itemName || "").trim();
+  if (!cleanName) return null;
+
+  try {
+    const exact = await fetchWikiArtwork({ titles: cleanName });
+    if (exact) return exact;
+
+    // Fallback for apostrophe/spelling differences while still keeping the
+    // result tied to the exact item name the seller entered.
+    return await fetchWikiArtwork({
+      generator: "search",
+      gsrsearch: `\"${cleanName}\"`,
+      gsrlimit: "1",
+    });
+  } catch (error) {
+    console.warn(`[MARKETPLACE] Artwork lookup failed for ${cleanName}:`, error.message);
+    return null;
+  }
+}
+
+async function ensureCatalogueArtwork(supabase, item) {
+  if (!item?.id || !item?.name) return item;
+
+  const existingUrl = String(item.image_url || "");
+  if (existingUrl && !isSellerProofCatalogueImage(existingUrl)) return item;
+
+  const artworkUrl = await resolveDungeonQuestArtwork(item.name);
+  if (!artworkUrl) {
+    // A seller screenshot must never be used as the catalogue artwork. If an
+    // earlier build accidentally stored one there, clear it and fall back to
+    // the Tavern item placeholder until real artwork can be found.
+    if (existingUrl && isSellerProofCatalogueImage(existingUrl)) {
+      const { error } = await supabase.from("items").update({ image_url: null }).eq("id", item.id);
+      if (!error) item.image_url = null;
+    }
+    return item;
+  }
+
+  const { error } = await supabase
+    .from("items")
+    .update({ image_url: artworkUrl })
+    .eq("id", item.id);
+  if (error) {
+    console.warn(`[MARKETPLACE] Could not save artwork for ${item.name}:`, error.message);
+    return item;
+  }
+
+  item.image_url = artworkUrl;
+  console.log(`[MARKETPLACE] Set Dungeon Quest artwork for ${item.name}.`);
+  return item;
+}
+
 async function findOrCreateCatalogueItem(supabase, itemName) {
   const cleanName = String(itemName || "").trim().replace(/\s+/g, " ").slice(0, 120);
   if (!cleanName) throw new Error("Item name cannot be empty.");
@@ -71,7 +157,7 @@ async function findOrCreateCatalogueItem(supabase, itemName) {
   const normalized = normalizeItemName(cleanName);
   const items = await loadCatalogue(supabase);
   const existing = items.find((item) => normalizeItemName(item.name) === normalized);
-  if (existing) return existing;
+  if (existing) return ensureCatalogueArtwork(supabase, existing);
 
   const metadata = inferItemMetadata(cleanName);
   const { data, error } = await supabase
@@ -85,123 +171,13 @@ async function findOrCreateCatalogueItem(supabase, itemName) {
   if (error) throw new Error(`Could not add ${cleanName} to the Marketplace catalogue: ${error.message}`);
 
   console.log(`[MARKETPLACE] Added catalogue item: ${data.name} (${data.id})`);
-  return data;
-}
-
-async function ensureMarketImageBucket(supabase) {
-  if (marketImageBucketReady) return true;
-
-  const { data, error } = await supabase.storage.getBucket(MARKET_IMAGE_BUCKET);
-  if (!error && data) {
-    if (!data.public) {
-      const { error: updateError } = await supabase.storage.updateBucket(MARKET_IMAGE_BUCKET, {
-        public: true,
-        fileSizeLimit: MAX_MARKET_IMAGE_BYTES,
-        allowedMimeTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
-      });
-      if (updateError) throw updateError;
-    }
-    marketImageBucketReady = true;
-    return true;
-  }
-
-  const { error: createError } = await supabase.storage.createBucket(MARKET_IMAGE_BUCKET, {
-    public: true,
-    fileSizeLimit: MAX_MARKET_IMAGE_BYTES,
-    allowedMimeTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
-  });
-  if (createError && !/already exists/i.test(String(createError.message || ""))) throw createError;
-  marketImageBucketReady = true;
-  return true;
-}
-
-function extensionFromReference(reference, contentType = "") {
-  const contentMap = {
-    "image/png": "png",
-    "image/jpeg": "jpg",
-    "image/webp": "webp",
-    "image/gif": "gif",
-  };
-  if (contentMap[contentType]) return contentMap[contentType];
-  const match = String(reference || "").toLowerCase().match(/\.([a-z0-9]{2,5})(?:\?|$)/);
-  const ext = match?.[1];
-  return ["png", "jpg", "jpeg", "webp", "gif"].includes(ext) ? (ext === "jpeg" ? "jpg" : ext) : "png";
-}
-
-async function publishItemImageBytes(supabase, item, bytes, contentType, extension) {
-  if (!item?.id || item.image_url || !bytes?.length) return item;
-  if (bytes.length > MAX_MARKET_IMAGE_BYTES) return item;
-
-  try {
-    await ensureMarketImageBucket(supabase);
-    const path = `${item.id}.${extension || extensionFromReference("", contentType)}`;
-    const { error: uploadError } = await supabase.storage
-      .from(MARKET_IMAGE_BUCKET)
-      .upload(path, bytes, {
-        contentType: contentType || "image/png",
-        cacheControl: "86400",
-        upsert: true,
-      });
-    if (uploadError) throw uploadError;
-
-    const { data } = supabase.storage.from(MARKET_IMAGE_BUCKET).getPublicUrl(path);
-    const publicUrl = data?.publicUrl || null;
-    if (!publicUrl) return item;
-
-    const { error: updateError } = await supabase
-      .from("items")
-      .update({ image_url: publicUrl })
-      .eq("id", item.id);
-    if (updateError) throw updateError;
-
-    item.image_url = publicUrl;
-    console.log(`[MARKETPLACE] Set catalogue image for ${item.name}.`);
-  } catch (error) {
-    console.warn(`[MARKETPLACE] Could not publish item image for ${item.name}:`, error.message);
-  }
-
-  return item;
-}
-
-async function publishItemImageFromProof(supabase, item, proofReference) {
-  if (!item?.id || item.image_url || !proofReference) return item;
-
-  try {
-    if (/^https?:\/\//i.test(proofReference)) {
-      const response = await fetch(proofReference, { signal: AbortSignal.timeout(15_000) });
-      if (!response.ok) return item;
-      const bytes = Buffer.from(await response.arrayBuffer());
-      const contentType = String(response.headers.get("content-type") || "image/png").split(";")[0];
-      return publishItemImageBytes(
-        supabase,
-        item,
-        bytes,
-        contentType,
-        extensionFromReference(proofReference, contentType),
-      );
-    }
-
-    const { data: blob, error } = await supabase.storage.from("proof-images").download(proofReference);
-    if (error || !blob) return item;
-    const bytes = Buffer.from(await blob.arrayBuffer());
-    const contentType = blob.type || "image/png";
-    return publishItemImageBytes(
-      supabase,
-      item,
-      bytes,
-      contentType,
-      extensionFromReference(proofReference, contentType),
-    );
-  } catch (error) {
-    console.warn(`[MARKETPLACE] Could not use listing proof as catalogue image:`, error.message);
-    return item;
-  }
+  return ensureCatalogueArtwork(supabase, data);
 }
 
 async function repairOrphanListings(supabase) {
   const { data, error } = await supabase
     .from("listings")
-    .select("id,item_id,item_name,proof_image_url,status")
+    .select("id,item_id,item_name,status")
     .is("item_id", null)
     .limit(1000);
   if (error) throw new Error(`Could not inspect orphan Marketplace listings: ${error.message}`);
@@ -221,11 +197,6 @@ async function repairOrphanListings(supabase) {
       itemCache.set(key, item);
     }
 
-    if (!item.image_url && listing.proof_image_url) {
-      item = await publishItemImageFromProof(supabase, item, listing.proof_image_url);
-      itemCache.set(key, item);
-    }
-
     const { error: updateError } = await supabase
       .from("listings")
       .update({ item_id: item.id, item_name: item.name })
@@ -242,11 +213,42 @@ async function repairOrphanListings(supabase) {
   return { repaired, created };
 }
 
+async function repairActiveCatalogueArtwork(supabase) {
+  const { data: listings, error: listingError } = await supabase
+    .from("listings")
+    .select("item_id")
+    .eq("status", "available")
+    .not("item_id", "is", null)
+    .limit(1000);
+  if (listingError) throw new Error(`Could not inspect active Marketplace artwork: ${listingError.message}`);
+
+  const itemIds = [...new Set((listings || []).map((row) => row.item_id).filter(Boolean))];
+  if (!itemIds.length) return { checked: 0, updated: 0 };
+
+  const { data: items, error: itemError } = await supabase
+    .from("items")
+    .select("id,name,image_url,item_type,item_class,rarity,market_category,collect_color")
+    .in("id", itemIds.slice(0, 250));
+  if (itemError) throw new Error(`Could not load active Marketplace items: ${itemError.message}`);
+
+  let updated = 0;
+  for (const item of items || []) {
+    if (item.image_url && !isSellerProofCatalogueImage(item.image_url)) continue;
+    const before = item.image_url;
+    await ensureCatalogueArtwork(supabase, item);
+    if (item.image_url && item.image_url !== before) updated += 1;
+  }
+
+  if (updated) console.log(`[MARKETPLACE] Refreshed real artwork for ${updated} active item(s).`);
+  return { checked: items?.length || 0, updated };
+}
+
 module.exports = {
+  ensureCatalogueArtwork,
   findOrCreateCatalogueItem,
   inferItemMetadata,
   normalizeItemName,
-  publishItemImageBytes,
-  publishItemImageFromProof,
+  repairActiveCatalogueArtwork,
   repairOrphanListings,
+  resolveDungeonQuestArtwork,
 };
