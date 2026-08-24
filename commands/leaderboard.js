@@ -3,6 +3,10 @@ const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
 const { verifiedServiceBoard } = require("../platform/carryServiceTime");
 
+// Leaderboard season reset. Historical records are preserved, but anything
+// before this timestamp no longer contributes to any leaderboard metric.
+const LEADERBOARD_RESET_AT = Date.parse("2026-08-24T03:53:00+01:00");
+
 function sinceFor(timeframe) {
   const now = Date.now();
   if (timeframe === "day") return new Date(now - 24 * 60 * 60 * 1000).toISOString();
@@ -14,6 +18,14 @@ function sinceFor(timeframe) {
 function sinceMsFor(timeframe) {
   const iso = sinceFor(timeframe);
   return iso ? new Date(iso).getTime() : 0;
+}
+
+function leaderboardSinceMs(timeframe) {
+  return Math.max(LEADERBOARD_RESET_AT, sinceMsFor(timeframe));
+}
+
+function leaderboardSinceIso(timeframe) {
+  return new Date(leaderboardSinceMs(timeframe)).toISOString();
 }
 
 function timeframeLabel(value) {
@@ -36,9 +48,8 @@ async function activityBoard(timeframe, metric) {
   let query = supabase.from("carry_activity")
     .select("carrier_id,runs,service_minutes,completed_at")
     .order("completed_at", { ascending: false })
-    .limit(5000);
-  const since = sinceFor(timeframe);
-  if (since) query = query.gte("completed_at", since);
+    .limit(5000)
+    .gte("completed_at", leaderboardSinceIso(timeframe));
   const { data, error } = await query;
   if (error) throw new Error(error.message);
 
@@ -61,7 +72,7 @@ async function activityBoard(timeframe, metric) {
 }
 
 function ratingBoard(guildId, timeframe) {
-  const since = sinceMsFor(timeframe);
+  const since = leaderboardSinceMs(timeframe);
   return db.prepare(`
     SELECT carrier,COUNT(*) AS ratings,ROUND(AVG(score),2) AS average,
       SUM(CASE WHEN score=5 THEN 1 ELSE 0 END) AS five_star
@@ -72,10 +83,6 @@ function ratingBoard(guildId, timeframe) {
     ORDER BY average DESC,ratings DESC,five_star DESC
     LIMIT 10
   `).all(String(guildId), since);
-}
-
-function legacyFallback() {
-  return db.prepare("SELECT user,completed FROM stats ORDER BY completed DESC LIMIT 10").all();
 }
 
 module.exports = {
@@ -108,7 +115,7 @@ module.exports = {
         const rows = ratingBoard(interaction.guildId, timeframe);
         lines = rows.map((row, index) => `${index + 1}. <@${row.carrier}> • ⭐ **${row.average}/5** • ${row.ratings} rating${row.ratings === 1 ? "" : "s"}`);
       } else if (metric === "service") {
-        const rows = verifiedServiceBoard(interaction.guildId, sinceMsFor(timeframe), 10);
+        const rows = verifiedServiceBoard(interaction.guildId, leaderboardSinceMs(timeframe), 10);
         lines = rows.map((row, index) => [
           `${index + 1}. <@${row.carrier}> • ⏱️ **${formatTime(row.service_seconds)}**`,
           `   ${row.sessions} verified session${Number(row.sessions) === 1 ? "" : "s"} • ${row.runs_completed} dungeon run${Number(row.runs_completed) === 1 ? "" : "s"}`,
@@ -120,10 +127,6 @@ module.exports = {
           const value = metric === "carries" ? `${row.carries} carries` : `${row.runs} runs`;
           return `${index + 1}. ${who} • **${value}**`;
         });
-      }
-
-      if (!lines.length && timeframe === "all" && (metric === "runs" || metric === "carries")) {
-        lines = legacyFallback().map((row, index) => `${index + 1}. <@${row.user}> • **${row.completed} legacy carries**`);
       }
 
       const embed = new EmbedBuilder()
