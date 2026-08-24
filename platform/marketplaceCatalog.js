@@ -28,11 +28,15 @@ function inferItemMetadata(itemName) {
     itemType = "spell";
     rarity = "legendary";
   } else if (/\bult(imate)?\b/.test(name)) {
-    marketCategory = "ult";
+    // Older live schemas did not include `ult` in the market_category CHECK.
+    // Leaving the tag null is safe because the website also infers it from item_type.
+    marketCategory = null;
     itemType = "ult";
     rarity = "ult";
   } else if (/\b(armor|armour|helmet|helm|chestplate|robe|hood)\b/.test(name)) {
-    marketCategory = "collectible";
+    // `collect` is accepted by both the original and current schemas. The UI
+    // normalises it to the single Collectibles section.
+    marketCategory = "collect";
     itemType = "armor";
     rarity = null;
   }
