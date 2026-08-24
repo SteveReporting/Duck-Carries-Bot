@@ -6,6 +6,10 @@ const {
 const crypto = require("crypto");
 
 const { getSupabase } = require("../marketplace/supabase");
+const {
+  findOrCreateCatalogueItem,
+  publishItemImageBytes,
+} = require("../platform/marketplaceCatalog");
 
 const MAX_GOLD = 9_000_000_000_000_000;
 const MAX_PROOF_BYTES = 5 * 1024 * 1024;
@@ -40,10 +44,6 @@ async function requireProfile(interaction, supabase) {
   await interaction.editReply(`❌ Your Discord account is not linked to a Tavern Marketplace profile.${baseUrl ? `\nSign in with Discord first: ${baseUrl}/auth` : ""}`);
   return null;
 }
-async function findCatalogueItem(supabase, itemName) {
-  const { data } = await supabase.from("items").select("id, name").ilike("name", itemName).limit(1).maybeSingle();
-  return data || null;
-}
 function validateDiscordAttachment(attachment) {
   if (!attachment) return null;
   if (attachment.size > MAX_PROOF_BYTES) throw new Error("Proof image must be 5 MB or smaller.");
@@ -65,7 +65,7 @@ async function uploadProof(supabase, profileId, attachment) {
   const path = `${profileId}/${crypto.randomUUID()}.${validated.extension}`;
   const { error } = await supabase.storage.from("proof-images").upload(path, bytes, { contentType: validated.contentType, cacheControl: "3600", upsert: false });
   if (error) throw new Error(`Proof upload failed: ${error.message}`);
-  return path;
+  return { path, bytes, contentType: validated.contentType, extension: validated.extension };
 }
 
 async function addListing(interaction, supabase, profile) {
@@ -80,12 +80,40 @@ async function addListing(interaction, supabase, profile) {
   if (price === null || price <= 0) return interaction.editReply("❌ Invalid price. Examples: `250k`, `1.5m`, `3b`.");
   const potential = potentialInput ? parseGold(potentialInput) : null;
   if (potentialInput && potential === null) return interaction.editReply("❌ Invalid potential. Examples: `250k`, `1.2m`.");
-  const catalogueItem = await findCatalogueItem(supabase, itemName);
-  let proofPath = null;
-  try { proofPath = await uploadProof(supabase, profile.id, proof); } catch (error) { return interaction.editReply(`❌ ${error.message}`); }
-  const { data, error } = await supabase.from("listings").insert({ seller_id: profile.id, item_id: catalogueItem?.id ?? null, item_name: catalogueItem?.name ?? itemName, price_gold: price, quantity, potential, stats_text: stats, description: notes, proof_image_url: proofPath, source: "discord", status: "available" }).select("id, item_name, price_gold, quantity, potential, expires_at").single();
+
+  const catalogueItem = await findOrCreateCatalogueItem(supabase, itemName);
+  let proofUpload = null;
+  try {
+    proofUpload = await uploadProof(supabase, profile.id, proof);
+  } catch (error) {
+    return interaction.editReply(`❌ ${error.message}`);
+  }
+
+  if (proofUpload && !catalogueItem.image_url) {
+    await publishItemImageBytes(
+      supabase,
+      catalogueItem,
+      proofUpload.bytes,
+      proofUpload.contentType,
+      proofUpload.extension,
+    );
+  }
+
+  const { data, error } = await supabase.from("listings").insert({
+    seller_id: profile.id,
+    item_id: catalogueItem.id,
+    item_name: catalogueItem.name,
+    price_gold: price,
+    quantity,
+    potential,
+    stats_text: stats,
+    description: notes,
+    proof_image_url: proofUpload?.path ?? null,
+    source: "discord",
+    status: "available",
+  }).select("id, item_id, item_name, price_gold, quantity, potential, expires_at").single();
   if (error) {
-    if (proofPath) await supabase.storage.from("proof-images").remove([proofPath]).catch(() => {});
+    if (proofUpload?.path) await supabase.storage.from("proof-images").remove([proofUpload.path]).catch(() => {});
     throw new Error(`Could not create the listing: ${error.message}`);
   }
   const baseUrl = marketplaceBaseUrl();
@@ -95,7 +123,7 @@ async function addListing(interaction, supabase, profile) {
     { name: "⭐ Potential", value: data.potential == null ? "Not set" : formatGold(data.potential), inline: true },
     { name: "Listing ID", value: `\`${data.id}\`` },
   );
-  if (baseUrl) embed.setURL(`${baseUrl}/market/${data.id}`);
+  if (baseUrl) embed.setURL(`${baseUrl}/market/${data.item_id}`);
   return interaction.editReply({ embeds: [embed] });
 }
 
@@ -123,13 +151,13 @@ async function searchListings(interaction, supabase) {
   const maxPriceInput = interaction.options.getString("max-price");
   const maxPrice = maxPriceInput ? parseGold(maxPriceInput) : null;
   if (maxPriceInput && maxPrice === null) return interaction.editReply("❌ Invalid max price.");
-  let request = supabase.from("listings").select("id,item_name,price_gold,quantity,potential,expires_at").eq("status", "available").gt("quantity", 0).ilike("item_name", `%${query}%`).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).order("price_gold", { ascending: true }).limit(10);
+  let request = supabase.from("listings").select("id,item_id,item_name,price_gold,quantity,potential,expires_at").eq("status", "available").gt("quantity", 0).ilike("item_name", `%${query}%`).or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).order("price_gold", { ascending: true }).limit(10);
   if (maxPrice != null) request = request.lte("price_gold", maxPrice);
   const { data, error } = await request;
   if (error) throw new Error(error.message);
   if (!data?.length) return interaction.editReply(`No active listings found for **${query}**.`);
   const base = marketplaceBaseUrl();
-  const lines = data.map((l) => `**${l.item_name}** — ${formatGold(l.price_gold)} gold × ${l.quantity}${l.potential ? ` · potential ${formatGold(l.potential)}` : ""}\n${base ? `${base}/market/${l.id}` : `\`${l.id}\``}`);
+  const lines = data.map((l) => `**${l.item_name}** — ${formatGold(l.price_gold)} gold × ${l.quantity}${l.potential ? ` · potential ${formatGold(l.potential)}` : ""}\n${base ? `${base}/market/${l.item_id || l.id}` : `\`${l.id}\``}`);
   return interaction.editReply({ embeds: [new EmbedBuilder().setTitle(`🔎 Marketplace: ${query}`).setDescription(lines.join("\n\n").slice(0, 4000))] });
 }
 
