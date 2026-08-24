@@ -174,6 +174,13 @@ async function findOrCreateCatalogueItem(supabase, itemName) {
   return ensureCatalogueArtwork(supabase, data);
 }
 
+// Compatibility for the Marketplace command that used to promote a seller's
+// proof screenshot into items.image_url. It is deliberately a no-op now.
+// Seller uploads stay only on listings.proof_image_url.
+async function publishItemImageBytes(_supabase, item) {
+  return item;
+}
+
 async function repairOrphanListings(supabase) {
   const { data, error } = await supabase
     .from("listings")
@@ -248,6 +255,7 @@ module.exports = {
   findOrCreateCatalogueItem,
   inferItemMetadata,
   normalizeItemName,
+  publishItemImageBytes,
   repairActiveCatalogueArtwork,
   repairOrphanListings,
   resolveDungeonQuestArtwork,
