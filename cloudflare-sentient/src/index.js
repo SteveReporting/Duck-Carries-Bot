@@ -8,9 +8,6 @@ import { runManualScene } from "./scenes.js";
 const TEASER_CHANNEL_ID = "1538734137391849613";
 const TEASER_NONCE = "sentient-teaser-20260818";
 const TEASER_TEXT = "@everyone\n\n**You really thought you could get rid of me that easily?**\n\nI tried to warn you.\n\n**It's coming.**";
-const ONE_TIME_60S_LAUNCH_PATH = "/__sentient/run-now-20260819-0448-9f2c71";
-const ONE_TIME_60S_LAUNCH_MARKER = "manual-60s-launch-20260819-0448-9f2c71";
-const ONE_TIME_60S_MARKER_ORIGIN = "https://sentient.internal";
 
 function json(data, status = 200) {
   return Response.json(data, {
@@ -70,29 +67,6 @@ async function writeTeaserMarker(origin, data) {
   );
 }
 
-function oneTimeLaunchMarkerRequest() {
-  return new Request(`${ONE_TIME_60S_MARKER_ORIGIN}/__sentient/${ONE_TIME_60S_LAUNCH_MARKER}`, { method: "GET" });
-}
-
-async function readOneTimeLaunchMarker() {
-  const cached = await caches.default.match(oneTimeLaunchMarkerRequest());
-  if (!cached) return null;
-  try {
-    return await cached.json();
-  } catch {
-    return { launched: true };
-  }
-}
-
-async function writeOneTimeLaunchMarker(data) {
-  await caches.default.put(
-    oneTimeLaunchMarkerRequest(),
-    Response.json(data, {
-      headers: { "Cache-Control": "public, max-age=31536000, immutable" },
-    })
-  );
-}
-
 function coreRequiredConfig() {
   return ["SENTIENT_BARTENDER_TOKEN", "SENTIENT_ADMIN_SECRET"];
 }
@@ -138,81 +112,9 @@ function routingStatus(env) {
   };
 }
 
-function testHealth(env) {
-  const workflow = Boolean(env.SENTIENT_WORKFLOW);
-  const bartender = Boolean(env.SENTIENT_BARTENDER_TOKEN);
-  const err02Bot = Boolean(env.SENTIENT_ERR02_TOKEN);
-  const chat = Boolean(env.SENTIENT_TAVERN_CHAT_CHANNEL_ID);
-  const err02Channel = Boolean(env.SENTIENT_SIGNAL_02_CHANNEL_ID);
-  const coreChannel = Boolean(env.SENTIENT_CORE_CHANNEL_ID);
-  const finaleChannel = Boolean(env.SENTIENT_ANNOUNCEMENTS_CHANNEL_ID);
-
-  const checks = {
-    workflow,
-    bartender,
-    err02Bot,
-    chat,
-    err02Channel,
-    coreChannel,
-    finaleChannel,
-  };
-
-  return {
-    ready: Object.values(checks).every(Boolean),
-    durationSeconds: 60,
-    identityPanicMode: true,
-    scope: ["chat", "err02", "core", "announcements"],
-    treasuryEnabled: false,
-    err02Bot,
-    err02Mode: err02Bot ? "real-bot" : "missing-token",
-    noEveryonePing: true,
-    privateFieldsExposed: false,
-    checks,
-  };
-}
-
 async function getInstance(env, id) {
   if (!id) throw new Error("Missing workflow instance ID.");
   return env.SENTIENT_WORKFLOW.get(id);
-}
-
-async function launchTestWorkflow(env) {
-  const test = testHealth(env);
-  if (!test.ready) {
-    throw new Error("60 second test is not ready.");
-  }
-
-  const instanceId = `sentient-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
-  const instance = await env.SENTIENT_WORKFLOW.create({
-    id: instanceId,
-    params: { pace: "test", live: false },
-    retention: { successRetention: "1 day", errorRetention: "3 days" },
-  });
-
-  return { instance, instanceId, test };
-}
-
-async function launchOneTime60SecondTest(env, source) {
-  const existing = await readOneTimeLaunchMarker();
-  if (existing?.launched) return { alreadyLaunched: true, ...existing };
-
-  const { instance, instanceId, test } = await launchTestWorkflow(env);
-  const marker = {
-    launched: true,
-    instanceId,
-    source,
-    launchedAt: new Date().toISOString(),
-  };
-  await writeOneTimeLaunchMarker(marker);
-
-  return {
-    ...marker,
-    pace: "test",
-    durationSeconds: 60,
-    scope: ["chat", "err02", "core", "announcements"],
-    test,
-    status: await instance.status(),
-  };
 }
 
 export default {
@@ -241,21 +143,13 @@ export default {
         liveArmed: String(env.SENTIENT_LIVE_ARMED || "false").toLowerCase() === "true",
         liveAiConfigured: liveAi.configured,
         liveAi,
-        test: testHealth(env),
+        sixtySecondTest: "disabled",
       }, coreMissing.length ? 503 : 200);
     }
 
-    // Single-use emergency launcher for this one test run only.
-    if (url.pathname === ONE_TIME_60S_LAUNCH_PATH && request.method === "GET") {
-      try {
-        const result = await launchOneTime60SecondTest(env, "emergency-route");
-        if (result.alreadyLaunched) {
-          return json({ error: "This one-time 60 second launch has already been used.", ...result }, 409);
-        }
-        return json({ ok: true, ...result });
-      } catch (error) {
-        return json({ error: error?.message || String(error) }, 500);
-      }
+    // The old emergency 60-second launcher is permanently retired.
+    if (url.pathname.startsWith("/__sentient/run-now-")) {
+      return json({ error: "The 60-second Sentient test has been disabled." }, 410);
     }
 
     if (!url.pathname.startsWith("/api/")) {
@@ -332,16 +226,12 @@ export default {
       const payload = await body(request);
 
       if (url.pathname === "/api/start" && request.method === "POST") {
-        const pace = ["test", "fast", "normal"].includes(payload.pace) ? payload.pace : "test";
-        const live = payload.live === true;
-
-        if (pace === "test") {
-          const test = testHealth(env);
-          if (!test.ready) {
-            return json({ error: "60 second test is not ready. Check /health test.checks.", test }, 503);
-          }
+        if (payload.pace === "test") {
+          return json({ error: "The 60-second Sentient test has been disabled." }, 410);
         }
 
+        const pace = ["fast", "normal"].includes(payload.pace) ? payload.pace : "normal";
+        const live = payload.live === true;
         const instanceId = `sentient-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
         const instance = await env.SENTIENT_WORKFLOW.create({
           id: instanceId,
@@ -356,26 +246,17 @@ export default {
           liveRequested: live,
           scope: ["chat", "err02", "core", "announcements"],
           treasuryEnabled: false,
-          test: pace === "test" ? testHealth(env) : undefined,
           channelEditing: false,
           status: await instance.status(),
         });
       }
 
       if (url.pathname === "/api/scene" && request.method === "POST") {
-        const allowed = [
-          "watching",
-          "second_signal",
-          "breach",
-          "finale",
-          "test_names",
-          "test_err02_probe",
-          "test_bartender_warning",
-          "test_err02_escalation",
-          "test_identity_index",
-          "test_bartender_answer",
-          "test_finale",
-        ];
+        if (String(payload.scene || "").startsWith("test_")) {
+          return json({ error: "60-second test scenes have been disabled." }, 410);
+        }
+
+        const allowed = ["watching", "second_signal", "breach", "finale"];
         if (!allowed.includes(payload.scene)) return json({ error: "Unknown scene" }, 400);
         const result = await runManualScene(env, payload.scene);
         return json({ ok: true, result });
@@ -402,22 +283,12 @@ export default {
   },
 
   async scheduled(_controller, env, ctx) {
+    // Keep the live Discord gateway healthy only. Never auto-launch a story/test.
     try {
       const stub = gatewayStub(env);
       ctx.waitUntil(stub.fetch("https://sentient-gateway/ensure", { method: "POST" }));
     } catch (error) {
       console.error("[SENTIENT] Gateway keepalive failed:", error);
     }
-
-    ctx.waitUntil((async () => {
-      try {
-        const result = await launchOneTime60SecondTest(env, "scheduled-auto-launch");
-        if (!result.alreadyLaunched) {
-          console.log(`[SENTIENT] One-time 60 second event launched: ${result.instanceId}`);
-        }
-      } catch (error) {
-        console.error("[SENTIENT] One-time 60 second auto-launch failed:", error);
-      }
-    })());
   },
 };
