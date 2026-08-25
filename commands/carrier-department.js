@@ -9,6 +9,7 @@ const {
     ensureCarrierRoleSeparators,
     positionCarrierHierarchy,
 } = require("../ai/carrierRoleSeparators");
+const { publishCarrierDepartment } = require("../ai/carrierWebhookPublisher");
 
 const ROLE_CHOICES = [
     { name: "Head of Carriers", value: "Head of Carriers" },
@@ -146,6 +147,46 @@ module.exports = {
                         .setDescription("Member to receive the role")
                         .setRequired(true)
                 )
+        )
+        .addSubcommand((subcommand) =>
+            subcommand
+                .setName("publish")
+                .setDescription("Publish branded Carrier channel posts and launch announcements through webhooks")
+                .addStringOption((option) =>
+                    option
+                        .setName("scope")
+                        .setDescription("What should be published")
+                        .setRequired(true)
+                        .addChoices(
+                            { name: "Everything", value: "all" },
+                            { name: "Channel guides and resources only", value: "channels" },
+                            { name: "Launch announcements only", value: "launch" },
+                        )
+                )
+                .addAttachmentOption((option) =>
+                    option
+                        .setName("avatar")
+                        .setDescription("Tavern logo to use as the webhook profile picture")
+                        .setRequired(true)
+                )
+                .addUserOption((option) =>
+                    option
+                        .setName("head")
+                        .setDescription("Optional Head of Carriers to feature in the launch announcement")
+                        .setRequired(false)
+                )
+                .addStringOption((option) =>
+                    option
+                        .setName("management_url")
+                        .setDescription("Optional management application URL")
+                        .setRequired(false)
+                )
+                .addStringOption((option) =>
+                    option
+                        .setName("carrier_url")
+                        .setDescription("Optional Carrier application URL")
+                        .setRequired(false)
+                )
         ),
 
     async execute(interaction) {
@@ -188,6 +229,39 @@ module.exports = {
                         "No OpenAI request or AI credits were used.",
                     ].join("\n"),
                 });
+            }
+
+            if (subcommand === "publish") {
+                const scope = interaction.options.getString("scope", true);
+                const avatar = interaction.options.getAttachment("avatar", true);
+                const head = interaction.options.getUser("head");
+                const managementApplicationUrl = interaction.options.getString("management_url");
+                const carrierApplicationUrl = interaction.options.getString("carrier_url");
+
+                if (!avatar.contentType?.startsWith("image/")) {
+                    throw new Error("The webhook avatar must be an image attachment.");
+                }
+
+                const result = await publishCarrierDepartment(interaction, {
+                    scope,
+                    avatar,
+                    head,
+                    managementApplicationUrl,
+                    carrierApplicationUrl,
+                });
+
+                const lines = [
+                    "✅ **Carrier Department webhook publish complete**",
+                    `Published: **${result.published.length}**`,
+                    "",
+                    ...result.published.map((item) => `• ${item}`),
+                ];
+                if (result.skipped.length) {
+                    lines.push("", "⚠️ **Skipped**", ...result.skipped.map((item) => `• ${item}`));
+                }
+                lines.push("", "The publisher only replaces its own tagged Tavern webhook posts. Normal messages are untouched.");
+
+                return interaction.editReply({ content: lines.join("\n").slice(0, 1900) });
             }
 
             const roleName = interaction.options.getString("role", true);
