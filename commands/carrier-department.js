@@ -73,6 +73,8 @@ function formatSetupResult(result) {
         `Category: **${result.category.name}**`,
         `Roles created: **${result.created_roles.length}**`,
         `Channels created: **${result.created_channels.length}**`,
+        `Recovered/moved channels: **${result.recovered_channels?.length || 0}**`,
+        `Wrong ticket-category duplicates deleted: **${result.deleted_duplicate_channels?.length || 0}**`,
         `Permission overwrites updated: **${result.permission_overwrites_updated}**`,
     ];
 
@@ -82,13 +84,19 @@ function formatSetupResult(result) {
     if (result.created_channels.length) {
         lines.push(`New channels: ${result.created_channels.join(", ")}`);
     }
+    if (result.recovered_channels?.length) {
+        lines.push(`Moved into Carrier Team: ${result.recovered_channels.join(", ")}`);
+    }
+    if (result.deleted_duplicate_channels?.length) {
+        lines.push(`Deleted from Carrier Team Tickets: ${result.deleted_duplicate_channels.join(", ")}`);
+    }
     if (result.warnings?.length) {
         lines.push("", "⚠️ **Warnings**");
         for (const warning of result.warnings.slice(0, 8)) lines.push(`• ${warning}`);
         if (result.warnings.length > 8) lines.push(`• +${result.warnings.length - 8} more warning(s)`);
     }
 
-    lines.push("", "No OpenAI request was used for this setup.");
+    lines.push("", "Roles, colours, hierarchy and channel permissions were normalised without using OpenAI credits.");
     return lines.join("\n").slice(0, 1900);
 }
 
@@ -99,7 +107,7 @@ module.exports = {
         .addSubcommand((subcommand) =>
             subcommand
                 .setName("setup")
-                .setDescription("Create/fix the approved one-category Carrier Department structure")
+                .setDescription("Repair and configure the exact one-category Carrier Department")
                 .addUserOption((option) =>
                     option
                         .setName("head")
