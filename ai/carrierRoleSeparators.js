@@ -4,9 +4,12 @@ const SEPARATOR_SPECS = [
     { key: "leadership", name: "━━━ 🍺 TAVERN LEADERSHIP ━━━" },
     { key: "management", name: "━━━ 🛡️ CARRIER MANAGEMENT ━━━" },
     { key: "progression", name: "━━━ 🏆 CARRIER PROGRESSION ━━━" },
-    { key: "pings", name: "━━━ 🔔 PINGS ━━━" },
-    { key: "levels", name: "━━━ 📈 LEVELS ━━━" },
     { key: "additional", name: "━━━ ➕ ADDITIONAL ROLES ━━━" },
+];
+
+const OBSOLETE_SEPARATOR_NAMES = [
+    "━━━ 🔔 PINGS ━━━",
+    "━━━ 📈 LEVELS ━━━",
 ];
 
 const VISUAL_ORDER = [
@@ -42,21 +45,19 @@ function findRole(guild, name) {
     ) || null;
 }
 
-function detectGlobalRoleGroups(guild) {
+function detectMiscRoles(guild) {
     const roles = [...guild.roles.cache.values()]
         .filter((role) => role.id !== guild.id && !role.managed);
 
-    const levelRoles = roles
-        .filter((role) => /^\s*(?:[^a-z0-9]*\s*)?lvl\s*\d+/i.test(role.name))
+    return roles
+        .filter((role) => {
+            const name = String(role.name || "");
+            const isLevel = /^\s*(?:[^a-z0-9]*\s*)?lvl\s*\d+/i.test(name);
+            const isPing = /\bping\b/i.test(name);
+            return isLevel || isPing;
+        })
         .sort((a, b) => b.position - a.position)
         .map((role) => role.name);
-
-    const pingRoles = roles
-        .filter((role) => /\bping\b/i.test(role.name))
-        .sort((a, b) => b.position - a.position)
-        .map((role) => role.name);
-
-    return { levelRoles, pingRoles };
 }
 
 async function ensureCarrierRoleSeparators(interaction) {
@@ -69,7 +70,25 @@ async function ensureCarrierRoleSeparators(interaction) {
     }
 
     const created = [];
+    const deletedObsolete = [];
     const warnings = [];
+
+    for (const obsoleteName of OBSOLETE_SEPARATOR_NAMES) {
+        const obsolete = findRole(guild, obsoleteName);
+        if (!obsolete) continue;
+
+        if (botMember.roles.highest.comparePositionTo(obsolete) <= 0) {
+            warnings.push(`${obsolete.name} is above the bot and could not be removed.`);
+            continue;
+        }
+
+        try {
+            await obsolete.delete(`Obsolete role separator replaced by Additional Roles by ${interaction.user.tag}`);
+            deletedObsolete.push(obsoleteName);
+        } catch (error) {
+            warnings.push(`Could not delete obsolete separator ${obsolete.name}: ${error.message}`);
+        }
+    }
 
     for (const spec of SEPARATOR_SPECS) {
         let role = findRole(guild, spec.name);
@@ -95,19 +114,16 @@ async function ensureCarrierRoleSeparators(interaction) {
         }
     }
 
-    const detected = detectGlobalRoleGroups(guild);
-
-    // IMPORTANT: setup deliberately does not move any roles. Carrier hierarchy
-    // is repaired only by the explicit anchored hierarchy command. Global ping,
-    // level and additional-role separators are created/normalised only so the
-    // server owner can place them exactly where desired without the bot guessing.
+    // Setup deliberately does not move role hierarchy. Misc roles such as level
+    // and ping roles are detected for the owner, but are never moved automatically.
+    // Normal member/status roles are intentionally not classified as Additional Roles.
     return {
         created,
+        deleted_obsolete: deletedObsolete,
         separators: SEPARATOR_SPECS.map((spec) => spec.name),
         visual_order: VISUAL_ORDER,
         hierarchy_changed: false,
-        detected_ping_roles: detected.pingRoles,
-        detected_level_roles: detected.levelRoles,
+        detected_misc_roles: detectMiscRoles(guild),
         warnings,
     };
 }
@@ -152,9 +168,6 @@ async function positionCarrierHierarchy(interaction, anchorRole) {
         }
     }
 
-    // The anchor is external to the Carrier block. Place each Carrier role
-    // directly beneath the previous one. Two passes handle Discord position
-    // shifts while preserving the relative order of every unrelated role.
     for (let pass = 0; pass < 2; pass += 1) {
         let previous = guild.roles.cache.get(anchorRole.id) || anchorRole;
 
@@ -177,6 +190,6 @@ async function positionCarrierHierarchy(interaction, anchorRole) {
 module.exports = {
     ensureCarrierRoleSeparators,
     positionCarrierHierarchy,
-    detectGlobalRoleGroups,
+    detectMiscRoles,
     VISUAL_ORDER,
 };
