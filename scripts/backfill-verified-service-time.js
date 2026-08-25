@@ -113,6 +113,7 @@ async function main() {
   const histories = localHistory();
   const supabase = getSupabase();
   const usedIds = new Set();
+  const localTotalsByProfile = new Map();
 
   console.log(`Verified-time backfill mode: ${apply ? "APPLY" : "DRY RUN"}`);
   console.log(`Source database: ${sourceDbPath || "live database/duck.db"}`);
@@ -125,28 +126,44 @@ async function main() {
   let matched = 0;
   let alreadyPresent = 0;
   let skipped = 0;
+  let skippedMinutes = 0;
   let wouldWriteMinutes = 0;
 
   for (const history of histories) {
+    const wanted = Math.max(0, Number(history.service_minutes || 0));
     const profile = await profileForDiscord(supabase, history.carrier);
     if (!profile) {
-      console.log(`[SKIP] ${history.ticket_channel} carrier ${history.carrier}: no Supabase profile.`);
+      console.log(`[SKIP] ticket=${history.ticket_channel} discord=${history.carrier} local=${wanted}m: no Supabase profile.`);
       skipped += 1;
+      skippedMinutes += wanted;
       continue;
     }
+
+    const label = profile.discord_display_name || profile.discord_username || history.carrier;
+    const total = localTotalsByProfile.get(profile.id) || {
+      profileId: profile.id,
+      discordId: String(history.carrier),
+      label,
+      minutes: 0,
+      sessions: 0,
+    };
+    total.minutes += wanted;
+    total.sessions += 1;
+    localTotalsByProfile.set(profile.id, total);
 
     const rows = await candidateActivity(supabase, profile.id, Number(history.completed_at));
     const group = nearestGroup(rows, Number(history.completed_at), usedIds);
     if (!group.length) {
-      console.log(`[SKIP] ${history.ticket_channel} ${profile.discord_display_name || profile.discord_username || history.carrier}: no unambiguous carry_activity match near ${iso(history.completed_at)}.`);
+      console.log(
+        `[SKIP] ticket=${history.ticket_channel} carrier=${label} profile=${profile.id} discord=${history.carrier} local=${wanted}m runs=${Number(history.runs_completed || 0)} requesters=${Number(history.request_count || 0)} completed=${iso(history.completed_at)}: no carry_activity match.`,
+      );
       skipped += 1;
+      skippedMinutes += wanted;
       continue;
     }
 
     group.forEach((row) => usedIds.add(String(row.id)));
     const currentMinutes = group.reduce((sum, row) => sum + Math.max(0, Number(row.service_minutes || 0)), 0);
-    const wanted = Math.max(0, Number(history.service_minutes || 0));
-    const label = profile.discord_display_name || profile.discord_username || history.carrier;
 
     if (currentMinutes === wanted) {
       console.log(`[OK] ${label} ${history.ticket_channel}: ${wanted}m already present across ${group.length} activity row(s).`);
@@ -164,10 +181,18 @@ async function main() {
     }
   }
 
+  if (localTotalsByProfile.size) {
+    console.log("");
+    console.log("LOCAL VERIFIED TOTALS SINCE RESET:");
+    for (const entry of [...localTotalsByProfile.values()].sort((a, b) => b.minutes - a.minutes)) {
+      console.log(`  ${entry.label}: ${entry.minutes}m across ${entry.sessions} session(s) | profile=${entry.profileId} | discord=${entry.discordId}`);
+    }
+  }
+
   console.log("");
   console.log(`Matched needing repair: ${matched}`);
   console.log(`Already correct: ${alreadyPresent}`);
-  console.log(`Skipped: ${skipped}`);
+  console.log(`Skipped: ${skipped} (${skippedMinutes} verified minute(s) preserved in the source DB)`);
   console.log(`${apply ? "Written" : "Would write"}: ${wouldWriteMinutes} verified minute(s)`);
 
   if (!apply && matched > 0) {
