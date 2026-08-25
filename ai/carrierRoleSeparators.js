@@ -45,19 +45,22 @@ function findRole(guild, name) {
     ) || null;
 }
 
-function detectMiscRoles(guild) {
-    const roles = [...guild.roles.cache.values()]
-        .filter((role) => role.id !== guild.id && !role.managed);
-
-    return roles
+function detectMiscRoleObjects(guild) {
+    return [...guild.roles.cache.values()]
+        .filter((role) => role.id !== guild.id && !role.managed)
         .filter((role) => {
             const name = String(role.name || "");
+            const normalized = normalizeName(name);
             const isLevel = /^\s*(?:[^a-z0-9]*\s*)?lvl\s*\d+/i.test(name);
             const isPing = /\bping\b/i.test(name);
-            return isLevel || isPing;
+            const isSeparator = SEPARATOR_SPECS.some((spec) => normalizeName(spec.name) === normalized);
+            return !isSeparator && (isLevel || isPing);
         })
-        .sort((a, b) => b.position - a.position)
-        .map((role) => role.name);
+        .sort((a, b) => b.position - a.position);
+}
+
+function detectMiscRoles(guild) {
+    return detectMiscRoleObjects(guild).map((role) => role.name);
 }
 
 async function ensureCarrierRoleSeparators(interaction) {
@@ -114,9 +117,23 @@ async function ensureCarrierRoleSeparators(interaction) {
         }
     }
 
-    // Setup deliberately does not move role hierarchy. Misc roles such as level
-    // and ping roles are detected for the owner, but are never moved automatically.
-    // Normal member/status roles are intentionally not classified as Additional Roles.
+    // Only the Additional Roles separator is auto-positioned. The misc roles
+    // themselves are never moved. Put the separator one slot above the highest
+    // detected level/ping role so it visually labels the whole misc section.
+    const additional = findRole(guild, "━━━ ➕ ADDITIONAL ROLES ━━━");
+    const miscRoles = detectMiscRoleObjects(guild);
+    if (additional && miscRoles.length && botMember.roles.highest.comparePositionTo(additional) > 0) {
+        const highestMisc = miscRoles[0];
+        const target = highestMisc.position + 1;
+        if (target < botMember.roles.highest.position) {
+            await additional.setPosition(target, { reason }).catch((error) => {
+                warnings.push(`Could not place Additional Roles above ${highestMisc.name}: ${error.message}`);
+            });
+        } else {
+            warnings.push(`Additional Roles could not be placed above ${highestMisc.name} because that position is too close to or above the bot role.`);
+        }
+    }
+
     return {
         created,
         deleted_obsolete: deletedObsolete,
@@ -124,6 +141,7 @@ async function ensureCarrierRoleSeparators(interaction) {
         visual_order: VISUAL_ORDER,
         hierarchy_changed: false,
         detected_misc_roles: detectMiscRoles(guild),
+        additional_separator_positioned: Boolean(additional && miscRoles.length),
         warnings,
     };
 }
