@@ -5,6 +5,7 @@ const { startCarrierDirectorySync, carrierTeamRoleId } = require("../platform/ca
 const { carryClaimRoleId } = require("../platform/carryClaimAccess");
 const { startWebsiteCarryActions } = require("../platform/webCarryActions");
 const { startCarryCleanup } = require("../platform/carryCleanup");
+const { startLiveCarrierLeaderboard } = require("../platform/liveCarrierLeaderboard");
 
 function configuredCarrierRoles() {
   return [
@@ -70,6 +71,7 @@ module.exports = {
     startCarrierDirectorySync(client);
     startStaffRoleSync(client);
     startTreasuryStockPanel(client);
-    console.log("✅ Tavern platform heartbeat, website carry controls, completed-carry cleanup, Carrier directory, Discord role sync, announcement sync and Treasury stock panel started.");
+    startLiveCarrierLeaderboard(client);
+    console.log("✅ Tavern platform heartbeat, website carry controls, completed-carry cleanup, Carrier directory, Discord role sync, announcement sync, Treasury stock panel and live Carrier leaderboard updater started.");
   },
 };
