@@ -1,21 +1,41 @@
 require("dotenv").config();
 
-const db = require("../database/database");
+const path = require("path");
+const Database = require("better-sqlite3");
 const { getSupabase } = require("../marketplace/supabase");
-
-// Requiring this module also guarantees the verified-time tables exist.
-require("../platform/carryServiceTime");
 
 const SERVICE_TIME_RESET_AT = Date.parse("2026-08-24T03:53:00+01:00");
 const MATCH_WINDOW_MS = 3 * 60 * 1000;
 const GROUP_WINDOW_MS = 15 * 1000;
 const apply = process.argv.includes("--apply");
 
+function argumentValue(name) {
+  const exact = process.argv.find((value) => value.startsWith(`${name}=`));
+  if (exact) return exact.slice(name.length + 1);
+  const index = process.argv.indexOf(name);
+  if (index >= 0 && process.argv[index + 1] && !process.argv[index + 1].startsWith("--")) {
+    return process.argv[index + 1];
+  }
+  return null;
+}
+
+const sourceDbArg = argumentValue("--db");
+const sourceDbPath = sourceDbArg ? path.resolve(process.cwd(), sourceDbArg) : null;
+const db = sourceDbPath
+  ? new Database(sourceDbPath, { readonly: true, fileMustExist: true })
+  : require("../database/database");
+
 function iso(ms) {
   return new Date(Number(ms)).toISOString();
 }
 
+function hasHistoryTable() {
+  const row = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='carry_service_history'").get();
+  return Boolean(row);
+}
+
 function localHistory() {
+  if (!hasHistoryTable()) return [];
   return db.prepare(`
     SELECT ticket_channel,guild,carrier,service_seconds,service_minutes,
            runs_completed,request_count,completed_at
@@ -95,7 +115,12 @@ async function main() {
   const usedIds = new Set();
 
   console.log(`Verified-time backfill mode: ${apply ? "APPLY" : "DRY RUN"}`);
+  console.log(`Source database: ${sourceDbPath || "live database/duck.db"}`);
   console.log(`Local verified sessions since reset: ${histories.length}`);
+
+  if (!hasHistoryTable()) {
+    console.log("Source database has no carry_service_history table.");
+  }
 
   let matched = 0;
   let alreadyPresent = 0;
@@ -147,7 +172,8 @@ async function main() {
 
   if (!apply && matched > 0) {
     console.log("");
-    console.log("Review the matches above. If they look correct, rerun with: node scripts/backfill-verified-service-time.js --apply");
+    const dbPart = sourceDbArg ? ` --db ${JSON.stringify(sourceDbArg)}` : "";
+    console.log(`Review the matches above. If they look correct, rerun with: node scripts/backfill-verified-service-time.js${dbPart} --apply`);
   }
 }
 
