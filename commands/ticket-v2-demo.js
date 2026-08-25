@@ -17,8 +17,15 @@ const GOLD = 0xF2B705;
 const BLUE = 0x3498DB;
 const GREEN = 0x2ECC71;
 
+const CARRIER_APPLICATION = {
+  formId: "1LgPAHMBHKCTvnDgMb4Q8LI03qNG2cYUYfDMqwE9HF_A",
+  publicUrl: "https://docs.google.com/forms/d/e/1FAIpQLSdIT98g11GKA2uJ9iTDGrOIHgK3FNrj-oo94g56JJBws8S-rQ/viewform",
+  editUrl: "https://docs.google.com/forms/d/1LgPAHMBHKCTvnDgMb4Q8LI03qNG2cYUYfDMqwE9HF_A/edit",
+  responseSheetUrl: "https://docs.google.com/spreadsheets/d/1RvkYMyIjT7SGbu4nq5Pnqk2p2r6MnWLdXH17r1VI0fU/edit",
+  recordsFolderUrl: "https://drive.google.com/drive/folders/1vTcEc9qbwCgaYdtOCajDpYgI6ys3OHHH",
+};
+
 const STATUS = {
-  new: "🆕 New",
   open: "🟢 Open",
   review: "🟡 Under Review",
   progress: "🔵 In Progress",
@@ -60,20 +67,22 @@ function who(id) {
 }
 
 function priorityLabel(value) {
-  return value === "Urgent" ? "🔴 Urgent" : value === "High" ? "🟠 High" : "🟢 Normal";
+  if (value === "Urgent") return "🔴 Urgent";
+  if (value === "High") return "🟠 High";
+  return "🟢 Normal";
 }
 
-function cyclePriority(current) {
-  if (current === "Normal") return "High";
-  if (current === "High") return "Urgent";
+function cyclePriority(value) {
+  if (value === "Normal") return "High";
+  if (value === "High") return "Urgent";
   return "Normal";
 }
 
 function validHttpUrl(value) {
   if (!value) return null;
   try {
-    const url = new URL(String(value).trim());
-    return ["http:", "https:"].includes(url.protocol) ? url.toString() : null;
+    const parsed = new URL(String(value).trim());
+    return ["http:", "https:"].includes(parsed.protocol) ? parsed.toString() : null;
   } catch {
     return null;
   }
@@ -83,38 +92,32 @@ function channelUrl(guildId, channelId) {
   return `https://discord.com/channels/${guildId}/${channelId}`;
 }
 
-function baseEmbed(title, subtitle, colour = GOLD) {
+function baseEmbed(title, description, colour = GOLD) {
   return new EmbedBuilder()
     .setColor(colour)
     .setAuthor({ name: "THE CARRY TAVERN • TICKET SYSTEM V2" })
     .setTitle(title)
-    .setDescription(subtitle)
-    .setFooter({ text: "🧪 TEST MODE • No real ticket records are being changed" })
+    .setDescription(description)
+    .setFooter({ text: "🧪 TEST MODE • Existing ticket systems are untouched" })
     .setTimestamp();
 }
 
 function supportPayload(state, requesterId) {
-  const embed = baseEmbed(
-    "🛟 SUPPORT CASE • SUP-TEST-001",
-    "Live Support case file. Staff actions update this panel in-place instead of filling the ticket with bot status messages.",
-    BLUE,
-  ).addFields(
-    { name: "👤 Requester", value: `<@${requesterId}>`, inline: true },
-    { name: "📌 Status", value: STATUS[state.status], inline: true },
-    { name: "🙋 Assigned Staff", value: who(state.assigned), inline: true },
-    { name: "⚠️ Priority", value: priorityLabel(state.priority), inline: true },
-    { name: "🗂️ Issue Type", value: "Bot / Discord / Website", inline: true },
-    { name: "📝 Internal Notes", value: `**${state.notes}** private note${state.notes === 1 ? "" : "s"}`, inline: true },
-    {
-      name: "📋 Request",
-      value: "My verified Traveller role disappeared after I changed my Roblox account. I can still use Discord normally but the carry request system says I am not verified.",
-      inline: false,
-    },
-    { name: "🕒 Latest Activity", value: `**${state.lastAction}**`, inline: false },
-  );
-
   return {
-    embeds: [embed],
+    embeds: [baseEmbed(
+      "🛟 SUPPORT CASE • SUP-TEST-001",
+      "A live Support case file. Staff actions update this same panel rather than filling the ticket with status messages.",
+      BLUE,
+    ).addFields(
+      { name: "👤 Requester", value: `<@${requesterId}>`, inline: true },
+      { name: "📌 Status", value: STATUS[state.status], inline: true },
+      { name: "🙋 Assigned", value: who(state.assigned), inline: true },
+      { name: "⚠️ Priority", value: priorityLabel(state.priority), inline: true },
+      { name: "🗂️ Issue", value: "Bot / Discord / Website", inline: true },
+      { name: "📝 Private Notes", value: `**${state.notes}**`, inline: true },
+      { name: "📋 Request", value: "My verified Traveller role disappeared after I changed my Roblox account.", inline: false },
+      { name: "🕒 Latest Activity", value: state.lastAction, inline: false },
+    )],
     components: [
       row(
         button("demo_sup_claim", "Claim", ButtonStyle.Primary, "🙋"),
@@ -123,7 +126,7 @@ function supportPayload(state, requesterId) {
         button("demo_sup_resolve", "Resolve", ButtonStyle.Success, "✅"),
       ),
       row(
-        button("demo_sup_priority", "Change Priority", ButtonStyle.Secondary, "⚠️"),
+        button("demo_sup_priority", "Priority", ButtonStyle.Secondary, "⚠️"),
         button("demo_sup_note", "Internal Note", ButtonStyle.Secondary, "📝"),
       ),
     ],
@@ -131,45 +134,43 @@ function supportPayload(state, requesterId) {
 }
 
 function carrierPayload(state, requesterId) {
-  const score = state.score == null ? "`Not Scored`" : `**${state.score}/20** • ${state.recommendation}`;
-  const applicationDisplay = state.applicationUrl
-    ? `[Open exact submitted application](${state.applicationUrl})`
-    : "`No application response linked in this demo`";
+  const score = state.score == null ? "`Not scored`" : `**${state.score}/20** • ${state.recommendation}`;
+  const exact = state.exactApplicationUrl
+    ? `[Open APP-TEST-001 exact submission](${state.exactApplicationUrl})`
+    : "`Awaiting a submitted application record`";
 
-  const embed = baseEmbed(
-    "⚔️ CARRIER APPLICATION • APP-TEST-001",
-    "Recruitment case file. The applicant's exact submitted application stays permanently linked to this ticket for reviewers.",
-    GOLD,
-  ).addFields(
-    { name: "👤 Applicant", value: `<@${requesterId}>`, inline: true },
-    { name: "📌 Stage", value: STATUS[state.status], inline: true },
-    { name: "📋 Reviewer", value: who(state.assigned), inline: true },
-    { name: "🎮 Roblox", value: "`DemoRobloxUser`", inline: true },
-    { name: "⚔️ DQ Level", value: "**200**", inline: true },
-    { name: "📊 Application Score", value: score, inline: true },
-    { name: "📄 Submitted Application", value: applicationDisplay, inline: false },
-    {
-      name: "🏰 Carry Capability",
-      value: "Volcanic Chambers NM HC • Enchanted Forest INS HC • Group carries",
-      inline: false,
-    },
-    {
-      name: "📝 Applicant Snapshot",
-      value: "I want to join Carrier Team because I enjoy helping players progress and I can be active most evenings. I understand all official Tavern carries are free.",
-      inline: false,
-    },
-    {
-      name: "🔎 Review State",
-      value: `Internal notes: **${state.notes}** • Last action: **${state.lastAction}**`,
-      inline: false,
-    },
-  );
-
-  const secondRow = [button("demo_app_note", "Internal Note", ButtonStyle.Secondary, "📝")];
-  if (state.applicationUrl) secondRow.push(linkButton("View Full Application", state.applicationUrl, "📄"));
+  const links = [
+    linkButton("Open Live Application", CARRIER_APPLICATION.publicUrl, "📝"),
+    linkButton("Staff Review Sheet", CARRIER_APPLICATION.responseSheetUrl, "📊"),
+    linkButton("Application Records", CARRIER_APPLICATION.recordsFolderUrl, "📁"),
+  ];
+  if (state.exactApplicationUrl) links.push(linkButton("View Exact Application", state.exactApplicationUrl, "📄"));
 
   return {
-    embeds: [embed],
+    embeds: [baseEmbed(
+      "⚔️ CARRIER APPLICATION • APP-TEST-001",
+      "This demo is connected to the real **The Carry Tavern — Carrier Team Application** Google Form and its real staff review system.",
+      GOLD,
+    ).addFields(
+      { name: "👤 Applicant", value: `<@${requesterId}>`, inline: true },
+      { name: "📌 Stage", value: STATUS[state.status], inline: true },
+      { name: "📋 Reviewer", value: who(state.assigned), inline: true },
+      { name: "📊 Score", value: score, inline: true },
+      { name: "📝 Form", value: "✅ **Real Carrier Application connected**", inline: true },
+      { name: "📄 Exact Submission", value: state.exactApplicationUrl ? "✅ Linked" : "🟡 Waiting for submission", inline: true },
+      { name: "🔗 Application Record", value: exact, inline: false },
+      {
+        name: "⚙️ How the real flow works",
+        value: [
+          "1. Applicant completes the live Google Form.",
+          "2. Google writes the response to the Carrier Applications Sheet.",
+          "3. The Apps Script creates an `APP-YYYY-####` record in the Application Records folder.",
+          "4. That exact record URL is attached to the applicant's Discord ticket for staff.",
+        ].join("\n"),
+        inline: false,
+      },
+      { name: "🕒 Latest Activity", value: state.lastAction, inline: false },
+    )],
     components: [
       row(
         button("demo_app_claim", "Take Review", ButtonStyle.Primary, "🙋"),
@@ -178,32 +179,28 @@ function carrierPayload(state, requesterId) {
         button("demo_app_accept", "Accept", ButtonStyle.Success, "✅"),
         button("demo_app_deny", "Deny", ButtonStyle.Danger, "❌"),
       ),
-      row(...secondRow),
+      row(...links),
     ],
   };
 }
 
 function treasuryPayload(state, requesterId) {
-  const embed = baseEmbed(
-    "💰 TREASURY REQUEST • TRE-TEST-001",
-    "Treasury keeps a transaction-style case file with ownership, proof and approval states.",
-    GREEN,
-  ).addFields(
-    { name: "👤 Requester", value: `<@${requesterId}>`, inline: true },
-    { name: "📌 Status", value: STATUS[state.status], inline: true },
-    { name: "💼 Treasurer", value: who(state.assigned), inline: true },
-    { name: "⚠️ Priority", value: priorityLabel(state.priority), inline: true },
-    { name: "💎 Item", value: "Enchanted Ice Rapier", inline: true },
-    { name: "🔎 Ownership", value: state.verified ? "✅ **Verified**" : "🟡 `Not Verified`", inline: true },
-    { name: "💵 Requested Price", value: "**25B Gold**", inline: true },
-    { name: "📎 Proof", value: state.proofRequested ? "🟣 **Requested from user**" : "`Not requested`", inline: true },
-    { name: "📝 Internal Notes", value: `**${state.notes}** private note${state.notes === 1 ? "" : "s"}`, inline: true },
-    { name: "📋 Request", value: "Requester wants the item reviewed and approved for a Marketplace listing.", inline: false },
-    { name: "🕒 Latest Activity", value: `**${state.lastAction}**`, inline: false },
-  );
-
   return {
-    embeds: [embed],
+    embeds: [baseEmbed(
+      "💰 TREASURY REQUEST • TRE-TEST-001",
+      "Treasury keeps its own transaction-focused controls and identity.",
+      GREEN,
+    ).addFields(
+      { name: "👤 Requester", value: `<@${requesterId}>`, inline: true },
+      { name: "📌 Status", value: STATUS[state.status], inline: true },
+      { name: "💼 Treasurer", value: who(state.assigned), inline: true },
+      { name: "⚠️ Priority", value: priorityLabel(state.priority), inline: true },
+      { name: "💎 Item", value: "Enchanted Ice Rapier", inline: true },
+      { name: "🔎 Ownership", value: state.verified ? "✅ Verified" : "🟡 Pending", inline: true },
+      { name: "📎 Proof", value: state.proofRequested ? "🟣 Requested" : "Not requested", inline: true },
+      { name: "📝 Private Notes", value: `**${state.notes}**`, inline: true },
+      { name: "🕒 Latest Activity", value: state.lastAction, inline: false },
+    )],
     components: [
       row(
         button("demo_tre_claim", "Claim", ButtonStyle.Primary, "🙋"),
@@ -213,97 +210,75 @@ function treasuryPayload(state, requesterId) {
         button("demo_tre_reject", "Reject", ButtonStyle.Danger, "❌"),
       ),
       row(
-        button("demo_tre_priority", "Change Priority", ButtonStyle.Secondary, "⚠️"),
+        button("demo_tre_priority", "Priority", ButtonStyle.Secondary, "⚠️"),
         button("demo_tre_note", "Internal Note", ButtonStyle.Secondary, "📝"),
       ),
     ],
   };
 }
 
-function statusIsClosed(status) {
+function isClosed(status) {
   return ["resolved", "accepted", "approved", "denied", "rejected"].includes(status);
 }
 
-function attentionLine(label, id, state, channelId) {
-  const critical = state.status === "escalated" || state.priority === "Urgent";
-  const waiting = state.status === "waiting";
-  const unassigned = !state.assigned && !statusIsClosed(state.status);
-  const marker = critical ? "🔴" : waiting ? "🟣" : unassigned ? "🟡" : "🔵";
-  return `${marker} **${id}** • <#${channelId}>\n${STATUS[state.status]} • ${who(state.assigned)}${state.priority ? ` • ${priorityLabel(state.priority)}` : ""}`;
-}
-
 function dashboardPayload(states) {
-  const all = [states.support, states.carrier, states.treasury];
-  const open = all.filter((s) => !statusIsClosed(s.status)).length;
-  const unassigned = all.filter((s) => !statusIsClosed(s.status) && !s.assigned).length;
-  const waiting = all.filter((s) => s.status === "waiting").length;
-  const escalated = all.filter((s) => s.status === "escalated").length;
-  const urgent = all.filter((s) => s.priority === "Urgent" && !statusIsClosed(s.status)).length;
-  const notes = all.reduce((sum, s) => sum + Number(s.notes || 0), 0);
+  const cases = [states.support, states.carrier, states.treasury];
+  const active = cases.filter((item) => !isClosed(item.status)).length;
+  const unassigned = cases.filter((item) => !isClosed(item.status) && !item.assigned).length;
+  const waiting = cases.filter((item) => item.status === "waiting").length;
+  const escalated = cases.filter((item) => item.status === "escalated").length;
+  const notes = cases.reduce((sum, item) => sum + Number(item.notes || 0), 0);
 
   const command = new EmbedBuilder()
     .setColor(GOLD)
     .setAuthor({ name: "THE CARRY TAVERN • STAFF OPERATIONS" })
     .setTitle("📊 TICKET OPERATIONS COMMAND BOARD")
-    .setDescription([
-      "`● LIVE DEMO`  One glance should tell staff what needs attention without opening every ticket.",
-      "",
-      `**${open}** active case${open === 1 ? "" : "s"} across Support, Carrier Recruitment and Treasury.`,
-    ].join("\n"))
+    .setDescription("`● LIVE TEST`  Staff should be able to understand workload and jump into the right case without opening every ticket channel.")
     .addFields(
-      { name: "📥 Active", value: `## ${open}`, inline: true },
+      { name: "📥 Active", value: `## ${active}`, inline: true },
       { name: "👤 Unassigned", value: `## ${unassigned}`, inline: true },
       { name: "🟣 Waiting User", value: `## ${waiting}`, inline: true },
       { name: "🟠 Escalated", value: `## ${escalated}`, inline: true },
-      { name: "🔴 Urgent", value: `## ${urgent}`, inline: true },
       { name: "📝 Private Notes", value: `## ${notes}`, inline: true },
+      { name: "⚔️ Application System", value: "## CONNECTED", inline: true },
     )
-    .setFooter({ text: "🧪 TEST MODE • Dashboard edits in-place with every ticket action" })
+    .setFooter({ text: "🧪 TEST MODE • Dashboard updates in-place" })
     .setTimestamp();
 
-  const queue = new EmbedBuilder()
+  const operations = new EmbedBuilder()
     .setColor(0xD49A00)
-    .setTitle("🚨 NEEDS ATTENTION")
-    .setDescription([
-      attentionLine("Support", "SUP-TEST-001", states.support, states.channels.support),
-      "",
-      attentionLine("Carrier", "APP-TEST-001", states.carrier, states.channels.carrier),
-      "",
-      attentionLine("Treasury", "TRE-TEST-001", states.treasury, states.channels.treasury),
-    ].join("\n"))
+    .setTitle("🚨 OPERATIONS QUEUE")
     .addFields(
       {
-        name: "🛟 SUPPORT OPERATIONS",
+        name: "🛟 SUPPORT • SUP-TEST-001",
         value: [
-          `**Case:** SUP-TEST-001`,
           `**Status:** ${STATUS[states.support.status]}`,
-          `**Owner:** ${who(states.support.assigned)}`,
+          `**Assigned:** ${who(states.support.assigned)}`,
           `**Priority:** ${priorityLabel(states.support.priority)}`,
-          `**Last Action:** ${states.support.lastAction}`,
+          `**Last:** ${states.support.lastAction}`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "⚔️ RECRUITMENT PIPELINE",
+        name: "⚔️ RECRUITMENT • APP-TEST-001",
         value: [
-          `**Application:** APP-TEST-001`,
           `**Stage:** ${STATUS[states.carrier.status]}`,
           `**Reviewer:** ${who(states.carrier.assigned)}`,
           `**Score:** ${states.carrier.score == null ? "Not scored" : `${states.carrier.score}/20 • ${states.carrier.recommendation}`}`,
-          `**Submission:** ${states.carrier.applicationUrl ? "✅ Exact response linked" : "⚠️ No response URL linked"}`,
-          `**Last Action:** ${states.carrier.lastAction}`,
+          `**Google Form:** ✅ Connected`,
+          `**Exact record:** ${states.carrier.exactApplicationUrl ? "✅ Linked" : "🟡 Awaiting submission"}`,
+          `**Last:** ${states.carrier.lastAction}`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "💰 TREASURY OPERATIONS",
+        name: "💰 TREASURY • TRE-TEST-001",
         value: [
-          `**Case:** TRE-TEST-001`,
           `**Status:** ${STATUS[states.treasury.status]}`,
-          `**Treasurer:** ${who(states.treasury.assigned)}`,
+          `**Assigned:** ${who(states.treasury.assigned)}`,
           `**Priority:** ${priorityLabel(states.treasury.priority)}`,
           `**Ownership:** ${states.treasury.verified ? "✅ Verified" : "🟡 Pending"}`,
-          `**Last Action:** ${states.treasury.lastAction}`,
+          `**Last:** ${states.treasury.lastAction}`,
         ].join("\n"),
         inline: false,
       },
@@ -311,30 +286,32 @@ function dashboardPayload(states) {
 
   const links = [
     linkButton("Support Case", channelUrl(states.guildId, states.channels.support), "🛟"),
-    linkButton("Carrier Application", channelUrl(states.guildId, states.channels.carrier), "⚔️"),
+    linkButton("Carrier Case", channelUrl(states.guildId, states.channels.carrier), "⚔️"),
+    linkButton("Live Application", CARRIER_APPLICATION.publicUrl, "📝"),
+    linkButton("Staff Review Sheet", CARRIER_APPLICATION.responseSheetUrl, "📊"),
     linkButton("Treasury Case", channelUrl(states.guildId, states.channels.treasury), "💰"),
   ];
-  if (states.carrier.applicationUrl) {
-    links.splice(2, 0, linkButton("View Exact Application", states.carrier.applicationUrl, "📄"));
-  }
 
-  return { embeds: [command, queue], components: [row(...links)] };
+  const components = [row(...links)];
+  const records = [linkButton("Application Records", CARRIER_APPLICATION.recordsFolderUrl, "📁")];
+  if (states.carrier.exactApplicationUrl) records.push(linkButton("Exact APP-TEST-001", states.carrier.exactApplicationUrl, "📄"));
+  components.push(row(...records));
+
+  return { embeds: [command, operations], components };
 }
 
-function noteModal(customId, title) {
+function noteModal(customId) {
   return new ModalBuilder()
     .setCustomId(customId)
-    .setTitle(title)
-    .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("note")
-          .setLabel("Internal note")
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(true)
-          .setMaxLength(800),
-      ),
-    );
+    .setTitle("Add Internal Note")
+    .addComponents(row(
+      new TextInputBuilder()
+        .setCustomId("note")
+        .setLabel("Internal note")
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true)
+        .setMaxLength(800),
+    ));
 }
 
 function scoreModal() {
@@ -342,19 +319,18 @@ function scoreModal() {
     .setCustomId("demo_app_score_modal")
     .setTitle("Score Carrier Application")
     .addComponents(
-      new ActionRowBuilder().addComponents(
+      row(
         new TextInputBuilder()
           .setCustomId("score")
           .setLabel("Total score (0-20)")
           .setStyle(TextInputStyle.Short)
-          .setPlaceholder("16")
           .setRequired(true)
           .setMaxLength(2),
       ),
-      new ActionRowBuilder().addComponents(
+      row(
         new TextInputBuilder()
           .setCustomId("reason")
-          .setLabel("Short reviewer note")
+          .setLabel("Reviewer note")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(500),
@@ -364,7 +340,7 @@ function scoreModal() {
 
 async function createDemoCategory(interaction) {
   const guild = interaction.guild;
-  const existing = guild.channels.cache.find((c) => c.type === ChannelType.GuildCategory && c.name === CATEGORY_NAME);
+  const existing = guild.channels.cache.find((item) => item.type === ChannelType.GuildCategory && item.name === CATEGORY_NAME);
   if (existing) throw new Error(`A ${CATEGORY_NAME} category already exists. Run /ticket-v2-demo cleanup first.`);
 
   const category = await guild.channels.create({
@@ -372,188 +348,171 @@ async function createDemoCategory(interaction) {
     type: ChannelType.GuildCategory,
     permissionOverwrites: [
       { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-      {
-        id: interaction.user.id,
-        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-      },
-      {
-        id: interaction.client.user.id,
-        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages],
-      },
+      { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+      { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages] },
     ],
-    reason: `Ticket V2 isolated demo requested by ${interaction.user.tag}`,
+    reason: `Ticket V2 demo requested by ${interaction.user.tag}`,
   });
 
-  const channelDefs = [
-    ["📊・test-dashboard", "Live Ticket V2 staff operations command board."],
+  const definitions = [
+    ["📊・test-dashboard", "Ticket V2 staff operations dashboard."],
     ["🛟・support-demo", "Interactive Support Ticket V2 preview."],
-    ["⚔️・carrier-application-demo", "Interactive Carrier Application Ticket V2 preview with exact application linking."],
+    ["⚔️・carrier-application-demo", "Carrier application preview connected to the real Google Form."],
     ["💰・treasury-demo", "Interactive Treasury Ticket V2 preview."],
   ];
   const channels = {};
-  for (const [name, topic] of channelDefs) {
-    channels[name] = await guild.channels.create({
-      name,
-      type: ChannelType.GuildText,
-      parent: category.id,
-      topic,
-      reason: `Ticket V2 isolated demo requested by ${interaction.user.tag}`,
-    });
+  for (const [name, topic] of definitions) {
+    channels[name] = await guild.channels.create({ name, type: ChannelType.GuildText, parent: category.id, topic });
   }
   return { category, channels };
 }
 
 async function destroyDemoCategory(interaction) {
-  const guild = interaction.guild;
-  const category = guild.channels.cache.find((c) => c.type === ChannelType.GuildCategory && c.name === CATEGORY_NAME);
+  const category = interaction.guild.channels.cache.find((item) => item.type === ChannelType.GuildCategory && item.name === CATEGORY_NAME);
   if (!category) return 0;
-  const children = guild.channels.cache.filter((c) => c.parentId === category.id);
-  let deleted = 0;
+  const children = interaction.guild.channels.cache.filter((item) => item.parentId === category.id);
+  let count = 0;
   for (const channel of children.values()) {
     await channel.delete(`Ticket V2 demo cleanup by ${interaction.user.tag}`).catch(() => {});
-    deleted += 1;
+    count += 1;
   }
   await category.delete(`Ticket V2 demo cleanup by ${interaction.user.tag}`).catch(() => {});
-  return deleted;
+  return count;
 }
 
-async function addNoteFromButton(component, state, message, payloadBuilder, dashboardMessage, states) {
-  const modalId = `${component.customId}_modal_${Date.now()}`;
-  await component.showModal(noteModal(modalId, "Add Internal Note"));
-  const submitted = await component.awaitModalSubmit({
-    filter: (i) => i.customId === modalId && i.user.id === component.user.id,
+async function addNote(interaction, state, message, payloadBuilder, dashboard, states) {
+  const modalId = `${interaction.customId}_modal_${Date.now()}`;
+  await interaction.showModal(noteModal(modalId));
+  const submitted = await interaction.awaitModalSubmit({
+    filter: (item) => item.customId === modalId && item.user.id === interaction.user.id,
     time: 120_000,
   }).catch(() => null);
   if (!submitted) return;
   state.notes += 1;
-  state.lastAction = `Internal note added by ${component.user.username}`;
-  await submitted.reply({ content: "✅ Demo internal note stored. Only the note count is shown to the case panel.", flags: MessageFlags.Ephemeral });
+  state.lastAction = `Internal note added by ${submitted.user.username}`;
+  await submitted.reply({ content: "✅ Internal demo note stored.", flags: MessageFlags.Ephemeral });
   await message.edit(payloadBuilder(state, states.requesterId));
-  await dashboardMessage.edit(dashboardPayload(states));
+  await dashboard.edit(dashboardPayload(states));
 }
 
-function installSupportCollector(message, dashboardMessage, states) {
+function installSupportCollector(message, dashboard, states) {
   const collector = message.createMessageComponentCollector({ time: 2 * 60 * 60 * 1000 });
-  collector.on("collect", async (i) => {
-    const s = states.support;
+  collector.on("collect", async (interaction) => {
+    const state = states.support;
     try {
-      if (i.customId === "demo_sup_note") return addNoteFromButton(i, s, message, supportPayload, dashboardMessage, states);
-      if (i.customId === "demo_sup_claim") {
-        s.assigned = i.user.id;
-        s.status = "progress";
-        s.lastAction = `Claimed by ${i.user.username}`;
-      } else if (i.customId === "demo_sup_wait") {
-        s.status = "waiting";
-        s.lastAction = `Waiting on requester set by ${i.user.username}`;
-      } else if (i.customId === "demo_sup_escalate") {
-        s.status = "escalated";
-        s.lastAction = `Escalated by ${i.user.username}`;
-      } else if (i.customId === "demo_sup_resolve") {
-        s.status = "resolved";
-        s.lastAction = `Resolved by ${i.user.username}`;
-      } else if (i.customId === "demo_sup_priority") {
-        s.priority = cyclePriority(s.priority);
-        s.lastAction = `Priority changed to ${s.priority}`;
+      if (interaction.customId === "demo_sup_note") return addNote(interaction, state, message, supportPayload, dashboard, states);
+      if (interaction.customId === "demo_sup_claim") {
+        state.assigned = interaction.user.id;
+        state.status = "progress";
+        state.lastAction = `Claimed by ${interaction.user.username}`;
+      } else if (interaction.customId === "demo_sup_wait") {
+        state.status = "waiting";
+        state.lastAction = `Waiting on requester set by ${interaction.user.username}`;
+      } else if (interaction.customId === "demo_sup_escalate") {
+        state.status = "escalated";
+        state.lastAction = `Escalated by ${interaction.user.username}`;
+      } else if (interaction.customId === "demo_sup_resolve") {
+        state.status = "resolved";
+        state.lastAction = `Resolved by ${interaction.user.username}`;
+      } else if (interaction.customId === "demo_sup_priority") {
+        state.priority = cyclePriority(state.priority);
+        state.lastAction = `Priority changed to ${state.priority}`;
       } else return;
-      await i.update(supportPayload(s, states.requesterId));
-      await dashboardMessage.edit(dashboardPayload(states));
+      await interaction.update(supportPayload(state, states.requesterId));
+      await dashboard.edit(dashboardPayload(states));
     } catch (error) {
-      console.error("[TICKET V2 DEMO SUPPORT]", error);
-      if (!i.replied && !i.deferred) await i.reply({ content: `❌ ${error.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+      console.error("[TICKET V2 SUPPORT]", error);
     }
   });
 }
 
-function installCarrierCollector(message, dashboardMessage, states) {
+function installCarrierCollector(message, dashboard, states) {
   const collector = message.createMessageComponentCollector({ time: 2 * 60 * 60 * 1000 });
-  collector.on("collect", async (i) => {
-    const s = states.carrier;
+  collector.on("collect", async (interaction) => {
+    const state = states.carrier;
     try {
-      if (i.customId === "demo_app_note") return addNoteFromButton(i, s, message, carrierPayload, dashboardMessage, states);
-      if (i.customId === "demo_app_score") {
-        await i.showModal(scoreModal());
-        const submitted = await i.awaitModalSubmit({
-          filter: (m) => m.customId === "demo_app_score_modal" && m.user.id === i.user.id,
+      if (interaction.customId === "demo_app_score") {
+        await interaction.showModal(scoreModal());
+        const submitted = await interaction.awaitModalSubmit({
+          filter: (item) => item.customId === "demo_app_score_modal" && item.user.id === interaction.user.id,
           time: 120_000,
         }).catch(() => null);
         if (!submitted) return;
-        const value = Number(submitted.fields.getTextInputValue("score").trim());
-        if (!Number.isInteger(value) || value < 0 || value > 20) {
+        const score = Number(submitted.fields.getTextInputValue("score").trim());
+        if (!Number.isInteger(score) || score < 0 || score > 20) {
           return submitted.reply({ content: "❌ Enter a whole number from 0 to 20.", flags: MessageFlags.Ephemeral });
         }
-        s.score = value;
-        s.recommendation = value >= 17 ? "Strong Accept" : value >= 14 ? "Accept / Trial" : value >= 11 ? "Interview" : "Normally Deny";
-        s.status = "review";
-        s.assigned = s.assigned || submitted.user.id;
-        s.lastAction = `Scored ${value}/20 by ${submitted.user.username}`;
-        await submitted.reply({ content: `✅ Demo score saved: **${value}/20 • ${s.recommendation}**`, flags: MessageFlags.Ephemeral });
-        await message.edit(carrierPayload(s, states.requesterId));
-        return dashboardMessage.edit(dashboardPayload(states));
+        state.score = score;
+        state.recommendation = score >= 17 ? "Strong Accept" : score >= 14 ? "Accept / Trial" : score >= 11 ? "Interview" : "Normally Deny";
+        state.status = "review";
+        state.assigned = state.assigned || submitted.user.id;
+        state.lastAction = `Scored ${score}/20 by ${submitted.user.username}`;
+        await submitted.reply({ content: `✅ Score saved: **${score}/20 • ${state.recommendation}**`, flags: MessageFlags.Ephemeral });
+        await message.edit(carrierPayload(state, states.requesterId));
+        return dashboard.edit(dashboardPayload(states));
       }
 
-      if (i.customId === "demo_app_claim") {
-        s.assigned = i.user.id;
-        s.status = "review";
-        s.lastAction = `Review taken by ${i.user.username}`;
-      } else if (i.customId === "demo_app_interview") {
-        s.assigned = s.assigned || i.user.id;
-        s.status = "interview";
-        s.lastAction = `Interview stage started by ${i.user.username}`;
-      } else if (i.customId === "demo_app_accept") {
-        s.assigned = s.assigned || i.user.id;
-        s.status = "accepted";
-        s.lastAction = `Accepted by ${i.user.username}`;
-      } else if (i.customId === "demo_app_deny") {
-        s.assigned = s.assigned || i.user.id;
-        s.status = "denied";
-        s.lastAction = `Denied by ${i.user.username}`;
+      if (interaction.customId === "demo_app_claim") {
+        state.assigned = interaction.user.id;
+        state.status = "review";
+        state.lastAction = `Review taken by ${interaction.user.username}`;
+      } else if (interaction.customId === "demo_app_interview") {
+        state.assigned = state.assigned || interaction.user.id;
+        state.status = "interview";
+        state.lastAction = `Interview started by ${interaction.user.username}`;
+      } else if (interaction.customId === "demo_app_accept") {
+        state.assigned = state.assigned || interaction.user.id;
+        state.status = "accepted";
+        state.lastAction = `Accepted by ${interaction.user.username}`;
+      } else if (interaction.customId === "demo_app_deny") {
+        state.assigned = state.assigned || interaction.user.id;
+        state.status = "denied";
+        state.lastAction = `Denied by ${interaction.user.username}`;
       } else return;
-      await i.update(carrierPayload(s, states.requesterId));
-      await dashboardMessage.edit(dashboardPayload(states));
+      await interaction.update(carrierPayload(state, states.requesterId));
+      await dashboard.edit(dashboardPayload(states));
     } catch (error) {
-      console.error("[TICKET V2 DEMO CARRIER]", error);
-      if (!i.replied && !i.deferred) await i.reply({ content: `❌ ${error.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+      console.error("[TICKET V2 CARRIER]", error);
     }
   });
 }
 
-function installTreasuryCollector(message, dashboardMessage, states) {
+function installTreasuryCollector(message, dashboard, states) {
   const collector = message.createMessageComponentCollector({ time: 2 * 60 * 60 * 1000 });
-  collector.on("collect", async (i) => {
-    const s = states.treasury;
+  collector.on("collect", async (interaction) => {
+    const state = states.treasury;
     try {
-      if (i.customId === "demo_tre_note") return addNoteFromButton(i, s, message, treasuryPayload, dashboardMessage, states);
-      if (i.customId === "demo_tre_claim") {
-        s.assigned = i.user.id;
-        s.status = "progress";
-        s.lastAction = `Claimed by ${i.user.username}`;
-      } else if (i.customId === "demo_tre_verify") {
-        s.assigned = s.assigned || i.user.id;
-        s.verified = true;
-        s.status = "progress";
-        s.lastAction = `Item verified by ${i.user.username}`;
-      } else if (i.customId === "demo_tre_proof") {
-        s.assigned = s.assigned || i.user.id;
-        s.proofRequested = true;
-        s.status = "waiting";
-        s.lastAction = `Proof requested by ${i.user.username}`;
-      } else if (i.customId === "demo_tre_approve") {
-        s.assigned = s.assigned || i.user.id;
-        s.status = "approved";
-        s.lastAction = `Approved by ${i.user.username}`;
-      } else if (i.customId === "demo_tre_reject") {
-        s.assigned = s.assigned || i.user.id;
-        s.status = "rejected";
-        s.lastAction = `Rejected by ${i.user.username}`;
-      } else if (i.customId === "demo_tre_priority") {
-        s.priority = cyclePriority(s.priority);
-        s.lastAction = `Priority changed to ${s.priority}`;
+      if (interaction.customId === "demo_tre_note") return addNote(interaction, state, message, treasuryPayload, dashboard, states);
+      if (interaction.customId === "demo_tre_claim") {
+        state.assigned = interaction.user.id;
+        state.status = "progress";
+        state.lastAction = `Claimed by ${interaction.user.username}`;
+      } else if (interaction.customId === "demo_tre_verify") {
+        state.assigned = state.assigned || interaction.user.id;
+        state.verified = true;
+        state.status = "progress";
+        state.lastAction = `Item verified by ${interaction.user.username}`;
+      } else if (interaction.customId === "demo_tre_proof") {
+        state.assigned = state.assigned || interaction.user.id;
+        state.proofRequested = true;
+        state.status = "waiting";
+        state.lastAction = `Proof requested by ${interaction.user.username}`;
+      } else if (interaction.customId === "demo_tre_approve") {
+        state.assigned = state.assigned || interaction.user.id;
+        state.status = "approved";
+        state.lastAction = `Approved by ${interaction.user.username}`;
+      } else if (interaction.customId === "demo_tre_reject") {
+        state.assigned = state.assigned || interaction.user.id;
+        state.status = "rejected";
+        state.lastAction = `Rejected by ${interaction.user.username}`;
+      } else if (interaction.customId === "demo_tre_priority") {
+        state.priority = cyclePriority(state.priority);
+        state.lastAction = `Priority changed to ${state.priority}`;
       } else return;
-      await i.update(treasuryPayload(s, states.requesterId));
-      await dashboardMessage.edit(dashboardPayload(states));
+      await interaction.update(treasuryPayload(state, states.requesterId));
+      await dashboard.edit(dashboardPayload(states));
     } catch (error) {
-      console.error("[TICKET V2 DEMO TREASURY]", error);
-      if (!i.replied && !i.deferred) await i.reply({ content: `❌ ${error.message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+      console.error("[TICKET V2 TREASURY]", error);
     }
   });
 }
@@ -565,38 +524,36 @@ module.exports = {
     .addSubcommand((sub) =>
       sub
         .setName("setup")
-        .setDescription("Create the private interactive Ticket V2 test category")
+        .setDescription("Create the Ticket V2 test connected to the real Carrier application")
         .addStringOption((option) =>
           option
-            .setName("application_url")
-            .setDescription("Exact submitted Carrier application URL to link to APP-TEST-001")
+            .setName("exact_application")
+            .setDescription("Optional exact APP-YYYY-#### Google Doc URL after a test submission")
             .setRequired(false)
         )
     )
-    .addSubcommand((sub) => sub.setName("cleanup").setDescription("Delete the Ticket V2 test category and its demo channels")),
+    .addSubcommand((sub) => sub.setName("cleanup").setDescription("Delete the Ticket V2 test category and demo channels")),
 
   async execute(interaction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    if (!canRun(interaction)) {
-      return interaction.editReply("❌ You do not have permission to run the Ticket V2 demo.");
-    }
+    if (!canRun(interaction)) return interaction.editReply("❌ You do not have permission to run the Ticket V2 demo.");
 
     const action = interaction.options.getSubcommand();
     try {
       if (action === "cleanup") {
         const deleted = await destroyDemoCategory(interaction);
         return interaction.editReply(deleted
-          ? `✅ Removed **${CATEGORY_NAME}** and ${deleted} demo channel${deleted === 1 ? "" : "s"}. No real tickets were touched.`
+          ? `✅ Removed **${CATEGORY_NAME}** and ${deleted} demo channels. No real tickets were touched.`
           : `ℹ️ No **${CATEGORY_NAME}** category exists.`);
       }
 
-      const rawApplicationUrl = interaction.options.getString("application_url");
-      const applicationUrl = rawApplicationUrl ? validHttpUrl(rawApplicationUrl) : null;
-      if (rawApplicationUrl && !applicationUrl) {
-        return interaction.editReply("❌ `application_url` must be a valid http:// or https:// link.");
+      const rawExactUrl = interaction.options.getString("exact_application");
+      const exactApplicationUrl = rawExactUrl ? validHttpUrl(rawExactUrl) : null;
+      if (rawExactUrl && !exactApplicationUrl) {
+        return interaction.editReply("❌ `exact_application` must be a valid http:// or https:// link.");
       }
 
-      const { category, channels } = await createDemoCategory(interaction);
+      const { channels } = await createDemoCategory(interaction);
       const states = {
         guildId: interaction.guildId,
         requesterId: interaction.user.id,
@@ -612,9 +569,8 @@ module.exports = {
           assigned: null,
           score: null,
           recommendation: "Not scored",
-          notes: 0,
-          applicationUrl,
-          lastAction: applicationUrl ? "Application submitted and exact response linked" : "Application submitted",
+          exactApplicationUrl,
+          lastAction: exactApplicationUrl ? "Real Carrier application record linked" : "Real Carrier Google Form connected",
         },
         treasury: { status: "open", assigned: null, priority: "Normal", verified: false, proofRequested: false, notes: 0, lastAction: "Request submitted" },
       };
@@ -624,7 +580,7 @@ module.exports = {
       const carrier = await channels["⚔️・carrier-application-demo"].send(carrierPayload(states.carrier, states.requesterId));
       const treasury = await channels["💰・treasury-demo"].send(treasuryPayload(states.treasury, states.requesterId));
 
-      await dashboard.pin("Ticket V2 demo command board").catch(() => {});
+      await dashboard.pin("Ticket V2 demo dashboard").catch(() => {});
       await support.pin("Ticket V2 Support demo").catch(() => {});
       await carrier.pin("Ticket V2 Carrier application demo").catch(() => {});
       await treasury.pin("Ticket V2 Treasury demo").catch(() => {});
@@ -634,20 +590,18 @@ module.exports = {
       installTreasuryCollector(treasury, dashboard, states);
 
       return interaction.editReply([
-        `✅ Created upgraded isolated **${CATEGORY_NAME}** preview: <#${states.channels.dashboard}>`,
+        `✅ Ticket V2 test rebuilt with the **real Carrier Team Application**: <#${states.channels.dashboard}>`,
         "",
-        `🛟 <#${states.channels.support}>`,
-        `⚔️ <#${states.channels.carrier}>`,
-        `💰 <#${states.channels.treasury}>`,
+        `⚔️ Carrier demo: <#${states.channels.carrier}>`,
+        `📝 Live application: ${CARRIER_APPLICATION.publicUrl}`,
+        `📊 Staff Review Sheet: ${CARRIER_APPLICATION.responseSheetUrl}`,
         "",
-        applicationUrl
-          ? "📄 **APP-TEST-001 is linked to the exact application URL you supplied.** Staff can open it from both the recruitment ticket and the dashboard."
-          : "⚠️ No application URL was supplied, so the demo shows the unlinked state. Recreate it with `application_url` to test the exact-response workflow.",
+        exactApplicationUrl
+          ? "📄 The demo also has an exact submitted application record attached."
+          : "📄 There are currently no Form submissions, so there is no APP-YYYY-#### record to attach yet. After a test submission, the Apps Script creates one automatically.",
         "",
-        "The dashboard and ticket panels update in-place. Nothing is connected to the real Support, Carrier Application or Treasury systems.",
-        "",
-        "When finished: `/ticket-v2-demo cleanup`",
-      ].join("\n"));
+        "Your current real Support, Carrier ticket and Treasury systems are untouched.",
+      ].join("\n").slice(0, 1900));
     } catch (error) {
       console.error("[TICKET V2 DEMO]", error);
       return interaction.editReply(`❌ Ticket V2 demo failed: ${error.message || "Unknown error"}`.slice(0, 1900));
