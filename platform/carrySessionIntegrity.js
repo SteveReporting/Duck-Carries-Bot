@@ -76,7 +76,7 @@ async function prepareServiceStartInteraction(interaction) {
 function requestIdsRememberedForTicket(channelId) {
   const ids = new Set();
   try {
-    for (const row of db.prepare("SELECT request_id FROM carry_ready_checks WHERE ticket_channel = ?").all(String(channelId))) {
+    for (const row of db.prepare("SELECT request_id FROM carry_ready_checks WHERE ticket_channel = ? AND status = 'ready'").all(String(channelId))) {
       if (row.request_id) ids.add(String(row.request_id));
     }
   } catch {}
