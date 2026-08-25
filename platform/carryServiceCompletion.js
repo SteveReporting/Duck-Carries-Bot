@@ -113,6 +113,43 @@ async function addVerifiedTimeToCarrierTotals(supabase, carrierProfileId, minute
   }
 }
 
+async function syncVerifiedTimeToCarryActivity(supabase, requestIds, minutes) {
+  const amount = Math.max(0, Math.floor(Number(minutes || 0)));
+  const ids = [...new Set((requestIds || []).filter(Boolean).map(String))];
+  if (!ids.length || amount <= 0) return { rows: 0, minutes: amount };
+
+  const { data: activityRows, error: loadError } = await supabase
+    .from("carry_activity")
+    .select("id,carry_request_id,service_minutes")
+    .in("carry_request_id", ids);
+  if (loadError) throw new Error(`Could not load carry activity for verified time: ${loadError.message}`);
+  if (!activityRows?.length) throw new Error("No carry_activity rows were created for this completed session.");
+
+  // A grouped carry can contain several requesters, but verified service time is
+  // real wall-clock Carrier time. Store it once for the whole session instead
+  // of once per requester, otherwise the website leaderboard would multiply it.
+  const byRequest = new Map(activityRows.map((row) => [String(row.carry_request_id || ""), row]));
+  const primary = ids.map((id) => byRequest.get(id)).find(Boolean) || activityRows[0];
+  const zeroIds = activityRows.filter((row) => row.id !== primary.id).map((row) => row.id);
+
+  if (zeroIds.length) {
+    const { error: zeroError } = await supabase
+      .from("carry_activity")
+      .update({ service_minutes: 0 })
+      .in("id", zeroIds);
+    if (zeroError) throw new Error(`Could not clear duplicate grouped service time: ${zeroError.message}`);
+  }
+
+  const { error: timeError } = await supabase
+    .from("carry_activity")
+    .update({ service_minutes: amount })
+    .eq("id", primary.id);
+  if (timeError) throw new Error(`Could not save verified service time to carry_activity: ${timeError.message}`);
+
+  console.log(`[CARRY SERVICE] Synced ${amount} verified minute(s) to carry_activity for ${activityRows.length} request row(s).`);
+  return { rows: activityRows.length, minutes: amount };
+}
+
 function completionEmbed(before, resultRows, carrierDiscordId, serviceMinutes, actualRuns) {
   const byId = new Map((resultRows || []).map((row) => [String(row.id), row]));
   const lines = before.map((request) => {
@@ -179,6 +216,8 @@ async function handleVerifiedCompletion(interaction) {
   const { data, error } = await supabase.rpc("bot_complete_carry_session", {
     _channel_id: interaction.channelId,
     _actor_id: profile.id,
+    // Keep the RPC at zero because grouped sessions can create more than one
+    // activity row. The verified wall-clock value is written exactly once below.
     _service_minutes: 0,
   });
   if (error) throw new Error(error.message);
@@ -198,6 +237,12 @@ async function handleVerifiedCompletion(interaction) {
     runsCompleted: actualRuns,
     requestCount: before.length,
   });
+
+  await syncVerifiedTimeToCarryActivity(
+    supabase,
+    before.map((request) => request.id),
+    history.service_minutes,
+  ).catch((timeError) => console.warn("[CARRY SERVICE] Could not sync verified time to carry_activity:", timeError.message));
 
   await addVerifiedTimeToCarrierTotals(supabase, before[0].carrier_id || profile.id, history.service_minutes)
     .catch((timeError) => console.warn("[CARRY SERVICE] Could not sync Carrier total service time:", timeError.message));
@@ -243,4 +288,5 @@ async function handleVerifiedCompletion(interaction) {
 module.exports = {
   COMPLETE_ID,
   handleVerifiedCompletion,
+  syncVerifiedTimeToCarryActivity,
 };
