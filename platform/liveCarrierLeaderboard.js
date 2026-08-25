@@ -236,7 +236,6 @@ async function buildPayload(guild) {
   ];
 
   return {
-    username: BRAND.name,
     embeds: [main, standings],
     components,
     allowedMentions: { parse: [] },
@@ -301,7 +300,7 @@ async function installLiveCarrierLeaderboard(interaction, avatar) {
   const avatarBuffer = await attachmentBuffer(avatar);
   const reason = `Live Carrier leaderboard configured by ${interaction.user.tag}`;
   const webhooks = await channel.fetchWebhooks();
-  let existingMessage = await findExistingLeaderboardMessage(channel);
+  const existingMessage = await findExistingLeaderboardMessage(channel);
   let webhook = existingMessage?.webhookId ? webhooks.get(existingMessage.webhookId) || null : null;
 
   if (!webhook) webhook = await getOrCreateWebhook(channel, avatarBuffer, reason);
@@ -370,7 +369,7 @@ async function refreshAll(client) {
         return false;
       });
       if (!ok) {
-        console.warn(`[LIVE LEADERBOARD] Could not edit the configured message for guild ${state.guild}. Run /carrier-department leaderboard again if the message or webhook was deleted.`);
+        console.warn(`[LIVE LEADERBOARD] Could not edit the configured message for guild ${state.guild}. Run /live-leaderboard again if the message or webhook was deleted.`);
       }
     }
   } finally {
