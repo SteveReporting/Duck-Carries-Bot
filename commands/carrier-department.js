@@ -5,7 +5,10 @@ const {
 } = require("discord.js");
 
 const { setupCarrierDepartment } = require("../ai/carrierDepartment");
-const { ensureCarrierRoleSeparators } = require("../ai/carrierRoleSeparators");
+const {
+    ensureCarrierRoleSeparators,
+    positionCarrierHierarchy,
+} = require("../ai/carrierRoleSeparators");
 
 const ROLE_CHOICES = [
     { name: "Head of Carriers", value: "Head of Carriers" },
@@ -80,21 +83,11 @@ function formatSetupResult(result, separatorResult) {
         `Separator roles created: **${separatorResult?.created?.length || 0}**`,
     ];
 
-    if (result.created_roles.length) {
-        lines.push(`New roles: ${result.created_roles.join(", ")}`);
-    }
-    if (result.created_channels.length) {
-        lines.push(`New channels: ${result.created_channels.join(", ")}`);
-    }
-    if (result.recovered_channels?.length) {
-        lines.push(`Moved into Carrier Team: ${result.recovered_channels.join(", ")}`);
-    }
-    if (result.deleted_duplicate_channels?.length) {
-        lines.push(`Deleted from Carrier Team Tickets: ${result.deleted_duplicate_channels.join(", ")}`);
-    }
-    if (separatorResult?.created?.length) {
-        lines.push(`New separators: ${separatorResult.created.join(", ")}`);
-    }
+    if (result.created_roles.length) lines.push(`New roles: ${result.created_roles.join(", ")}`);
+    if (result.created_channels.length) lines.push(`New channels: ${result.created_channels.join(", ")}`);
+    if (result.recovered_channels?.length) lines.push(`Moved into Carrier Team: ${result.recovered_channels.join(", ")}`);
+    if (result.deleted_duplicate_channels?.length) lines.push(`Deleted from Carrier Team Tickets: ${result.deleted_duplicate_channels.join(", ")}`);
+    if (separatorResult?.created?.length) lines.push(`New separators: ${separatorResult.created.join(", ")}`);
 
     const warnings = [
         ...(result.warnings || []),
@@ -106,7 +99,7 @@ function formatSetupResult(result, separatorResult) {
         if (warnings.length > 8) lines.push(`• +${warnings.length - 8} more warning(s)`);
     }
 
-    lines.push("", "Roles, colours, hierarchy, separators and channel permissions were normalised without using OpenAI credits.");
+    lines.push("", "Colours, separators and channel permissions were normalised. Role hierarchy was NOT moved by setup.");
     return lines.join("\n").slice(0, 1900);
 }
 
@@ -117,12 +110,23 @@ module.exports = {
         .addSubcommand((subcommand) =>
             subcommand
                 .setName("setup")
-                .setDescription("Repair and configure the exact one-category Carrier Department")
+                .setDescription("Repair/configure Carrier channels, permissions, roles and colours without moving hierarchy")
                 .addUserOption((option) =>
                     option
                         .setName("head")
                         .setDescription("Optional: assign the Head of Carriers after setup")
                         .setRequired(false)
+                )
+        )
+        .addSubcommand((subcommand) =>
+            subcommand
+                .setName("hierarchy")
+                .setDescription("Place the complete Carrier role block directly below a role you choose")
+                .addRoleOption((option) =>
+                    option
+                        .setName("below")
+                        .setDescription("The existing role that should sit directly ABOVE Head of Carriers")
+                        .setRequired(true)
                 )
         )
         .addSubcommand((subcommand) =>
@@ -168,6 +172,22 @@ module.exports = {
                 }
 
                 return interaction.editReply({ content: content.slice(0, 1900) });
+            }
+
+            if (subcommand === "hierarchy") {
+                const anchor = interaction.options.getRole("below", true);
+                const result = await positionCarrierHierarchy(interaction, anchor);
+
+                return interaction.editReply({
+                    content: [
+                        "✅ **Carrier hierarchy repaired**",
+                        `Placed the Carrier block directly below **${result.anchor.name}**.`,
+                        `Carrier roles positioned: **${result.moved_roles}**`,
+                        "",
+                        "Unrelated roles were not explicitly moved and keep their relative order.",
+                        "No OpenAI request or AI credits were used.",
+                    ].join("\n"),
+                });
             }
 
             const roleName = interaction.options.getString("role", true);
