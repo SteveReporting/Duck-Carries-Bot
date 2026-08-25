@@ -5,6 +5,7 @@ const {
 } = require("discord.js");
 
 const { setupCarrierDepartment } = require("../ai/carrierDepartment");
+const { ensureCarrierRoleSeparators } = require("../ai/carrierRoleSeparators");
 
 const ROLE_CHOICES = [
     { name: "Head of Carriers", value: "Head of Carriers" },
@@ -67,7 +68,7 @@ async function assignDepartmentRole(interaction, roleName, user) {
     return { member, role };
 }
 
-function formatSetupResult(result) {
+function formatSetupResult(result, separatorResult) {
     const lines = [
         "✅ **Carrier Department setup complete**",
         `Category: **${result.category.name}**`,
@@ -76,6 +77,7 @@ function formatSetupResult(result) {
         `Recovered/moved channels: **${result.recovered_channels?.length || 0}**`,
         `Wrong ticket-category duplicates deleted: **${result.deleted_duplicate_channels?.length || 0}**`,
         `Permission overwrites updated: **${result.permission_overwrites_updated}**`,
+        `Separator roles created: **${separatorResult?.created?.length || 0}**`,
     ];
 
     if (result.created_roles.length) {
@@ -90,13 +92,21 @@ function formatSetupResult(result) {
     if (result.deleted_duplicate_channels?.length) {
         lines.push(`Deleted from Carrier Team Tickets: ${result.deleted_duplicate_channels.join(", ")}`);
     }
-    if (result.warnings?.length) {
-        lines.push("", "⚠️ **Warnings**");
-        for (const warning of result.warnings.slice(0, 8)) lines.push(`• ${warning}`);
-        if (result.warnings.length > 8) lines.push(`• +${result.warnings.length - 8} more warning(s)`);
+    if (separatorResult?.created?.length) {
+        lines.push(`New separators: ${separatorResult.created.join(", ")}`);
     }
 
-    lines.push("", "Roles, colours, hierarchy and channel permissions were normalised without using OpenAI credits.");
+    const warnings = [
+        ...(result.warnings || []),
+        ...(separatorResult?.warnings || []),
+    ];
+    if (warnings.length) {
+        lines.push("", "⚠️ **Warnings**");
+        for (const warning of warnings.slice(0, 8)) lines.push(`• ${warning}`);
+        if (warnings.length > 8) lines.push(`• +${warnings.length - 8} more warning(s)`);
+    }
+
+    lines.push("", "Roles, colours, hierarchy, separators and channel permissions were normalised without using OpenAI credits.");
     return lines.join("\n").slice(0, 1900);
 }
 
@@ -148,9 +158,10 @@ module.exports = {
         try {
             if (subcommand === "setup") {
                 const result = await setupCarrierDepartment(interaction);
+                const separatorResult = await ensureCarrierRoleSeparators(interaction);
                 const head = interaction.options.getUser("head");
 
-                let content = formatSetupResult(result);
+                let content = formatSetupResult(result, separatorResult);
                 if (head) {
                     const assigned = await assignDepartmentRole(interaction, "Head of Carriers", head);
                     content += `\n\n🍻 **Head of Carriers:** ${assigned.member}`;
