@@ -7,7 +7,7 @@ const {
 const TOOL_DEFINITION = {
     type: "function",
     name: "setup_carrier_department",
-    description: "Idempotently configure the exact existing Carrier Team category for The Carry Tavern. Reuses existing department channels, removes only accidental duplicate department channels from Carrier Team Tickets when a correct copy exists, creates only genuinely missing Carrier management/trainee roles or department channels, applies the approved access matrix, preserves unrelated roles/channels/overwrites, keeps existing Carrier progression roles unchanged, and never creates another category.",
+    description: "Idempotently configure the exact existing Carrier Team category for The Carry Tavern. Reuses existing department channels, removes only accidental duplicate department channels from Carrier Team Tickets when a correct copy exists, creates only genuinely missing Carrier management/trainee roles or department channels, applies the approved access matrix, preserves unrelated roles/channels/overwrites, keeps existing Carrier progression roles unchanged, never creates another category, and never changes role hierarchy positions.",
     strict: true,
     parameters: {
         type: "object",
@@ -147,50 +147,12 @@ async function setupCarrierDepartment(interaction) {
         "Master of the Tap",
     ];
     const progressionRoles = progressionNames.map((name) => findRole(guild, name)).filter(Boolean);
-
-    const bottomToTop = [
-        "Carrier Mentor",
-        "Carrier Supervisor",
-        "Training Lead",
-        "Recruitment Lead",
-        "Deputy Head of Carriers",
-        "Head of Carriers",
-    ];
-
-    for (let pass = 0; pass < 2; pass += 1) {
-        const hierarchyAnchor = Math.max(
-            carrierTeam.position,
-            ...progressionRoles.map((role) => role.position),
-        );
-        const botHighest = botMember.roles.highest.position;
-
-        if (botHighest <= hierarchyAnchor + bottomToTop.length) {
-            if (pass === 0) {
-                warnings.push("Bot role is not high enough to place all Carrier management roles above the Carrier progression roles. Colours and permissions were still applied; hierarchy may need a manual drag.");
-            }
-            break;
-        }
-
-        for (let index = 0; index < bottomToTop.length; index += 1) {
-            const role = roles[bottomToTop[index]];
-            if (!role || botMember.roles.highest.comparePositionTo(role) <= 0) continue;
-            const freshAnchor = Math.max(
-                carrierTeam.position,
-                ...progressionRoles.map((progressionRole) => progressionRole.position),
-            );
-            const target = freshAnchor + index + 1;
-            await role.setPosition(target, { reason }).catch((error) => {
-                warnings.push(`Could not position ${role.name}: ${error.message}`);
-            });
-        }
-    }
-
     const trainee = roles["Trainee Carrier"];
-    if (trainee && botMember.roles.highest.comparePositionTo(trainee) > 0) {
-        const refreshedCarrierTeam = findRole(guild, "Carrier Team");
-        const target = Math.max(1, refreshedCarrierTeam.position - 1);
-        await trainee.setPosition(target, { reason }).catch((error) => warnings.push(`Could not position Trainee Carrier: ${error.message}`));
-    }
+
+    // Role hierarchy is intentionally untouched here. The old setup anchored
+    // Carrier roles to Carrier Team and could drag the entire block to the
+    // bottom of the server. Hierarchy is now changed only by the explicit
+    // /carrier-department hierarchy command with an owner-selected anchor.
 
     const channelSpecs = [
         { name: "carrier-training", display: "🎓・carrier-training", topic: "Training, onboarding and practical guidance for Trainee Carriers." },
@@ -386,19 +348,9 @@ async function setupCarrierDepartment(interaction) {
         deleted_duplicate_channels: deletedDuplicateChannels,
         permission_overwrites_updated: updatedPermissions.length,
         preserved_progression_roles: progressionRoles.map((role) => role.name),
-        role_hierarchy: [
-            "Head of Carriers",
-            "Deputy Head of Carriers",
-            "Recruitment Lead",
-            "Training Lead",
-            "Carrier Supervisor",
-            "Carrier Mentor",
-            ...progressionRoles.map((role) => role.name),
-            "Carrier Team",
-            "Trainee Carrier",
-        ],
+        hierarchy_changed: false,
         warnings,
-        note: "Targeted the exact CARRIER TEAM category only. Existing correct department channels were reused. Only same-name accidental department duplicates inside Carrier Team Tickets were eligible for deletion; duck-request ticket channels and unrelated content were untouched.",
+        note: "Targeted the exact CARRIER TEAM category only. Existing correct department channels were reused. Only same-name accidental department duplicates inside Carrier Team Tickets were eligible for deletion; duck-request ticket channels and unrelated content were untouched. Role hierarchy positions were not changed.",
     };
 }
 
