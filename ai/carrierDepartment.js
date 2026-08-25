@@ -7,7 +7,7 @@ const {
 const TOOL_DEFINITION = {
     type: "function",
     name: "setup_carrier_department",
-    description: "Idempotently configure the existing single Carrier Team category for The Carry Tavern. Creates only missing Carrier management/trainee roles and missing Carrier channels, applies the approved private/public access matrix, preserves unrelated roles/channels/overwrites, keeps existing Carrier progression roles unchanged, and never creates another category. Prefer this tool for the standard Carrier Department restructure instead of many individual Discord tool calls.",
+    description: "Idempotently configure the exact existing Carrier Team category for The Carry Tavern. Reuses existing department channels, removes only accidental duplicate department channels from Carrier Team Tickets when a correct copy exists, creates only genuinely missing Carrier management/trainee roles or department channels, applies the approved access matrix, preserves unrelated roles/channels/overwrites, keeps existing Carrier progression roles unchanged, and never creates another category.",
     strict: true,
     parameters: {
         type: "object",
@@ -30,7 +30,14 @@ function findRole(guild, name) {
 function findCategory(guild) {
     return guild.channels.cache.find((channel) =>
         channel.type === ChannelType.GuildCategory &&
-        normalizeName(channel.name).includes("carrierteam")
+        normalizeName(channel.name) === "carrierteam"
+    ) || null;
+}
+
+function findTicketCategory(guild) {
+    return guild.channels.cache.find((channel) =>
+        channel.type === ChannelType.GuildCategory &&
+        normalizeName(channel.name) === "carrierteamtickets"
     ) || null;
 }
 
@@ -43,15 +50,25 @@ function findChannelInCategory(guild, categoryId, name) {
     ) || null;
 }
 
+function findChannelsInCategory(guild, categoryId, name) {
+    const wanted = normalizeName(name);
+    return guild.channels.cache.filter((channel) =>
+        channel.parentId === categoryId &&
+        channel.type === ChannelType.GuildText &&
+        normalizeName(channel.name) === wanted
+    );
+}
+
 async function setupCarrierDepartment(interaction) {
     const guild = interaction.guild;
     const reason = `Carrier Department setup requested by ${interaction.user.tag}`;
     const category = findCategory(guild);
 
     if (!category) {
-        throw new Error("Could not find the existing Carrier Team category. No new category was created.");
+        throw new Error("Could not find the exact CARRIER TEAM category. No category or channels were created.");
     }
 
+    const ticketCategory = findTicketCategory(guild);
     const botMember = guild.members.me;
     if (!botMember?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
         throw new Error("The bot needs Manage Roles to create/configure Carrier management roles.");
@@ -62,6 +79,8 @@ async function setupCarrierDepartment(interaction) {
 
     const createdRoles = [];
     const createdChannels = [];
+    const recoveredChannels = [];
+    const deletedDuplicateChannels = [];
     const updatedPermissions = [];
     const warnings = [];
 
@@ -89,27 +108,28 @@ async function setupCarrierDepartment(interaction) {
                 reason,
             });
             createdRoles.push(role.name);
-        } else {
-            if (botMember.roles.highest.comparePositionTo(role) > 0) {
-                const dangerous = [
-                    PermissionFlagsBits.Administrator,
-                    PermissionFlagsBits.ManageGuild,
-                    PermissionFlagsBits.ManageRoles,
-                    PermissionFlagsBits.ManageChannels,
-                    PermissionFlagsBits.ManageWebhooks,
-                    PermissionFlagsBits.KickMembers,
-                    PermissionFlagsBits.BanMembers,
-                ];
-                const next = new PermissionsBitField(role.permissions.bitfield);
-                for (const flag of dangerous) next.remove(flag);
-                await role.setPermissions(next, reason).catch((error) => warnings.push(`${role.name} permissions: ${error.message}`));
-                await role.setColor(spec.color, reason).catch((error) => warnings.push(`${role.name} colour: ${error.message}`));
-                await role.setHoist(false, reason).catch(() => {});
-                await role.setMentionable(false, reason).catch(() => {});
-            } else {
-                warnings.push(`${role.name} is above the bot and could not be normalised.`);
-            }
         }
+
+        if (botMember.roles.highest.comparePositionTo(role) > 0) {
+            const dangerous = [
+                PermissionFlagsBits.Administrator,
+                PermissionFlagsBits.ManageGuild,
+                PermissionFlagsBits.ManageRoles,
+                PermissionFlagsBits.ManageChannels,
+                PermissionFlagsBits.ManageWebhooks,
+                PermissionFlagsBits.KickMembers,
+                PermissionFlagsBits.BanMembers,
+            ];
+            const next = new PermissionsBitField(role.permissions.bitfield);
+            for (const flag of dangerous) next.remove(flag);
+            await role.setPermissions(next, reason).catch((error) => warnings.push(`${role.name} permissions: ${error.message}`));
+            await role.setColor(spec.color, reason).catch((error) => warnings.push(`${role.name} colour: ${error.message}`));
+            await role.setHoist(false, reason).catch(() => {});
+            await role.setMentionable(false, reason).catch(() => {});
+        } else {
+            warnings.push(`${role.name} is above the bot and could not be fully normalised.`);
+        }
+
         roles[spec.name] = role;
     }
 
@@ -127,33 +147,47 @@ async function setupCarrierDepartment(interaction) {
         "Master of the Tap",
     ];
     const progressionRoles = progressionNames.map((name) => findRole(guild, name)).filter(Boolean);
-    const hierarchyAnchor = Math.max(carrierTeam.position, ...progressionRoles.map((role) => role.position));
-    const botHighest = botMember.roles.highest.position;
 
-    if (botHighest > hierarchyAnchor + 6) {
-        const bottomToTop = [
-            "Carrier Mentor",
-            "Carrier Supervisor",
-            "Training Lead",
-            "Recruitment Lead",
-            "Deputy Head of Carriers",
-            "Head of Carriers",
-        ];
+    const bottomToTop = [
+        "Carrier Mentor",
+        "Carrier Supervisor",
+        "Training Lead",
+        "Recruitment Lead",
+        "Deputy Head of Carriers",
+        "Head of Carriers",
+    ];
+
+    for (let pass = 0; pass < 2; pass += 1) {
+        const hierarchyAnchor = Math.max(
+            carrierTeam.position,
+            ...progressionRoles.map((role) => role.position),
+        );
+        const botHighest = botMember.roles.highest.position;
+
+        if (botHighest <= hierarchyAnchor + bottomToTop.length) {
+            if (pass === 0) {
+                warnings.push("Bot role is not high enough to place all Carrier management roles above the Carrier progression roles. Colours and permissions were still applied; hierarchy may need a manual drag.");
+            }
+            break;
+        }
+
         for (let index = 0; index < bottomToTop.length; index += 1) {
             const role = roles[bottomToTop[index]];
-            if (role && botMember.roles.highest.comparePositionTo(role) > 0) {
-                await role.setPosition(hierarchyAnchor + index + 1, { reason }).catch((error) => {
-                    warnings.push(`Could not position ${role.name}: ${error.message}`);
-                });
-            }
+            if (!role || botMember.roles.highest.comparePositionTo(role) <= 0) continue;
+            const freshAnchor = Math.max(
+                carrierTeam.position,
+                ...progressionRoles.map((progressionRole) => progressionRole.position),
+            );
+            const target = freshAnchor + index + 1;
+            await role.setPosition(target, { reason }).catch((error) => {
+                warnings.push(`Could not position ${role.name}: ${error.message}`);
+            });
         }
-    } else {
-        warnings.push("Bot role is not high enough to place all Carrier management roles above the existing Carrier progression roles. Roles were created safely but hierarchy may need a manual drag.");
     }
 
-    const refreshedCarrierTeam = findRole(guild, "Carrier Team");
     const trainee = roles["Trainee Carrier"];
-    if (trainee && refreshedCarrierTeam && botMember.roles.highest.comparePositionTo(trainee) > 0) {
+    if (trainee && botMember.roles.highest.comparePositionTo(trainee) > 0) {
+        const refreshedCarrierTeam = findRole(guild, "Carrier Team");
         const target = Math.max(1, refreshedCarrierTeam.position - 1);
         await trainee.setPosition(target, { reason }).catch((error) => warnings.push(`Could not position Trainee Carrier: ${error.message}`));
     }
@@ -182,6 +216,16 @@ async function setupCarrierDepartment(interaction) {
 
     for (const spec of channelSpecs) {
         let channel = findChannelInCategory(guild, category.id, spec.name);
+
+        if (!channel && ticketCategory) {
+            const misplaced = findChannelsInCategory(guild, ticketCategory.id, spec.name).first() || null;
+            if (misplaced) {
+                await misplaced.setParent(category.id, { lockPermissions: false, reason });
+                channel = misplaced;
+                recoveredChannels.push(channel.name);
+            }
+        }
+
         if (!channel) {
             channel = await guild.channels.create({
                 name: spec.display,
@@ -192,7 +236,21 @@ async function setupCarrierDepartment(interaction) {
             });
             createdChannels.push(channel.name);
         }
+
         channels[spec.name] = channel;
+
+        if (ticketCategory) {
+            const duplicates = findChannelsInCategory(guild, ticketCategory.id, spec.name);
+            for (const duplicate of duplicates.values()) {
+                try {
+                    const duplicateName = duplicate.name;
+                    await duplicate.delete(`Removing accidental Carrier Department duplicate created in Carrier Team Tickets by ${interaction.user.tag}`);
+                    deletedDuplicateChannels.push(duplicateName);
+                } catch (error) {
+                    warnings.push(`Could not delete duplicate ${duplicate.name} from ${ticketCategory.name}: ${error.message}`);
+                }
+            }
+        }
     }
 
     const everyone = guild.roles.everyone;
@@ -236,7 +294,6 @@ async function setupCarrierDepartment(interaction) {
     };
     const hidden = { ViewChannel: false };
 
-    // Existing public/member-facing channels.
     await overwrite("become-a-carrier", everyone, { ViewChannel: true, SendMessages: false, ReadMessageHistory: true });
     await overwrite("become-a-carrier", head, manager);
     await overwrite("become-a-carrier", deputy, manager);
@@ -272,7 +329,6 @@ async function setupCarrierDepartment(interaction) {
     await overwrite("carrier-leaderboard", carrierTeam, readOnly);
     await overwrite("carrier-leaderboard", trainee, hidden);
 
-    // Training channel.
     await overwrite("carrier-training", everyone, hidden);
     await overwrite("carrier-training", carrierTeam, hidden);
     await overwrite("carrier-training", trainee, standard);
@@ -283,7 +339,6 @@ async function setupCarrierDepartment(interaction) {
     await overwrite("carrier-training", deputy, manager);
     await overwrite("carrier-training", head, manager);
 
-    // Training reports.
     await overwrite("training-reports", everyone, hidden);
     await overwrite("training-reports", carrierTeam, hidden);
     await overwrite("training-reports", trainee, hidden);
@@ -294,7 +349,6 @@ async function setupCarrierDepartment(interaction) {
     await overwrite("training-reports", deputy, manager);
     await overwrite("training-reports", head, manager);
 
-    // General management.
     await overwrite("carrier-management", everyone, hidden);
     await overwrite("carrier-management", carrierTeam, hidden);
     await overwrite("carrier-management", trainee, hidden);
@@ -303,7 +357,6 @@ async function setupCarrierDepartment(interaction) {
     await overwrite("carrier-management", deputy, manager);
     await overwrite("carrier-management", head, manager);
 
-    // Application reviews.
     await overwrite("application-reviews", everyone, hidden);
     await overwrite("application-reviews", carrierTeam, hidden);
     await overwrite("application-reviews", trainee, hidden);
@@ -314,7 +367,6 @@ async function setupCarrierDepartment(interaction) {
     await overwrite("application-reviews", deputy, manager);
     await overwrite("application-reviews", head, manager);
 
-    // Carrier reports.
     await overwrite("carrier-reports", everyone, hidden);
     await overwrite("carrier-reports", carrierTeam, hidden);
     await overwrite("carrier-reports", trainee, hidden);
@@ -327,12 +379,26 @@ async function setupCarrierDepartment(interaction) {
 
     return {
         category: { id: category.id, name: category.name },
+        ticket_category: ticketCategory ? { id: ticketCategory.id, name: ticketCategory.name } : null,
         created_roles: createdRoles,
         created_channels: createdChannels,
+        recovered_channels: recoveredChannels,
+        deleted_duplicate_channels: deletedDuplicateChannels,
         permission_overwrites_updated: updatedPermissions.length,
         preserved_progression_roles: progressionRoles.map((role) => role.name),
+        role_hierarchy: [
+            "Head of Carriers",
+            "Deputy Head of Carriers",
+            "Recruitment Lead",
+            "Training Lead",
+            "Carrier Supervisor",
+            "Carrier Mentor",
+            ...progressionRoles.map((role) => role.name),
+            "Carrier Team",
+            "Trainee Carrier",
+        ],
         warnings,
-        note: "No new category was created. Existing unrelated roles, channels and permission overwrites were preserved.",
+        note: "Targeted the exact CARRIER TEAM category only. Existing correct department channels were reused. Only same-name accidental department duplicates inside Carrier Team Tickets were eligible for deletion; duck-request ticket channels and unrelated content were untouched.",
     };
 }
 
