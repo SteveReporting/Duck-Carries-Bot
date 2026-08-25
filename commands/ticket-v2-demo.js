@@ -16,7 +16,6 @@ const CATEGORY_NAME = "🧪 TICKET V2 TEST";
 const GOLD = 0xF2B705;
 const BLUE = 0x3498DB;
 const GREEN = 0x2ECC71;
-const RED = 0xE74C3C;
 
 const STATUS = {
   new: "🆕 New",
@@ -46,6 +45,12 @@ function button(id, label, style, emoji) {
   return item;
 }
 
+function linkButton(label, url, emoji) {
+  const item = new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel(label).setURL(url);
+  if (emoji) item.setEmoji(emoji);
+  return item;
+}
+
 function row(...items) {
   return new ActionRowBuilder().addComponents(...items);
 }
@@ -64,6 +69,20 @@ function cyclePriority(current) {
   return "Normal";
 }
 
+function validHttpUrl(value) {
+  if (!value) return null;
+  try {
+    const url = new URL(String(value).trim());
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function channelUrl(guildId, channelId) {
+  return `https://discord.com/channels/${guildId}/${channelId}`;
+}
+
 function baseEmbed(title, subtitle, colour = GOLD) {
   return new EmbedBuilder()
     .setColor(colour)
@@ -77,7 +96,7 @@ function baseEmbed(title, subtitle, colour = GOLD) {
 function supportPayload(state, requesterId) {
   const embed = baseEmbed(
     "🛟 SUPPORT CASE • SUP-TEST-001",
-    "A cleaner live case panel for Support. The important state stays here instead of being repeated in bot messages.",
+    "Live Support case file. Staff actions update this panel in-place instead of filling the ticket with bot status messages.",
     BLUE,
   ).addFields(
     { name: "👤 Requester", value: `<@${requesterId}>`, inline: true },
@@ -91,11 +110,7 @@ function supportPayload(state, requesterId) {
       value: "My verified Traveller role disappeared after I changed my Roblox account. I can still use Discord normally but the carry request system says I am not verified.",
       inline: false,
     },
-    {
-      name: "🕒 Activity",
-      value: `Opened **just now** • Last action: **${state.lastAction}**`,
-      inline: false,
-    },
+    { name: "🕒 Latest Activity", value: `**${state.lastAction}**`, inline: false },
   );
 
   return {
@@ -117,9 +132,13 @@ function supportPayload(state, requesterId) {
 
 function carrierPayload(state, requesterId) {
   const score = state.score == null ? "`Not Scored`" : `**${state.score}/20** • ${state.recommendation}`;
+  const applicationDisplay = state.applicationUrl
+    ? `[Open exact submitted application](${state.applicationUrl})`
+    : "`No application response linked in this demo`";
+
   const embed = baseEmbed(
     "⚔️ CARRIER APPLICATION • APP-TEST-001",
-    "Carrier applications keep their own recruitment identity and workflow instead of looking like generic support tickets.",
+    "Recruitment case file. The applicant's exact submitted application stays permanently linked to this ticket for reviewers.",
     GOLD,
   ).addFields(
     { name: "👤 Applicant", value: `<@${requesterId}>`, inline: true },
@@ -128,13 +147,14 @@ function carrierPayload(state, requesterId) {
     { name: "🎮 Roblox", value: "`DemoRobloxUser`", inline: true },
     { name: "⚔️ DQ Level", value: "**200**", inline: true },
     { name: "📊 Application Score", value: score, inline: true },
+    { name: "📄 Submitted Application", value: applicationDisplay, inline: false },
     {
       name: "🏰 Carry Capability",
       value: "Volcanic Chambers NM HC • Enchanted Forest INS HC • Group carries",
       inline: false,
     },
     {
-      name: "📝 Applicant Statement",
+      name: "📝 Applicant Snapshot",
       value: "I want to join Carrier Team because I enjoy helping players progress and I can be active most evenings. I understand all official Tavern carries are free.",
       inline: false,
     },
@@ -144,6 +164,9 @@ function carrierPayload(state, requesterId) {
       inline: false,
     },
   );
+
+  const secondRow = [button("demo_app_note", "Internal Note", ButtonStyle.Secondary, "📝")];
+  if (state.applicationUrl) secondRow.push(linkButton("View Full Application", state.applicationUrl, "📄"));
 
   return {
     embeds: [embed],
@@ -155,7 +178,7 @@ function carrierPayload(state, requesterId) {
         button("demo_app_accept", "Accept", ButtonStyle.Success, "✅"),
         button("demo_app_deny", "Deny", ButtonStyle.Danger, "❌"),
       ),
-      row(button("demo_app_note", "Internal Note", ButtonStyle.Secondary, "📝")),
+      row(...secondRow),
     ],
   };
 }
@@ -163,7 +186,7 @@ function carrierPayload(state, requesterId) {
 function treasuryPayload(state, requesterId) {
   const embed = baseEmbed(
     "💰 TREASURY REQUEST • TRE-TEST-001",
-    "Treasury keeps a transaction-style interface with verification and proof states rather than inheriting Support controls.",
+    "Treasury keeps a transaction-style case file with ownership, proof and approval states.",
     GREEN,
   ).addFields(
     { name: "👤 Requester", value: `<@${requesterId}>`, inline: true },
@@ -175,16 +198,8 @@ function treasuryPayload(state, requesterId) {
     { name: "💵 Requested Price", value: "**25B Gold**", inline: true },
     { name: "📎 Proof", value: state.proofRequested ? "🟣 **Requested from user**" : "`Not requested`", inline: true },
     { name: "📝 Internal Notes", value: `**${state.notes}** private note${state.notes === 1 ? "" : "s"}`, inline: true },
-    {
-      name: "📋 Request",
-      value: "Requester wants the item reviewed and approved for a Marketplace listing.",
-      inline: false,
-    },
-    {
-      name: "🕒 Activity",
-      value: `Last action: **${state.lastAction}**`,
-      inline: false,
-    },
+    { name: "📋 Request", value: "Requester wants the item reviewed and approved for a Marketplace listing.", inline: false },
+    { name: "🕒 Latest Activity", value: `**${state.lastAction}**`, inline: false },
   );
 
   return {
@@ -205,59 +220,105 @@ function treasuryPayload(state, requesterId) {
   };
 }
 
+function statusIsClosed(status) {
+  return ["resolved", "accepted", "approved", "denied", "rejected"].includes(status);
+}
+
+function attentionLine(label, id, state, channelId) {
+  const critical = state.status === "escalated" || state.priority === "Urgent";
+  const waiting = state.status === "waiting";
+  const unassigned = !state.assigned && !statusIsClosed(state.status);
+  const marker = critical ? "🔴" : waiting ? "🟣" : unassigned ? "🟡" : "🔵";
+  return `${marker} **${id}** • <#${channelId}>\n${STATUS[state.status]} • ${who(state.assigned)}${state.priority ? ` • ${priorityLabel(state.priority)}` : ""}`;
+}
+
 function dashboardPayload(states) {
-  const supportAttention = ["open", "new", "escalated"].includes(states.support.status) ? "🔴 Needs attention" : "🟢 Handled";
-  const appAttention = ["review", "interview"].includes(states.carrier.status) ? "🟡 Recruitment active" : "🟢 Decision made";
-  const treAttention = ["open", "new", "waiting", "escalated"].includes(states.treasury.status) ? "🟠 Treasury active" : "🟢 Decision made";
+  const all = [states.support, states.carrier, states.treasury];
+  const open = all.filter((s) => !statusIsClosed(s.status)).length;
+  const unassigned = all.filter((s) => !statusIsClosed(s.status) && !s.assigned).length;
+  const waiting = all.filter((s) => s.status === "waiting").length;
+  const escalated = all.filter((s) => s.status === "escalated").length;
+  const urgent = all.filter((s) => s.priority === "Urgent" && !statusIsClosed(s.status)).length;
+  const notes = all.reduce((sum, s) => sum + Number(s.notes || 0), 0);
 
-  const embed = baseEmbed(
-    "📊 DEPARTMENT TICKET DASHBOARD",
-    "This is the staff-side view. It summarizes the actual ticket channels so staff do not have to open every case just to understand workload.",
-    GOLD,
-  ).addFields(
-    {
-      name: "🛟 Support",
-      value: [
-        `**${STATUS[states.support.status]}**`,
-        `Assigned: ${who(states.support.assigned)}`,
-        `Priority: ${priorityLabel(states.support.priority)}`,
-        supportAttention,
-      ].join("\n"),
-      inline: true,
-    },
-    {
-      name: "⚔️ Carrier Recruitment",
-      value: [
-        `**${STATUS[states.carrier.status]}**`,
-        `Reviewer: ${who(states.carrier.assigned)}`,
-        `Score: ${states.carrier.score == null ? "Not scored" : `${states.carrier.score}/20`}`,
-        appAttention,
-      ].join("\n"),
-      inline: true,
-    },
-    {
-      name: "💰 Treasury",
-      value: [
-        `**${STATUS[states.treasury.status]}**`,
-        `Treasurer: ${who(states.treasury.assigned)}`,
-        `Item: ${states.treasury.verified ? "Verified" : "Not verified"}`,
-        treAttention,
-      ].join("\n"),
-      inline: true,
-    },
-    {
-      name: "📥 Staff Snapshot",
-      value: [
-        `Unassigned: **${[states.support, states.carrier, states.treasury].filter((s) => !s.assigned).length}**`,
-        `Escalated: **${[states.support, states.carrier, states.treasury].filter((s) => s.status === "escalated").length}**`,
-        `Waiting on User: **${[states.support, states.carrier, states.treasury].filter((s) => s.status === "waiting").length}**`,
-        `Internal Notes: **${states.support.notes + states.carrier.notes + states.treasury.notes}**`,
-      ].join(" • "),
-      inline: false,
-    },
-  );
+  const command = new EmbedBuilder()
+    .setColor(GOLD)
+    .setAuthor({ name: "THE CARRY TAVERN • STAFF OPERATIONS" })
+    .setTitle("📊 TICKET OPERATIONS COMMAND BOARD")
+    .setDescription([
+      "`● LIVE DEMO`  One glance should tell staff what needs attention without opening every ticket.",
+      "",
+      `**${open}** active case${open === 1 ? "" : "s"} across Support, Carrier Recruitment and Treasury.`,
+    ].join("\n"))
+    .addFields(
+      { name: "📥 Active", value: `## ${open}`, inline: true },
+      { name: "👤 Unassigned", value: `## ${unassigned}`, inline: true },
+      { name: "🟣 Waiting User", value: `## ${waiting}`, inline: true },
+      { name: "🟠 Escalated", value: `## ${escalated}`, inline: true },
+      { name: "🔴 Urgent", value: `## ${urgent}`, inline: true },
+      { name: "📝 Private Notes", value: `## ${notes}`, inline: true },
+    )
+    .setFooter({ text: "🧪 TEST MODE • Dashboard edits in-place with every ticket action" })
+    .setTimestamp();
 
-  return { embeds: [embed], components: [] };
+  const queue = new EmbedBuilder()
+    .setColor(0xD49A00)
+    .setTitle("🚨 NEEDS ATTENTION")
+    .setDescription([
+      attentionLine("Support", "SUP-TEST-001", states.support, states.channels.support),
+      "",
+      attentionLine("Carrier", "APP-TEST-001", states.carrier, states.channels.carrier),
+      "",
+      attentionLine("Treasury", "TRE-TEST-001", states.treasury, states.channels.treasury),
+    ].join("\n"))
+    .addFields(
+      {
+        name: "🛟 SUPPORT OPERATIONS",
+        value: [
+          `**Case:** SUP-TEST-001`,
+          `**Status:** ${STATUS[states.support.status]}`,
+          `**Owner:** ${who(states.support.assigned)}`,
+          `**Priority:** ${priorityLabel(states.support.priority)}`,
+          `**Last Action:** ${states.support.lastAction}`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "⚔️ RECRUITMENT PIPELINE",
+        value: [
+          `**Application:** APP-TEST-001`,
+          `**Stage:** ${STATUS[states.carrier.status]}`,
+          `**Reviewer:** ${who(states.carrier.assigned)}`,
+          `**Score:** ${states.carrier.score == null ? "Not scored" : `${states.carrier.score}/20 • ${states.carrier.recommendation}`}`,
+          `**Submission:** ${states.carrier.applicationUrl ? "✅ Exact response linked" : "⚠️ No response URL linked"}`,
+          `**Last Action:** ${states.carrier.lastAction}`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "💰 TREASURY OPERATIONS",
+        value: [
+          `**Case:** TRE-TEST-001`,
+          `**Status:** ${STATUS[states.treasury.status]}`,
+          `**Treasurer:** ${who(states.treasury.assigned)}`,
+          `**Priority:** ${priorityLabel(states.treasury.priority)}`,
+          `**Ownership:** ${states.treasury.verified ? "✅ Verified" : "🟡 Pending"}`,
+          `**Last Action:** ${states.treasury.lastAction}`,
+        ].join("\n"),
+        inline: false,
+      },
+    );
+
+  const links = [
+    linkButton("Support Case", channelUrl(states.guildId, states.channels.support), "🛟"),
+    linkButton("Carrier Application", channelUrl(states.guildId, states.channels.carrier), "⚔️"),
+    linkButton("Treasury Case", channelUrl(states.guildId, states.channels.treasury), "💰"),
+  ];
+  if (states.carrier.applicationUrl) {
+    links.splice(2, 0, linkButton("View Exact Application", states.carrier.applicationUrl, "📄"));
+  }
+
+  return { embeds: [command, queue], components: [row(...links)] };
 }
 
 function noteModal(customId, title) {
@@ -324,9 +385,9 @@ async function createDemoCategory(interaction) {
   });
 
   const channelDefs = [
-    ["📊・test-dashboard", "Live staff overview of the three isolated Ticket V2 demos."],
+    ["📊・test-dashboard", "Live Ticket V2 staff operations command board."],
     ["🛟・support-demo", "Interactive Support Ticket V2 preview."],
-    ["⚔️・carrier-application-demo", "Interactive Carrier Application Ticket V2 preview."],
+    ["⚔️・carrier-application-demo", "Interactive Carrier Application Ticket V2 preview with exact application linking."],
     ["💰・treasury-demo", "Interactive Treasury Ticket V2 preview."],
   ];
   const channels = {};
@@ -366,7 +427,7 @@ async function addNoteFromButton(component, state, message, payloadBuilder, dash
   if (!submitted) return;
   state.notes += 1;
   state.lastAction = `Internal note added by ${component.user.username}`;
-  await submitted.reply({ content: "✅ Demo internal note stored. Only the note count is shown in the case panel.", flags: MessageFlags.Ephemeral });
+  await submitted.reply({ content: "✅ Demo internal note stored. Only the note count is shown to the case panel.", flags: MessageFlags.Ephemeral });
   await message.edit(payloadBuilder(state, states.requesterId));
   await dashboardMessage.edit(dashboardPayload(states));
 }
@@ -376,9 +437,7 @@ function installSupportCollector(message, dashboardMessage, states) {
   collector.on("collect", async (i) => {
     const s = states.support;
     try {
-      if (i.customId === "demo_sup_note") {
-        return addNoteFromButton(i, s, message, supportPayload, dashboardMessage, states);
-      }
+      if (i.customId === "demo_sup_note") return addNoteFromButton(i, s, message, supportPayload, dashboardMessage, states);
       if (i.customId === "demo_sup_claim") {
         s.assigned = i.user.id;
         s.status = "progress";
@@ -396,7 +455,6 @@ function installSupportCollector(message, dashboardMessage, states) {
         s.priority = cyclePriority(s.priority);
         s.lastAction = `Priority changed to ${s.priority}`;
       } else return;
-
       await i.update(supportPayload(s, states.requesterId));
       await dashboardMessage.edit(dashboardPayload(states));
     } catch (error) {
@@ -411,9 +469,7 @@ function installCarrierCollector(message, dashboardMessage, states) {
   collector.on("collect", async (i) => {
     const s = states.carrier;
     try {
-      if (i.customId === "demo_app_note") {
-        return addNoteFromButton(i, s, message, carrierPayload, dashboardMessage, states);
-      }
+      if (i.customId === "demo_app_note") return addNoteFromButton(i, s, message, carrierPayload, dashboardMessage, states);
       if (i.customId === "demo_app_score") {
         await i.showModal(scoreModal());
         const submitted = await i.awaitModalSubmit({
@@ -428,6 +484,7 @@ function installCarrierCollector(message, dashboardMessage, states) {
         s.score = value;
         s.recommendation = value >= 17 ? "Strong Accept" : value >= 14 ? "Accept / Trial" : value >= 11 ? "Interview" : "Normally Deny";
         s.status = "review";
+        s.assigned = s.assigned || submitted.user.id;
         s.lastAction = `Scored ${value}/20 by ${submitted.user.username}`;
         await submitted.reply({ content: `✅ Demo score saved: **${value}/20 • ${s.recommendation}**`, flags: MessageFlags.Ephemeral });
         await message.edit(carrierPayload(s, states.requesterId));
@@ -439,16 +496,18 @@ function installCarrierCollector(message, dashboardMessage, states) {
         s.status = "review";
         s.lastAction = `Review taken by ${i.user.username}`;
       } else if (i.customId === "demo_app_interview") {
+        s.assigned = s.assigned || i.user.id;
         s.status = "interview";
         s.lastAction = `Interview stage started by ${i.user.username}`;
       } else if (i.customId === "demo_app_accept") {
+        s.assigned = s.assigned || i.user.id;
         s.status = "accepted";
         s.lastAction = `Accepted by ${i.user.username}`;
       } else if (i.customId === "demo_app_deny") {
+        s.assigned = s.assigned || i.user.id;
         s.status = "denied";
         s.lastAction = `Denied by ${i.user.username}`;
       } else return;
-
       await i.update(carrierPayload(s, states.requesterId));
       await dashboardMessage.edit(dashboardPayload(states));
     } catch (error) {
@@ -463,32 +522,33 @@ function installTreasuryCollector(message, dashboardMessage, states) {
   collector.on("collect", async (i) => {
     const s = states.treasury;
     try {
-      if (i.customId === "demo_tre_note") {
-        return addNoteFromButton(i, s, message, treasuryPayload, dashboardMessage, states);
-      }
+      if (i.customId === "demo_tre_note") return addNoteFromButton(i, s, message, treasuryPayload, dashboardMessage, states);
       if (i.customId === "demo_tre_claim") {
         s.assigned = i.user.id;
         s.status = "progress";
         s.lastAction = `Claimed by ${i.user.username}`;
       } else if (i.customId === "demo_tre_verify") {
+        s.assigned = s.assigned || i.user.id;
         s.verified = true;
         s.status = "progress";
         s.lastAction = `Item verified by ${i.user.username}`;
       } else if (i.customId === "demo_tre_proof") {
+        s.assigned = s.assigned || i.user.id;
         s.proofRequested = true;
         s.status = "waiting";
         s.lastAction = `Proof requested by ${i.user.username}`;
       } else if (i.customId === "demo_tre_approve") {
+        s.assigned = s.assigned || i.user.id;
         s.status = "approved";
         s.lastAction = `Approved by ${i.user.username}`;
       } else if (i.customId === "demo_tre_reject") {
+        s.assigned = s.assigned || i.user.id;
         s.status = "rejected";
         s.lastAction = `Rejected by ${i.user.username}`;
       } else if (i.customId === "demo_tre_priority") {
         s.priority = cyclePriority(s.priority);
         s.lastAction = `Priority changed to ${s.priority}`;
       } else return;
-
       await i.update(treasuryPayload(s, states.requesterId));
       await dashboardMessage.edit(dashboardPayload(states));
     } catch (error) {
@@ -502,7 +562,17 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName("ticket-v2-demo")
     .setDescription("Create or remove an isolated interactive Ticket System V2 preview")
-    .addSubcommand((sub) => sub.setName("setup").setDescription("Create the private interactive Ticket V2 test category"))
+    .addSubcommand((sub) =>
+      sub
+        .setName("setup")
+        .setDescription("Create the private interactive Ticket V2 test category")
+        .addStringOption((option) =>
+          option
+            .setName("application_url")
+            .setDescription("Exact submitted Carrier application URL to link to APP-TEST-001")
+            .setRequired(false)
+        )
+    )
     .addSubcommand((sub) => sub.setName("cleanup").setDescription("Delete the Ticket V2 test category and its demo channels")),
 
   async execute(interaction) {
@@ -520,11 +590,32 @@ module.exports = {
           : `ℹ️ No **${CATEGORY_NAME}** category exists.`);
       }
 
+      const rawApplicationUrl = interaction.options.getString("application_url");
+      const applicationUrl = rawApplicationUrl ? validHttpUrl(rawApplicationUrl) : null;
+      if (rawApplicationUrl && !applicationUrl) {
+        return interaction.editReply("❌ `application_url` must be a valid http:// or https:// link.");
+      }
+
       const { category, channels } = await createDemoCategory(interaction);
       const states = {
+        guildId: interaction.guildId,
         requesterId: interaction.user.id,
+        channels: {
+          dashboard: channels["📊・test-dashboard"].id,
+          support: channels["🛟・support-demo"].id,
+          carrier: channels["⚔️・carrier-application-demo"].id,
+          treasury: channels["💰・treasury-demo"].id,
+        },
         support: { status: "open", assigned: null, priority: "Normal", notes: 0, lastAction: "Ticket created" },
-        carrier: { status: "review", assigned: null, score: null, recommendation: "Not scored", notes: 0, lastAction: "Application submitted" },
+        carrier: {
+          status: "review",
+          assigned: null,
+          score: null,
+          recommendation: "Not scored",
+          notes: 0,
+          applicationUrl,
+          lastAction: applicationUrl ? "Application submitted and exact response linked" : "Application submitted",
+        },
         treasury: { status: "open", assigned: null, priority: "Normal", verified: false, proofRequested: false, notes: 0, lastAction: "Request submitted" },
       };
 
@@ -533,7 +624,7 @@ module.exports = {
       const carrier = await channels["⚔️・carrier-application-demo"].send(carrierPayload(states.carrier, states.requesterId));
       const treasury = await channels["💰・treasury-demo"].send(treasuryPayload(states.treasury, states.requesterId));
 
-      await dashboard.pin("Ticket V2 demo dashboard").catch(() => {});
+      await dashboard.pin("Ticket V2 demo command board").catch(() => {});
       await support.pin("Ticket V2 Support demo").catch(() => {});
       await carrier.pin("Ticket V2 Carrier application demo").catch(() => {});
       await treasury.pin("Ticket V2 Treasury demo").catch(() => {});
@@ -543,14 +634,17 @@ module.exports = {
       installTreasuryCollector(treasury, dashboard, states);
 
       return interaction.editReply([
-        `✅ Created isolated **${CATEGORY_NAME}** preview: <#${channels["📊・test-dashboard"].id}>`,
+        `✅ Created upgraded isolated **${CATEGORY_NAME}** preview: <#${states.channels.dashboard}>`,
         "",
-        `🛟 <#${channels["🛟・support-demo"].id}>`,
-        `⚔️ <#${channels["⚔️・carrier-application-demo"].id}>`,
-        `💰 <#${channels["💰・treasury-demo"].id}>`,
+        `🛟 <#${states.channels.support}>`,
+        `⚔️ <#${states.channels.carrier}>`,
+        `💰 <#${states.channels.treasury}>`,
         "",
-        "Click the controls in each demo. The ticket panel and dashboard update in-place.",
-        "Nothing is connected to your real Support, Carrier Application or Treasury ticket systems.",
+        applicationUrl
+          ? "📄 **APP-TEST-001 is linked to the exact application URL you supplied.** Staff can open it from both the recruitment ticket and the dashboard."
+          : "⚠️ No application URL was supplied, so the demo shows the unlinked state. Recreate it with `application_url` to test the exact-response workflow.",
+        "",
+        "The dashboard and ticket panels update in-place. Nothing is connected to the real Support, Carrier Application or Treasury systems.",
         "",
         "When finished: `/ticket-v2-demo cleanup`",
       ].join("\n"));
