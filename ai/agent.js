@@ -1,11 +1,13 @@
 const { TOOL_DEFINITIONS, READ_ONLY_TOOLS, executeTool } = require("./discordTools");
+const { TOOL_DEFINITION: CARRIER_DEPARTMENT_TOOL, setupCarrierDepartment } = require("./carrierDepartment");
 
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/responses";
 const OPENAI_TIMEOUT_MS = 60000;
 const TOOL_TIMEOUT_MS = 25000;
+const CARRIER_SETUP_TIMEOUT_MS = 180000;
 
 function toolsForMode(mode) {
-    if (mode === "fix") return TOOL_DEFINITIONS;
+    if (mode === "fix") return [...TOOL_DEFINITIONS, CARRIER_DEPARTMENT_TOOL];
     return TOOL_DEFINITIONS.filter((tool) => READ_ONLY_TOOLS.has(tool.name));
 }
 
@@ -20,7 +22,10 @@ function buildInstructions(interaction, mode) {
         "In AUDIT mode, inspect the server and report concrete problems and recommended fixes without changing anything.",
         "In FIX mode, you may make the requested non-destructive changes with the provided tools.",
         "In FIX mode, requested role colour, hierarchy position, hoist, mentionability, safe guild permission and channel access changes are allowed when the tools support them.",
-        "Before changing role hierarchy, colours or permissions, inspect get_roles first so you use current role IDs, positions and settings.",
+        "For the standard Carry Tavern Carrier Department restructure, prefer setup_carrier_department. It performs the approved one-category role/channel/permission setup idempotently in one action and is safer and cheaper than dozens of individual edits.",
+        "When individual tools are required, batch independent tool calls in the same response instead of doing one tool call per round.",
+        "Inspect the required server state once, perform all independent safe changes together, refresh IDs only when newly created objects require it, and verify once at the end. Do not repeatedly re-read unchanged state.",
+        "Before changing role hierarchy, colours or permissions with individual tools, inspect get_roles first so you use current role IDs, positions and settings.",
         "When moving roles, preserve unrelated role order and never move a role to or above the bot's highest role.",
         "Never claim a change succeeded unless the tool result confirms it.",
         "Never attempt deletion, kicking, banning, token access, credential access, mass DMs, granting Administrator, granting Manage Server, granting Manage Roles, or bypassing Discord permission hierarchy.",
@@ -115,10 +120,37 @@ function getModel() {
     return configured;
 }
 
+function getMaxToolRounds() {
+    const configured = Number(process.env.AI_MAX_TOOL_ROUNDS);
+
+    // Never allow an old host setting such as AI_MAX_TOOL_ROUNDS=3 to cripple
+    // multi-step fixes. 20 is the safe minimum, while 30 remains a hard ceiling.
+    if (!Number.isFinite(configured)) return 20;
+    return Math.max(20, Math.min(Math.floor(configured), 30));
+}
+
+async function executeAgentTool(interaction, call, mode) {
+    const args = parseToolArguments(call);
+
+    if (call.name === "setup_carrier_department") {
+        return withTimeout(
+            setupCarrierDepartment(interaction, args),
+            CARRIER_SETUP_TIMEOUT_MS,
+            "Carrier Department setup"
+        );
+    }
+
+    return withTimeout(
+        executeTool(interaction, call.name, args, mode),
+        TOOL_TIMEOUT_MS,
+        `Tool ${call.name}`
+    );
+}
+
 async function runDiscordAgent({ interaction, mode, prompt }) {
     const tools = toolsForMode(mode);
     const model = getModel();
-    const maxToolRounds = Math.max(1, Math.min(Number(process.env.AI_MAX_TOOL_ROUNDS) || 20, 20));
+    const maxToolRounds = getMaxToolRounds();
 
     console.log(`[AI AGENT] Model: ${model}`);
     console.log(`[AI AGENT] Max rounds: ${maxToolRounds}`);
@@ -147,12 +179,7 @@ async function runDiscordAgent({ interaction, mode, prompt }) {
             let output;
 
             try {
-                const args = parseToolArguments(call);
-                const result = await withTimeout(
-                    executeTool(interaction, call.name, args, mode),
-                    TOOL_TIMEOUT_MS,
-                    `Tool ${call.name}`
-                );
+                const result = await executeAgentTool(interaction, call, mode);
                 output = { ok: true, result };
             } catch (error) {
                 console.warn(`[AI TOOL] ${call.name} failed: ${error.message}`);
@@ -177,7 +204,19 @@ async function runDiscordAgent({ interaction, mode, prompt }) {
         });
     }
 
-    throw new Error(`AI stopped after ${maxToolRounds} tool rounds to prevent an uncontrolled action loop.`);
+    // Do not turn a long but otherwise successful job into a Discord error.
+    // Force one final text-only response that reports what completed and what remains.
+    const finalResponse = await createResponse({
+        model,
+        instructions: buildInstructions(interaction, mode),
+        tools,
+        tool_choice: "none",
+        previous_response_id: response.id,
+        input: "The tool-round budget is exhausted. Do not call any more tools. Give a concise completion report of confirmed changes and clearly list anything that still remains.",
+        max_output_tokens: 1200,
+    });
+
+    return extractOutputText(finalResponse) || `Reached the ${maxToolRounds}-round safety limit. Check the confirmed tool results before making any further changes.`;
 }
 
 module.exports = { runDiscordAgent };
