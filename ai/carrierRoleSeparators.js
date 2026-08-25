@@ -12,6 +12,23 @@ const OBSOLETE_SEPARATOR_NAMES = [
     "━━━ 📈 LEVELS ━━━",
 ];
 
+const HOISTED_CARRIER_ROLES = [
+    "Head of Carriers",
+    "Deputy Head of Carriers",
+    "Recruitment Lead",
+    "Training Lead",
+    "Carrier Supervisor",
+    "Carrier Mentor",
+    "Master of the Tap",
+    "Brewmaster",
+    "Tapmaster",
+    "Caskkeeper",
+    "Bartender",
+    "Barback",
+    "Carrier Team",
+    "Trainee Carrier",
+];
+
 const VISUAL_ORDER = [
     "Head of Carriers",
     "Deputy Head of Carriers",
@@ -74,6 +91,7 @@ async function ensureCarrierRoleSeparators(interaction) {
 
     const created = [];
     const deletedObsolete = [];
+    const hoistedRoles = [];
     const warnings = [];
 
     for (const obsoleteName of OBSOLETE_SEPARATOR_NAMES) {
@@ -117,18 +135,39 @@ async function ensureCarrierRoleSeparators(interaction) {
         }
     }
 
+    // Display every real Carrier management/progression/access role separately
+    // in Discord's member list. Separator roles remain non-hoisted.
+    for (const roleName of HOISTED_CARRIER_ROLES) {
+        const role = findRole(guild, roleName);
+        if (!role) continue;
+        if (botMember.roles.highest.comparePositionTo(role) <= 0) {
+            warnings.push(`${role.name} is above the bot and its member-list display setting could not be changed.`);
+            continue;
+        }
+        try {
+            if (!role.hoist) await role.setHoist(true, reason);
+            hoistedRoles.push(role.name);
+        } catch (error) {
+            warnings.push(`Could not enable member-list display for ${role.name}: ${error.message}`);
+        }
+    }
+
     // Only the Additional Roles separator is auto-positioned. The misc roles
     // themselves are never moved. Put the separator one slot above the highest
     // detected level/ping role so it visually labels the whole misc section.
     const additional = findRole(guild, "━━━ ➕ ADDITIONAL ROLES ━━━");
     const miscRoles = detectMiscRoleObjects(guild);
+    let additionalPositioned = false;
     if (additional && miscRoles.length && botMember.roles.highest.comparePositionTo(additional) > 0) {
         const highestMisc = miscRoles[0];
         const target = highestMisc.position + 1;
         if (target < botMember.roles.highest.position) {
-            await additional.setPosition(target, { reason }).catch((error) => {
+            try {
+                await additional.setPosition(target, { reason });
+                additionalPositioned = true;
+            } catch (error) {
                 warnings.push(`Could not place Additional Roles above ${highestMisc.name}: ${error.message}`);
-            });
+            }
         } else {
             warnings.push(`Additional Roles could not be placed above ${highestMisc.name} because that position is too close to or above the bot role.`);
         }
@@ -137,11 +176,12 @@ async function ensureCarrierRoleSeparators(interaction) {
     return {
         created,
         deleted_obsolete: deletedObsolete,
+        hoisted_roles: hoistedRoles,
         separators: SEPARATOR_SPECS.map((spec) => spec.name),
         visual_order: VISUAL_ORDER,
         hierarchy_changed: false,
         detected_misc_roles: detectMiscRoles(guild),
-        additional_separator_positioned: Boolean(additional && miscRoles.length),
+        additional_separator_positioned: additionalPositioned,
         warnings,
     };
 }
