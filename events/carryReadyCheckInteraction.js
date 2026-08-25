@@ -1,9 +1,11 @@
 const { handleReadyCheckInteraction } = require("../platform/carryReadyCheck");
+const { prepareReadyCheckInteraction } = require("../platform/carrySessionIntegrity");
 
 module.exports = {
   name: "interactionCreate",
   async execute(interaction) {
     try {
+      await prepareReadyCheckInteraction(interaction);
       await handleReadyCheckInteraction(interaction);
     } catch (error) {
       console.error("[CARRY READY CHECK]", error);
