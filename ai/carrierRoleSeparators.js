@@ -4,6 +4,9 @@ const SEPARATOR_SPECS = [
     { key: "leadership", name: "━━━ 🍺 TAVERN LEADERSHIP ━━━" },
     { key: "management", name: "━━━ 🛡️ CARRIER MANAGEMENT ━━━" },
     { key: "progression", name: "━━━ 🏆 CARRIER PROGRESSION ━━━" },
+    { key: "pings", name: "━━━ 🔔 PINGS ━━━" },
+    { key: "levels", name: "━━━ 📈 LEVELS ━━━" },
+    { key: "additional", name: "━━━ ➕ ADDITIONAL ROLES ━━━" },
 ];
 
 const VISUAL_ORDER = [
@@ -39,13 +42,30 @@ function findRole(guild, name) {
     ) || null;
 }
 
+function detectGlobalRoleGroups(guild) {
+    const roles = [...guild.roles.cache.values()]
+        .filter((role) => role.id !== guild.id && !role.managed);
+
+    const levelRoles = roles
+        .filter((role) => /^\s*(?:[^a-z0-9]*\s*)?lvl\s*\d+/i.test(role.name))
+        .sort((a, b) => b.position - a.position)
+        .map((role) => role.name);
+
+    const pingRoles = roles
+        .filter((role) => /\bping\b/i.test(role.name))
+        .sort((a, b) => b.position - a.position)
+        .map((role) => role.name);
+
+    return { levelRoles, pingRoles };
+}
+
 async function ensureCarrierRoleSeparators(interaction) {
     const guild = interaction.guild;
     const botMember = guild.members.me;
-    const reason = `Carrier role separators requested by ${interaction.user.tag}`;
+    const reason = `Carrier/server role separators requested by ${interaction.user.tag}`;
 
     if (!botMember?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
-        throw new Error("The bot needs Manage Roles to create Carrier separators.");
+        throw new Error("The bot needs Manage Roles to create role separators.");
     }
 
     const created = [];
@@ -75,14 +95,19 @@ async function ensureCarrierRoleSeparators(interaction) {
         }
     }
 
-    // IMPORTANT: setup deliberately does not move any roles. Role hierarchy is
-    // repaired only by the explicit anchored hierarchy command, so a normal
-    // /carrier-department setup can never drag unrelated or Carrier roles down.
+    const detected = detectGlobalRoleGroups(guild);
+
+    // IMPORTANT: setup deliberately does not move any roles. Carrier hierarchy
+    // is repaired only by the explicit anchored hierarchy command. Global ping,
+    // level and additional-role separators are created/normalised only so the
+    // server owner can place them exactly where desired without the bot guessing.
     return {
         created,
         separators: SEPARATOR_SPECS.map((spec) => spec.name),
         visual_order: VISUAL_ORDER,
         hierarchy_changed: false,
+        detected_ping_roles: detected.pingRoles,
+        detected_level_roles: detected.levelRoles,
         warnings,
     };
 }
@@ -149,4 +174,9 @@ async function positionCarrierHierarchy(interaction, anchorRole) {
     };
 }
 
-module.exports = { ensureCarrierRoleSeparators, positionCarrierHierarchy, VISUAL_ORDER };
+module.exports = {
+    ensureCarrierRoleSeparators,
+    positionCarrierHierarchy,
+    detectGlobalRoleGroups,
+    VISUAL_ORDER,
+};
