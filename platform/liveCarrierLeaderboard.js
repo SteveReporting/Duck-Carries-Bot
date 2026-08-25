@@ -17,7 +17,7 @@ const BRAND = {
 
 const SERVICE_TIME_RESET_AT = Date.parse("2026-08-24T03:53:00+01:00");
 const REFRESH_MS = 60_000;
-const WEBSITE_URL = "https://carry-tavern-official.lovable.app";
+const WEBSITE_URL = "https://carry-tavern.davidtennyson846.workers.dev/leaderboard";
 
 // Preserved verified service-time totals from before the service-time reset.
 // These are added once to post-reset verified sessions so Discord stays aligned
