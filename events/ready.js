@@ -7,6 +7,7 @@ const { startWebsiteCarryActions } = require("../platform/webCarryActions");
 const { startCarryCleanup } = require("../platform/carryCleanup");
 const { startLiveCarrierLeaderboard } = require("../platform/liveCarrierLeaderboard");
 const { ensureCarrierDepartmentStartup } = require("../platform/carrierDepartmentStartup");
+const { startCarrierSeparatorMembership } = require("../platform/carrierSeparatorMembership");
 
 function configuredCarrierRoles() {
   return [
@@ -76,6 +77,8 @@ module.exports = {
     for (const warning of departmentStartup.warnings || []) {
       console.warn(`[CARRIER DEPARTMENT] ${warning}`);
     }
+
+    startCarrierSeparatorMembership(client);
 
     await validateRoleConfiguration(client).catch((error) => {
       console.warn("[ROLE CHECK] Validation failed:", error.message);
