@@ -3,7 +3,7 @@ const {
     SlashCommandBuilder,
 } = require("discord.js");
 
-const { runBotRepairAgent } = require("../ai/botRepairAgent");
+const { runCodeRepairAgent } = require("../ai/codeRepairAgent");
 
 function splitMessage(text) {
     const value = String(text || "Repair finished.");
@@ -21,8 +21,10 @@ async function sendAudit(interaction, issue, result) {
         "🛠️ **Bot Repair Command**",
         `**Administrator:** ${interaction.user.tag} (${interaction.user.id})`,
         `**Issue:** ${String(issue).slice(0, 700)}`,
-        `**Result:** ${String(result.text || "No report").slice(0, 800)}`,
-        result.restartRequested ? `**Restart:** Requested — ${String(result.restartReason || "no reason supplied").slice(0, 250)}` : "**Restart:** Not requested",
+        `**Result:** ${String(result.text || "No report").slice(0, 650)}`,
+        result.changedFiles?.length ? `**Files changed:** ${result.changedFiles.join(", ").slice(0, 350)}` : "**Files changed:** None",
+        result.commitSha ? `**Commit:** ${String(result.commitSha).slice(0, 12)}${result.pushed ? " (pushed to main)" : " (local only)"}` : "**Commit:** None",
+        result.restartRequested ? `**Restart:** Requested — ${String(result.restartReason || "no reason supplied").slice(0, 200)}` : "**Restart:** Not requested",
     ].join("\n");
 
     await channel.send({ content: content.slice(0, 1900) }).catch(() => {});
@@ -31,7 +33,7 @@ async function sendAudit(interaction, issue, result) {
 module.exports = {
     data: new SlashCommandBuilder()
         .setName("botfix")
-        .setDescription("Diagnose and safely repair a Carry Tavern bot problem")
+        .setDescription("Diagnose and repair Carry Tavern bot problems, including code fixes")
         .setDMPermission(false)
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addStringOption((option) =>
@@ -54,12 +56,12 @@ module.exports = {
 
         await interaction.deferReply({ ephemeral: true });
         await interaction.editReply({
-            content: "🛠️ **Emergency bot repair started.** I’m checking the live bot, recent errors and safe recovery options.",
+            content: "🛠️ **Emergency bot repair started.** I’m checking the live bot, logs and source code. If I confirm a code defect, I can patch it, validate it and push the fix to `main`.",
         });
 
         let result;
         try {
-            result = await runBotRepairAgent({
+            result = await runCodeRepairAgent({
                 interaction,
                 client: interaction.client,
                 issue,
@@ -72,11 +74,14 @@ module.exports = {
         }
 
         const chunks = splitMessage(result.text);
+        const deployLine = result.commitSha
+            ? `\n\n🧩 **Code commit:** \`${String(result.commitSha).slice(0, 12)}\` — ${result.pushed ? "pushed to `main`." : "created locally but was not pushed."}`
+            : "";
         const restartLine = result.restartRequested
-            ? "\n\n🔄 **A clean PM2 restart was requested.** The bot will restart after this report is sent."
+            ? "\n🔄 **A clean PM2 restart was requested.** The bot will restart after this report is sent."
             : "";
 
-        const first = `${chunks.shift() || "Repair finished."}${restartLine}`.slice(0, 1950);
+        const first = `${chunks.shift() || "Repair finished."}${deployLine}${restartLine}`.slice(0, 1950);
         await interaction.editReply({ content: first });
 
         for (const chunk of chunks) {
