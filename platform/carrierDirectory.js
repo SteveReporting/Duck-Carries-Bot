@@ -1,6 +1,8 @@
 const { getSupabase } = require("../marketplace/supabase");
 
 const DEFAULT_CARRIER_TEAM_ROLE_ID = "1538643501737058404";
+const MEMBER_FETCH_COOLDOWN_MS = 15 * 60 * 1000;
+const lastMemberFetchAt = new Map();
 
 function firstEnvironment(...keys) {
   for (const key of keys) {
@@ -77,8 +79,6 @@ async function resolvedCarrierRoles(guild) {
   for (const [rankName, configuredId] of configuredCarrierRankRoles()) {
     let role = configuredId ? guild.roles.cache.get(String(configuredId)) : null;
 
-    // IDs from env are authoritative. The exact-name fallback keeps access working
-    // on older deployments where a rank ID has not yet been copied into env.
     if (!role && !configuredId) {
       role = guild.roles.cache.find((candidate) => candidate.name.toLowerCase() === rankName.toLowerCase()) || null;
     }
@@ -107,12 +107,27 @@ function carrierRoleDetails(member, carrierRoles) {
     .map((role) => ({ name: role.name, id: role.id }));
 }
 
+async function maybeRefreshMemberCache(guild) {
+  const now = Date.now();
+  const last = lastMemberFetchAt.get(guild.id) || 0;
+  if (now - last < MEMBER_FETCH_COOLDOWN_MS && guild.members.cache.size > 1) return;
+
+  try {
+    await guild.members.fetch();
+    lastMemberFetchAt.set(guild.id, Date.now());
+  } catch (error) {
+    // Discord can rate-limit full opcode 8 member requests. The directory can safely
+    // continue from the existing gateway cache and role-change events instead.
+    console.warn(`[CARRIER DIRECTORY] Full member refresh skipped: ${error.message}`);
+  }
+}
+
 async function syncCarrierDirectory(client) {
   const guildId = process.env.GUILD_ID;
   if (!guildId) return;
 
   const guild = await client.guilds.fetch(guildId);
-  await guild.members.fetch();
+  await maybeRefreshMemberCache(guild);
 
   const carrierRoles = await resolvedCarrierRoles(guild);
   if (!carrierRoles.length) {
