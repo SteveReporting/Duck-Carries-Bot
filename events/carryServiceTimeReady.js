@@ -1,7 +1,7 @@
 const { startCarryServiceMonitor } = require("../platform/carryServiceTime");
 
 module.exports = {
-  name: "ready",
+  name: "clientReady",
   once: true,
   execute(client) {
     startCarryServiceMonitor(client);
