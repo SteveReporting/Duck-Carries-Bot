@@ -19,6 +19,7 @@ const STAFF_ROLE_NAMES = new Set([
   "carriermentor",
 ]);
 
+// These are permanent Carrier Department channels, never applicant tickets.
 const PERMANENT_CHANNEL_NAMES = new Set([
   "becomeacarrier",
   "applicationreviews",
@@ -27,6 +28,14 @@ const PERMANENT_CHANNEL_NAMES = new Set([
   "carriertraining",
   "training",
   "carrierlogs",
+  "carrierchat",
+  "carriercommands",
+  "carrierdirectory",
+  "carrierleaderboard",
+  "carrierresources",
+  "carrierguides",
+  "carrierinfo",
+  "carrierrules",
 ]);
 
 function normalize(value) {
@@ -35,29 +44,110 @@ function normalize(value) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
-function looksLikeLegacyApplicationTicket(channel) {
-  if (!channel || channel.type !== ChannelType.GuildText) return false;
+function hasMemberSpecificOverwrite(channel) {
+  return Boolean(
+    channel?.permissionOverwrites?.cache?.some((overwrite) => Number(overwrite.type) === 1),
+  );
+}
 
-  const channelName = normalize(channel.name);
-  if (!channelName || PERMANENT_CHANNEL_NAMES.has(channelName)) return false;
-
-  const parentName = normalize(channel.parent?.name || "");
-  const parentLooksRelevant =
+function parentLooksLikeCarrierRecruitment(channel) {
+  const parentName = normalize(channel?.parent?.name || "");
+  return Boolean(
     parentName.includes("carrierteam") ||
     parentName.includes("carrierapplication") ||
     parentName.includes("carrierrecruitment") ||
     parentName.includes("applications") ||
-    parentName.includes("recruitment");
+    parentName.includes("recruitment") ||
+    parentName.includes("applicant")
+  );
+}
 
-  const channelLooksLikeTicket =
+function nameLooksLikeApplicationTicket(channel) {
+  const channelName = normalize(channel?.name || "");
+  return Boolean(
+    channelName.includes("carrierapplication") ||
     channelName.includes("application") ||
     channelName.includes("applicant") ||
     channelName.includes("interview") ||
     channelName.startsWith("carrierapp") ||
     channelName.startsWith("app") ||
-    channelName.startsWith("ticket");
+    channelName.startsWith("ticket")
+  );
+}
 
-  return parentLooksRelevant && channelLooksLikeTicket;
+function topicLooksLikeApplicationTicket(channel) {
+  const topic = normalize(channel?.topic || "");
+  return Boolean(
+    topic.includes("carrierapplication") ||
+    topic.includes("carrierteamapplication") ||
+    topic.includes("applicationticket") ||
+    topic.includes("applicant") ||
+    topic.includes("carrierrecruitment") ||
+    topic.includes("interview")
+  );
+}
+
+function messageText(message) {
+  const parts = [message?.content || ""];
+
+  for (const embed of message?.embeds || []) {
+    parts.push(embed.title || "", embed.description || "", embed.footer?.text || "");
+    for (const field of embed.fields || []) {
+      parts.push(field.name || "", field.value || "");
+    }
+  }
+
+  return normalize(parts.join(" "));
+}
+
+function historyLooksLikeCarrierApplication(messages) {
+  if (!messages) return false;
+
+  const combined = [...messages.values()]
+    .map(messageText)
+    .join("");
+
+  return Boolean(
+    combined.includes("carrierteamapplication") ||
+    combined.includes("carrierapplication") ||
+    combined.includes("applyforcarrier") ||
+    combined.includes("applyingforcarrier") ||
+    combined.includes("carrierapplicant") ||
+    combined.includes("carrierrecruitment") ||
+    combined.includes("whywouldyouliketobeacarrier") ||
+    combined.includes("whydoyouwanttobeacarrier") ||
+    combined.includes("carrierapplicationticket")
+  );
+}
+
+async function looksLikeLegacyApplicationTicket(channel) {
+  if (!channel || channel.type !== ChannelType.GuildText) return false;
+
+  const channelName = normalize(channel.name);
+  if (!channelName || PERMANENT_CHANNEL_NAMES.has(channelName)) return false;
+
+  const memberSpecific = hasMemberSpecificOverwrite(channel);
+  const parentRelevant = parentLooksLikeCarrierRecruitment(channel);
+  const nameRelevant = nameLooksLikeApplicationTicket(channel);
+  const topicRelevant = topicLooksLikeApplicationTicket(channel);
+
+  // Normal legacy layouts: applicant/user-named private channels inside a Carrier
+  // recruitment category, or explicitly named application/interview ticket channels.
+  if ((parentRelevant && memberSpecific) ||
+      (nameRelevant && (parentRelevant || memberSpecific)) ||
+      (topicRelevant && (parentRelevant || memberSpecific))) {
+    return true;
+  }
+
+  // Older ticket bots often named channels only after the applicant, and sometimes
+  // moved them into generic ticket categories. For private/member-specific channels,
+  // inspect recent ticket content for unmistakable Carrier application language.
+  if (memberSpecific && channel.isTextBased?.()) {
+    const messages = await channel.messages.fetch({ limit: 35 }).catch(() => null);
+    if (historyLooksLikeCarrierApplication(messages)) return true;
+  }
+
+  return false;
 }
 
 function closeRow(disabled = false) {
@@ -116,7 +206,7 @@ async function handleCarrierApplicationTicketClose(interaction) {
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  if (!looksLikeLegacyApplicationTicket(interaction.channel)) {
+  if (!(await looksLikeLegacyApplicationTicket(interaction.channel))) {
     await interaction.editReply("❌ This is not recognised as a legacy Carrier application ticket.");
     return true;
   }
@@ -144,7 +234,7 @@ async function handleCarrierApplicationTicketClose(interaction) {
 }
 
 async function ensureCarrierApplicationClosePanel(channel) {
-  if (!looksLikeLegacyApplicationTicket(channel) || !channel.isTextBased?.()) return false;
+  if (!(await looksLikeLegacyApplicationTicket(channel)) || !channel.isTextBased?.()) return false;
 
   const messages = await channel.messages.fetch({ limit: 50 }).catch(() => null);
   if (messages?.some((message) => message.author?.id === channel.client.user.id && hasCloseButton(message))) {
@@ -164,20 +254,35 @@ async function ensureCarrierApplicationClosePanel(channel) {
 }
 
 async function retrofitCarrierApplicationTicketClosePanels(client) {
-  if (!process.env.GUILD_ID) return { checked: 0, added: 0 };
+  if (!process.env.GUILD_ID) return { checked: 0, added: 0, matched: [] };
 
   const guild = await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
-  if (!guild) return { checked: 0, added: 0 };
+  if (!guild) return { checked: 0, added: 0, matched: [] };
 
   const channels = await guild.channels.fetch().catch(() => null);
-  if (!channels) return { checked: 0, added: 0 };
+  if (!channels) return { checked: 0, added: 0, matched: [] };
 
   let checked = 0;
   let added = 0;
+  const matched = [];
 
   for (const channel of channels.values()) {
-    if (!looksLikeLegacyApplicationTicket(channel)) continue;
+    if (!channel || channel.type !== ChannelType.GuildText) continue;
+
+    let legacy = false;
+    try {
+      legacy = await looksLikeLegacyApplicationTicket(channel);
+    } catch (error) {
+      console.warn(`[CARRIER APPLICATION TICKET] Could not inspect #${channel?.name || channel?.id}: ${error.message}`);
+      continue;
+    }
+
+    if (!legacy) continue;
     checked += 1;
+    matched.push(channel.name);
+    console.log(
+      `[CARRIER APPLICATION TICKET] Matched legacy ticket #${channel.name} under ${channel.parent?.name || "no category"}.`,
+    );
 
     try {
       if (await ensureCarrierApplicationClosePanel(channel)) added += 1;
@@ -186,7 +291,7 @@ async function retrofitCarrierApplicationTicketClosePanels(client) {
     }
   }
 
-  return { checked, added };
+  return { checked, added, matched };
 }
 
 module.exports = {
