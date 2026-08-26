@@ -214,7 +214,9 @@ async function ensureReadyCheckPanelsForClient(client) {
 }
 
 async function startReadyCheck(interaction) {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  }
   const requests = await loadTicketRequests(interaction.channelId);
   if (!requests.length) {
     await interaction.editReply("❌ There are no active carry requests attached to this ticket.");
@@ -291,23 +293,27 @@ async function startReadyCheck(interaction) {
 }
 
 async function handleRequesterResponse(interaction, requestId, response) {
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  }
+
   const check = db.prepare("SELECT * FROM carry_ready_checks WHERE request_id = ?").get(String(requestId));
   if (!check || check.ticket_channel !== String(interaction.channelId)) {
-    await interaction.reply({ content: "❌ This ready check is no longer active in this ticket.", flags: MessageFlags.Ephemeral });
+    await interaction.editReply("❌ This ready check is no longer active in this ticket.");
     return true;
   }
   if (String(check.requester) !== String(interaction.user.id)) {
-    await interaction.reply({ content: "❌ Only the requester for this carry can answer this ready check.", flags: MessageFlags.Ephemeral });
+    await interaction.editReply("❌ Only the requester for this carry can answer this ready check.");
     return true;
   }
   if (check.status !== "pending") {
-    await interaction.reply({ content: "ℹ️ This ready check has already been answered.", flags: MessageFlags.Ephemeral });
+    await interaction.editReply("ℹ️ This ready check has already been answered.");
     return true;
   }
 
   const request = await loadRequest(requestId);
   if (!request || request.ticket_channel_id !== interaction.channelId) {
-    await interaction.reply({ content: "❌ This carry request is no longer active in this ticket.", flags: MessageFlags.Ephemeral });
+    await interaction.editReply("❌ This carry request is no longer active in this ticket.");
     return true;
   }
 
@@ -317,41 +323,46 @@ async function handleRequesterResponse(interaction, requestId, response) {
   db.prepare("UPDATE carry_ready_checks SET status = ?, responded_at = ? WHERE request_id = ?")
     .run(nextStatus, now, String(requestId));
 
-  await interaction.update({
+  await interaction.message.edit({
     content: `<@${check.requester}>`,
     embeds: [responseEmbed(request, check.carrier, nextStatus, late)],
     components: [],
     allowedMentions: { users: [String(check.requester)] },
   });
+
+  await interaction.editReply(nextStatus === "ready"
+    ? "✅ Your ready response was recorded."
+    : "✅ Your response was recorded. The Carrier can release the claim if needed.");
   await refreshControlCenter(interaction.channel);
   return true;
 }
 
 async function handleMissedResponse(interaction, requestId) {
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  }
+
   const check = db.prepare("SELECT * FROM carry_ready_checks WHERE request_id = ?").get(String(requestId));
   if (!check || check.ticket_channel !== String(interaction.channelId)) {
-    await interaction.reply({ content: "❌ This ready check is no longer active in this ticket.", flags: MessageFlags.Ephemeral });
+    await interaction.editReply("❌ This ready check is no longer active in this ticket.");
     return true;
   }
   if (check.status !== "pending") {
-    await interaction.reply({ content: "ℹ️ This ready check has already been resolved.", flags: MessageFlags.Ephemeral });
+    await interaction.editReply("ℹ️ This ready check has already been resolved.");
     return true;
   }
 
   const request = await loadRequest(requestId);
   if (!request || request.ticket_channel_id !== interaction.channelId || !["claimed", "in_progress"].includes(request.status)) {
-    await interaction.reply({ content: "❌ This carry request is no longer active in this ticket.", flags: MessageFlags.Ephemeral });
+    await interaction.editReply("❌ This carry request is no longer active in this ticket.");
     return true;
   }
   if (!(await actorCanManage(interaction, [request]))) {
-    await interaction.reply({ content: "❌ Only the assigned Carrier or staff can record a missed ready check.", flags: MessageFlags.Ephemeral });
+    await interaction.editReply("❌ Only the assigned Carrier or staff can record a missed ready check.");
     return true;
   }
   if (Date.now() < Number(check.deadline)) {
-    await interaction.reply({
-      content: `⏳ Give the requester until <t:${unixSeconds(check.deadline)}:t> (<t:${unixSeconds(check.deadline)}:R>) to respond.`,
-      flags: MessageFlags.Ephemeral,
-    });
+    await interaction.editReply(`⏳ Give the requester until <t:${unixSeconds(check.deadline)}:t> (<t:${unixSeconds(check.deadline)}:R>) to respond.`);
     return true;
   }
 
@@ -403,10 +414,7 @@ async function handleMissedResponse(interaction, requestId) {
     }
   }
 
-  await interaction.reply({
-    content: `✅ No-show recorded for <@${check.requester}>. Use **Release Claim** if you want the request returned to the queue.`,
-    flags: MessageFlags.Ephemeral,
-  });
+  await interaction.editReply(`✅ No-show recorded for <@${check.requester}>. Use **Release Claim** if you want the request returned to the queue.`);
   await refreshControlCenter(interaction.channel);
   return true;
 }
