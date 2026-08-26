@@ -57,9 +57,8 @@ client.setMaxListeners(50);
 client.commands = new Collection();
 
 // Discord interactions must be acknowledged within a few seconds. Some Tavern
-// actions perform Supabase, Discord API, or permission work after the click, so
-// acknowledge the known long-running reply-style interactions before any normal
-// event module gets a turn. Owning handlers await this promise before continuing.
+// actions perform Supabase or Discord API work after the click, so acknowledge
+// only the handlers that explicitly understand this shared fast-ack promise.
 client.prependListener("interactionCreate", (interaction) => {
     const customId = String(interaction?.customId || "");
     const createdAt = Number(interaction?.createdTimestamp || 0);
@@ -75,9 +74,7 @@ client.prependListener("interactionCreate", (interaction) => {
         customId === "carry_readycheck_start" ||
         /^carry_ready_yes_[0-9a-f-]{36}$/i.test(customId) ||
         customId === "treasury_stock_legendary" ||
-        customId === "treasury_stock_collect" ||
-        customId === "carry_close_ticket" ||
-        /^carry_(?:cancel|delete|noshow)_[0-9a-f-]{36}$/i.test(customId)
+        customId === "treasury_stock_collect"
     );
     const latencySensitiveCarryModal =
         interaction?.isModalSubmit?.() && customId === "carry_request_modal_v4";
