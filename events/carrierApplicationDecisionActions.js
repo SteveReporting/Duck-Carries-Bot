@@ -1,9 +1,21 @@
 const { MessageFlags, PermissionFlagsBits } = require("discord.js");
+const { carrierTeamRoleId } = require("../platform/carrierDirectory");
+const { ensureMemberSeparatorRoles } = require("../platform/carrierSeparatorMembership");
 
 const PASS_MARK = 14;
 const APPLICATION_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdIT98g11GKA2uJ9iTDGrOIHgK3FNrj-oo94g56JJBws8S-rQ/viewform";
 const RECRUITMENT_SOP_URL = "https://docs.google.com/document/d/1eJublVgllteB_6IcAiqTxNcGUenG9m8J0FiPGJzUd7M/edit?usp=drivesdk";
 const TRAINEE_ROLE_NAME = "Trainee Carrier";
+const CARRIER_TEAM_ROLE_NAME = "Carrier Team";
+
+const RESOURCE_CHANNEL_NAMES = new Set([
+  "carriertraining",
+  "training",
+  "carrierresources",
+  "carrierguides",
+  "carrierrules",
+  "carrierinfo",
+]);
 
 function normalize(value) {
   return String(value || "").trim().toLowerCase().replace(/^@+/, "");
@@ -46,7 +58,6 @@ function memberMatches(member, rawCandidate) {
 
   if (values.includes(candidate)) return true;
 
-  // Support old username#1234 style data while still requiring an exact name match.
   const withoutDiscriminator = candidate.replace(/#\d{4}$/, "");
   return Boolean(withoutDiscriminator) && values.some((value) => value === withoutDiscriminator);
 }
@@ -129,34 +140,74 @@ function isFailDecision(decision) {
   return decision === "Deny";
 }
 
-async function assignTraineeRole(guild, member) {
-  await guild.roles.fetch().catch(() => null);
-  const role = guild.roles.cache.find(
-    (candidate) => !candidate.managed && normalizeRole(candidate.name) === normalizeRole(TRAINEE_ROLE_NAME),
-  );
+function findRoleByName(guild, roleName) {
+  const wanted = normalizeRole(roleName);
+  return guild.roles.cache.find(
+    (candidate) => !candidate.managed && normalizeRole(candidate.name) === wanted,
+  ) || null;
+}
 
-  if (!role) return { ok: false, reason: `${TRAINEE_ROLE_NAME} role was not found.` };
-  if (member.roles.cache.has(role.id)) return { ok: true, alreadyHad: true, role };
+async function addRoleIfPossible(guild, member, role, label) {
+  if (!role) return { ok: false, label, reason: `${label} role was not found.` };
+  if (member.roles.cache.has(role.id)) return { ok: true, label, alreadyHad: true, role };
 
   const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
   if (!me?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
-    return { ok: false, reason: "Bot does not have Manage Roles." };
+    return { ok: false, label, reason: "Bot does not have Manage Roles." };
   }
   if (!role.editable || me.roles.highest.comparePositionTo(role) <= 0) {
-    return { ok: false, reason: `Bot role must be above ${TRAINEE_ROLE_NAME}.` };
+    return { ok: false, label, reason: `Bot role must be above ${label}.` };
   }
 
   try {
-    await member.roles.add(role, "Carrier application accepted — automatic Trainee Carrier assignment");
-    return { ok: true, alreadyHad: false, role };
+    await member.roles.add(role, `Carrier application accepted — automatic ${label} assignment`);
+    return { ok: true, label, alreadyHad: false, role };
   } catch (error) {
-    return { ok: false, reason: error.message };
+    return { ok: false, label, reason: error.message };
   }
 }
 
-function fallbackResultDm(app, decision) {
+async function assignAcceptedRoles(guild, member) {
+  await guild.roles.fetch().catch(() => null);
+
+  const teamRole = guild.roles.cache.get(carrierTeamRoleId()) || findRoleByName(guild, CARRIER_TEAM_ROLE_NAME);
+  const traineeRole = findRoleByName(guild, TRAINEE_ROLE_NAME);
+
+  const results = [];
+  results.push(await addRoleIfPossible(guild, member, teamRole, CARRIER_TEAM_ROLE_NAME));
+  results.push(await addRoleIfPossible(guild, member, traineeRole, TRAINEE_ROLE_NAME));
+
+  const refreshedMember = await guild.members.fetch(member.id).catch(() => member);
+  const separatorResult = await ensureMemberSeparatorRoles(
+    refreshedMember,
+    "Carrier application accepted — automatic separator role sync",
+  ).catch((error) => ({ warnings: [error.message] }));
+
+  return {
+    results,
+    separatorResult,
+  };
+}
+
+function resourceChannelMentions(guild) {
+  const channels = guild.channels.cache
+    .filter((channel) => channel.isTextBased?.() && RESOURCE_CHANNEL_NAMES.has(normalizeRole(channel.name)))
+    .map((channel) => `<#${channel.id}>`);
+  return [...new Set(channels)].slice(0, 6);
+}
+
+function fallbackResultDm(app, decision, guild, roleSummary = null) {
   const score = scoreOf(app);
   const passed = isPassDecision(decision);
+  const resourceChannels = resourceChannelMentions(guild);
+
+  const assignedRoles = roleSummary?.results
+    ?.filter((result) => result.ok)
+    .map((result) => result.label) || [];
+
+  const roleLine = assignedRoles.length
+    ? `🎓 **Discord roles:** ${assignedRoles.map((name) => `**${name}**`).join(" + ")}`
+    : null;
 
   const lines = passed
     ? [
@@ -164,18 +215,24 @@ function fallbackResultDm(app, decision) {
         "",
         `✅ **Result: PASSED • ${decision}**`,
         score == null ? null : `📊 **Score:** ${score}/20 — pass mark is ${PASS_MARK}/20`,
+        roleLine,
         app?.reasoning ? `📝 **Reviewer note:** ${String(app.reasoning).slice(0, 700)}` : null,
         "",
         "### What happens next",
-        "1. You have been moved into the **Trainee Carrier** stage.",
+        "1. You are now part of the **Carrier Team** and begin as a **Trainee Carrier**.",
         "2. Read the recruitment/training process before your assessment.",
         "3. Complete training and the practical assessment when Carrier management schedules it.",
         "4. Successful trainees then complete the **7-day probation** before becoming a full Carrier.",
         app?.nextAction ? `5. **Your next action:** ${String(app.nextAction).slice(0, 500)}` : null,
         "",
+        "### Documents & resources",
         `📚 **Recruitment / Training Process:** ${RECRUITMENT_SOP_URL}`,
+        resourceChannels.length ? `📌 **Carrier channels:** ${resourceChannels.join(" • ")}` : null,
         "",
-        "Official Tavern carries are free. Carriers must never demand Robux, gold, items, gifts or payment for an official carry.",
+        "### Important Carrier rule",
+        "Official Tavern carries are **100% free**. Never demand Robux, gold, items, gifts or any other payment for an official carry.",
+        "",
+        "If you are unsure about training, assessment, probation or Carrier procedure, ask Carrier management before running official carries.",
       ]
     : [
         "🍺 **The Carry Tavern — Carrier Team Application Result**",
@@ -196,8 +253,6 @@ function fallbackResultDm(app, decision) {
 }
 
 async function safeStaffFollowUp(interaction, content) {
-  // The main review collector owns the interaction acknowledgement. Give it a
-  // moment, then attach our status to that same private review interaction.
   await new Promise((resolve) => setTimeout(resolve, 1200));
   if (interaction.deferred || interaction.replied) {
     return interaction.followUp({ content: content.slice(0, 1900), flags: MessageFlags.Ephemeral }).catch(() => {});
@@ -231,26 +286,40 @@ module.exports = {
       }
 
       const notes = [`✅ Matched applicant to <@${resolved.member.id}> using **${resolved.method}**.`];
+      let roleSummary = null;
 
       if (isPassDecision(decision)) {
-        const roleResult = await assignTraineeRole(interaction.guild, resolved.member);
-        if (roleResult.ok) {
-          notes.push(roleResult.alreadyHad
-            ? `🎓 They already had **${TRAINEE_ROLE_NAME}**.`
-            : `🎓 Assigned **${TRAINEE_ROLE_NAME}** automatically.`);
-        } else {
-          notes.push(`⚠️ Could not assign **${TRAINEE_ROLE_NAME}**: ${roleResult.reason}`);
+        roleSummary = await assignAcceptedRoles(interaction.guild, resolved.member);
+
+        for (const roleResult of roleSummary.results) {
+          if (roleResult.ok) {
+            notes.push(roleResult.alreadyHad
+              ? `🎓 They already had **${roleResult.label}**.`
+              : `🎓 Assigned **${roleResult.label}** automatically.`);
+          } else {
+            notes.push(`⚠️ Could not assign **${roleResult.label}**: ${roleResult.reason}`);
+          }
+        }
+
+        if (roleSummary.separatorResult?.additionalAdded) {
+          notes.push("➕ Assigned the Additional Roles separator automatically.");
+        }
+        if (roleSummary.separatorResult?.progressionAdded) {
+          notes.push("🏆 Assigned the Carrier Progression separator automatically.");
+        }
+        for (const warning of roleSummary.separatorResult?.warnings || []) {
+          notes.push(`⚠️ Separator sync: ${warning}`);
         }
       }
 
-      // The existing review flow already DMs when a valid numeric Discord ID is
-      // present. Only send the fallback DM when the form contained a username/name
-      // instead, preventing duplicate messages for correctly submitted applications.
+      // The main review flow already handles DMs for applications containing a
+      // valid numeric Discord ID. This fallback handles username/name submissions
+      // so both submission styles receive the same result information.
       const hasValidStoredId = Boolean(extractDiscordId(app.discordUserId));
       if (!hasValidStoredId) {
         try {
-          await resolved.member.user.send(fallbackResultDm(app, decision));
-          notes.push("📨 Result DM sent using the resolved Discord username.");
+          await resolved.member.user.send(fallbackResultDm(app, decision, interaction.guild, roleSummary));
+          notes.push("📨 Result DM sent using the resolved Discord username, including next steps and Carrier documents/resources.");
         } catch (error) {
           notes.push(`⚠️ Could not DM them: ${error.message}`);
         }
