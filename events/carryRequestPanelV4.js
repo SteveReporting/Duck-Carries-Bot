@@ -8,7 +8,7 @@ const {
 } = require("discord.js");
 
 const { getSupabase } = require("../marketplace/supabase");
-const { getLinkedProfile, marketplaceBaseUrl, requireLinkedProfile } = require("../platform/helpers");
+const { requireLinkedProfile } = require("../platform/helpers");
 const { parseRuns } = require("../platform/dungeons");
 const {
   maybeSendAbuseAlert,
@@ -43,19 +43,6 @@ const EARLY_DUNGEONS = new Set(["Desert Temple", "Winter Outpost"]);
 
 function difficultiesForDungeon(dungeon) {
   return EARLY_DUNGEONS.has(dungeon) ? EARLY_DIFFICULTIES : STANDARD_DIFFICULTIES;
-}
-
-async function requireRequestProfile(interaction) {
-  const profile = await getLinkedProfile(interaction.user.id);
-  if (!profile) {
-    const base = marketplaceBaseUrl();
-    await interaction.reply({
-      content: `❌ Before requesting a carry, link your Tavern account.${base ? `\nSign in with Discord: ${base}/auth` : ""}`,
-      flags: MessageFlags.Ephemeral,
-    });
-    return null;
-  }
-  return profile;
 }
 
 async function loadActiveRequests(profileId) {
@@ -156,35 +143,30 @@ function buildCarryModal() {
 }
 
 async function startRequest(interaction) {
-  const profile = await requireRequestProfile(interaction);
-  if (!profile) return;
-
-  const active = await loadActiveRequests(profile.id);
-  if (active.length >= MAX_ACTIVE_REQUESTS) {
-    const current = active
-      .map((request) => `• **${request.dungeon}** • ${request.difficulty} • ${request.status.replace("_", " ")}`)
-      .join("\n");
-
-    return interaction.reply({
-      content: [
-        `❌ You already have **${MAX_ACTIVE_REQUESTS}/${MAX_ACTIVE_REQUESTS} active carry requests**.`,
-        current,
-        "",
-        "Finish or cancel one before creating another.",
-      ].join("\n"),
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-
+  // Opening a modal itself must happen inside Discord's short interaction window.
+  // Do all account/profile validation after the modal is submitted instead of
+  // spending that window on Supabase/Bloxlink lookups.
   return interaction.showModal(buildCarryModal());
 }
 
 async function submitRequest(interaction) {
+  // index.js pre-acknowledges this modal before the modular event handlers run.
+  // Wait for that acknowledgement so this handler never races it with another
+  // deferReply(). The fallback keeps this module safe when used independently.
+  if (interaction.__carryFastAckPromise) {
+    await interaction.__carryFastAckPromise;
+  }
+
   if (!interaction.guild) {
+    if (interaction.deferred || interaction.replied) {
+      return interaction.editReply("❌ Carry requests must be created inside the server.");
+    }
     return interaction.reply({ content: "❌ Carry requests must be created inside the server.", flags: MessageFlags.Ephemeral });
   }
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  }
 
   // No Carry Tavern Roblox verification is required anymore. Bloxlink is the
   // source of truth for the Discord -> Roblox identity and the profile is synced
@@ -243,7 +225,7 @@ async function submitRequest(interaction) {
   const matched = await notifyMatchingCarriers(interaction.client, interaction.guildId, data).catch(() => 0);
   await maybeSendAbuseAlert(interaction.client, interaction.guildId, interaction.user.id, "carry request").catch(() => {});
 
-  const base = marketplaceBaseUrl();
+  const base = require("../platform/helpers").marketplaceBaseUrl();
   return interaction.editReply(
     [
       "✅ **Your carry is in the shared Tavern queue.**",
