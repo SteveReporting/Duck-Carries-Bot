@@ -12,7 +12,10 @@ const {
     TextChannel,
 } = require("discord.js");
 const db = require("./database/database");
-const { guardCarryClaimInteraction } = require("./platform/carryClaimAccess");
+const {
+    guardCarryClaimInteraction,
+    isCarryClaimInteraction,
+} = require("./platform/carryClaimAccess");
 const { ensureCarryControlCenter } = require("./platform/carryControlCenter");
 
 console.log("=================================");
@@ -53,23 +56,34 @@ client.setMaxListeners(50);
 
 client.commands = new Collection();
 
-// Some carry interactions have a strict Discord acknowledgement window. Because
-// this bot intentionally has many modular interactionCreate listeners, acknowledge
-// latency-sensitive interactions before any normal event module gets a turn.
-// The owning module awaits this promise before continuing, preventing both
-// interaction expiry and double acknowledgement.
+// Discord interactions must be acknowledged within a few seconds. Some Tavern
+// actions perform Supabase, Discord API, or permission work after the click, so
+// acknowledge the known long-running reply-style interactions before any normal
+// event module gets a turn. Owning handlers await this promise before continuing.
 client.prependListener("interactionCreate", (interaction) => {
     const customId = String(interaction?.customId || "");
-    const latencySensitiveReadyButton =
-        interaction?.isButton?.() && (
-            customId === "carry_readycheck_start" ||
-            /^carry_ready_yes_[0-9a-f-]{36}$/i.test(customId)
-        );
+    const createdAt = Number(interaction?.createdTimestamp || 0);
+    const ageMs = createdAt > 0 ? Date.now() - createdAt : null;
+
+    if (Number.isFinite(ageMs) && ageMs >= 1500 && !interaction.__interactionLatencyLogged) {
+        interaction.__interactionLatencyLogged = true;
+        const label = customId || interaction?.commandName || `type:${interaction?.type}`;
+        console.warn(`[INTERACTION LATENCY] ${label} arrived ${ageMs}ms after creation.`);
+    }
+
+    const latencySensitiveButton = interaction?.isButton?.() && (
+        customId === "carry_readycheck_start" ||
+        /^carry_ready_yes_[0-9a-f-]{36}$/i.test(customId) ||
+        customId === "treasury_stock_legendary" ||
+        customId === "treasury_stock_collect" ||
+        customId === "carry_close_ticket" ||
+        /^carry_(?:cancel|delete|noshow)_[0-9a-f-]{36}$/i.test(customId)
+    );
     const latencySensitiveCarryModal =
         interaction?.isModalSubmit?.() && customId === "carry_request_modal_v4";
 
     if (
-        (!latencySensitiveReadyButton && !latencySensitiveCarryModal) ||
+        (!latencySensitiveButton && !latencySensitiveCarryModal) ||
         interaction.deferred ||
         interaction.replied ||
         interaction.__carryFastAckPromise
@@ -79,7 +93,8 @@ client.prependListener("interactionCreate", (interaction) => {
         .deferReply({ flags: MessageFlags.Ephemeral })
         .then(() => true)
         .catch((error) => {
-            console.warn(`[CARRY FAST ACK] ${customId}: ${error.message}`);
+            const suffix = Number.isFinite(ageMs) ? ` age=${ageMs}ms` : "";
+            console.warn(`[CARRY FAST ACK] ${customId}: ${error.message}${suffix}`);
             return false;
         });
 });
@@ -216,11 +231,22 @@ function warmGuildMemberCache(interaction) {
     return promise;
 }
 
+function eventFilePriority(name) {
+    // The canonical interaction router handles slash commands, Treasury, queue,
+    // and several legacy controls. Register it before the modular component
+    // listeners so its immediate acknowledgements are never queued behind them.
+    if (name === "interactionCreate.js") return 0;
+    return 1;
+}
+
 function loadEvents() {
     const directory = path.join(__dirname, "events");
     const files = fs.readdirSync(directory)
         .filter((name) => name.endsWith(".js"))
-        .sort();
+        .sort((a, b) => {
+            const priority = eventFilePriority(a) - eventFilePriority(b);
+            return priority || a.localeCompare(b);
+        });
 
     console.log("📦 Loading events...");
 
@@ -240,8 +266,16 @@ function loadEvents() {
                         void warmGuildMemberCache(interaction);
                     }
 
-                    const allowed = await guardCarryClaimInteraction(interaction);
-                    if (!allowed) return;
+                    // Do not insert an async hop in front of every Discord
+                    // interaction. Only claim interactions need this guard, and
+                    // share one guard promise across the modular listeners.
+                    if (isCarryClaimInteraction(interaction)) {
+                        if (!interaction.__carryClaimGuardPromise) {
+                            interaction.__carryClaimGuardPromise = guardCarryClaimInteraction(interaction);
+                        }
+                        const allowed = await interaction.__carryClaimGuardPromise;
+                        if (!allowed) return;
+                    }
                 }
                 return event.execute(...args, client);
             };
