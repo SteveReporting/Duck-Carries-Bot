@@ -1,8 +1,20 @@
+const { ensureMemberSeparatorRoles } = require("../platform/carrierSeparatorMembership");
+
 module.exports = {
   name: "guildMemberAdd",
 
   async execute(member) {
     try {
+      if (!member.user.bot) {
+        const separatorResult = await ensureMemberSeparatorRoles(
+          member,
+          "Automatic separator assignment for new Tavern member",
+        );
+        for (const warning of separatorResult.warnings || []) {
+          console.warn(`[CARRIER SEPARATORS] ${warning}`);
+        }
+      }
+
       await member.send([
         "🍺 **Welcome to The Carry Tavern!**",
         "",
