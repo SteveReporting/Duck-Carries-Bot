@@ -15,17 +15,34 @@ function normalizeChannelName(value) {
     .replace(/[^a-z0-9]+/g, '');
 }
 
+function isDisposableTicketName(value) {
+  const channelName = normalizeChannelName(value);
+  if (!channelName) return false;
+
+  return (
+    /^duckrequest\d+$/.test(channelName)
+    || /^ticket\d+$/.test(channelName)
+    || /^carry[a-z0-9]*\d{3,}$/.test(channelName)
+    || /^carrier(?:application|app|request)[a-z0-9]*\d+$/.test(channelName)
+  );
+}
+
 function isDisposableTicketChannel(channel) {
   if (!channel?.guild || channel.isThread?.()) return false;
 
   const channelName = normalizeChannelName(channel.name);
+  if (!isDisposableTicketName(channelName)) return false;
+
   const parentName = normalizeChannelName(
     channel.parent?.name
       || channel.guild.channels.cache.get(channel.parentId)?.name
       || '',
   );
 
-  if (!channelName || !parentName) return false;
+  // Deleted Discord channel objects do not always retain a resolvable parent.
+  // A strong ephemeral ticket name is therefore enough to suppress anti-nuke
+  // restoration even when parent/category data has already disappeared.
+  if (!parentName) return true;
 
   // Never suppress anti-nuke inside security or development/test areas.
   if (
@@ -36,22 +53,11 @@ function isDisposableTicketChannel(channel) {
     return false;
   }
 
-  // Ticket channels are intentionally disposable. Requiring both a ticket-like
-  // category and an ephemeral ticket naming pattern keeps permanent channels
-  // protected while allowing normal moderator/ticket-bot closes.
-  const parentIsTicketArea =
+  return (
     parentName.includes('ticket')
     || parentName.includes('carryrequest')
     || parentName.includes('carrierapplication')
-    || parentName.includes('recruitment');
-
-  if (!parentIsTicketArea) return false;
-
-  return (
-    /^duckrequest\d+$/.test(channelName)
-    || /^ticket\d+$/.test(channelName)
-    || /^carry[a-z0-9]*\d{3,}$/.test(channelName)
-    || /^carrier(?:application|app|request)[a-z0-9]*\d+$/.test(channelName)
+    || parentName.includes('recruitment')
   );
 }
 
@@ -100,14 +106,14 @@ async function startSecurity(client) {
 
     // Normal ticket closures can delete several channels within seconds. Those
     // deletions are expected lifecycle actions, not server destruction. Bypass
-    // channel-delete anti-nuke accounting/restoration only for clearly disposable
+    // channel-delete anti-nuke accounting/restoration for clearly disposable
     // ticket channels; all permanent channels remain protected as before.
     const originalOnChannelDelete = engine.onChannelDelete.bind(engine);
     engine.onChannelDelete = async (channel) => {
       if (isDisposableTicketChannel(channel)) {
         const parentName = channel.parent?.name
           || channel.guild?.channels?.cache?.get(channel.parentId)?.name
-          || 'unknown category';
+          || 'unknown/deleted category';
         console.log(
           `[security] Expected ticket closure ignored by anti-nuke: #${channel.name} under ${parentName}.`,
         );
@@ -119,6 +125,25 @@ async function startSecurity(client) {
       }
 
       return originalOnChannelDelete(channel);
+    };
+
+    // Defense in depth: even if another path calls restoreDeletedChannel
+    // directly, never recreate a snapshot entry whose name is a disposable
+    // ticket. This permanently stops closed ticket channels being resurrected.
+    const originalRestoreDeletedChannel = engine.restoreDeletedChannel.bind(engine);
+    engine.restoreDeletedChannel = async (targetGuild, oldId) => {
+      const snapshotChannel = store.state.snapshot?.channels?.find(
+        (entry) => String(entry.id) === String(oldId),
+      );
+
+      if (snapshotChannel && isDisposableTicketName(snapshotChannel.name)) {
+        console.log(
+          `[security] Suppressed anti-nuke restore for closed ticket #${snapshotChannel.name} (${oldId}).`,
+        );
+        return null;
+      }
+
+      return originalRestoreDeletedChannel(targetGuild, oldId);
     };
 
     const heartbeat = new SecurityHeartbeat(client, engine);
