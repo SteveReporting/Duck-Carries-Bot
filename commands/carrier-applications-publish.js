@@ -19,7 +19,7 @@ const FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdIT98g11GKA2uJ9iTDGr
 const RECRUITMENT_SOP_URL = "https://docs.google.com/document/d/1eJublVgllteB_6IcAiqTxNcGUenG9m8J0FiPGJzUd7M/edit?usp=drivesdk";
 
 const PUBLIC_TAG = "CARRIER-APPLICATIONS-PUBLIC-V4";
-const REVIEW_TAG = "CARRIER-APPLICATIONS-STAFF-V4";
+const REVIEW_TAG = "CARRIER-APPLICATIONS-STAFF-V5";
 const PREVIOUS_PUBLIC_TAGS = [
   "CARRIER-APPLICATIONS-PUBLIC-V2",
   "CARRIER-APPLICATIONS-PUBLIC-V3",
@@ -27,6 +27,7 @@ const PREVIOUS_PUBLIC_TAGS = [
 const PREVIOUS_REVIEW_TAGS = [
   "CARRIER-APPLICATIONS-STAFF-V2",
   "CARRIER-APPLICATIONS-STAFF-V3",
+  "CARRIER-APPLICATIONS-STAFF-V4",
 ];
 
 const LEGACY_PUBLIC_FOOTER = "The Carry Tavern • Carrier Department • channel-become-v1";
@@ -59,6 +60,14 @@ function linkButton(label, url, emoji) {
   const button = new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel(label).setURL(url);
   if (emoji) button.setEmoji(emoji);
   return button;
+}
+
+function reviewButton() {
+  return new ButtonBuilder()
+    .setCustomId("carrier_review_open")
+    .setStyle(ButtonStyle.Primary)
+    .setLabel("Open Review Panel")
+    .setEmoji("📋");
 }
 
 function row(...buttons) {
@@ -111,11 +120,13 @@ async function existingBrandedWebhook(channel) {
   ) || null;
 }
 
-async function sendBranded(channel, payload) {
-  const webhook = await existingBrandedWebhook(channel);
-  if (webhook) {
-    const message = await webhook.send(payload);
-    return { message, via: "webhook" };
+async function sendBranded(channel, payload, { forceBot = false } = {}) {
+  if (!forceBot) {
+    const webhook = await existingBrandedWebhook(channel);
+    if (webhook) {
+      const message = await webhook.send(payload);
+      return { message, via: "webhook" };
+    }
   }
 
   const message = await channel.send(payload);
@@ -164,7 +175,7 @@ function reviewPayload() {
         "Google Forms and Sheets stay in the background. Reviewers use the Discord review console so applicant answers, scoring, private notes and decisions are handled in one place.",
         "",
         "### 🔎 Review Applications",
-        "Run **`/carrier-app-review`** in this channel.",
+        "Click **Open Review Panel** below. The bot will open a private review console visible only to you.",
         "",
         "The private review console includes:",
         "• Applicant dropdown with current applications",
@@ -186,17 +197,20 @@ function reviewPayload() {
       ].join("\n"),
       REVIEW_TAG,
     )],
-    components: [row(
-      linkButton("Live Application Form", FORM_URL, "📝"),
-      linkButton("Recruitment SOP", RECRUITMENT_SOP_URL, "📚"),
-    )],
+    components: [
+      row(
+        reviewButton(),
+        linkButton("Live Application Form", FORM_URL, "📝"),
+        linkButton("Recruitment SOP", RECRUITMENT_SOP_URL, "📚"),
+      ),
+    ],
     allowedMentions: { parse: [] },
   };
 }
 
-async function publishOne(channel, payload, currentTag, previousTags, legacyFooter, reason) {
+async function publishOne(channel, payload, currentTag, previousTags, legacyFooter, reason, options = {}) {
   await removePrevious(channel, currentTag, previousTags, legacyFooter);
-  const sent = await sendBranded(channel, payload);
+  const sent = await sendBranded(channel, payload, options);
   await channel.messages.pin(sent.message.id, reason).catch(() => {});
   return sent;
 }
@@ -219,6 +233,8 @@ async function publishCarrierApplicationPanels(guild, reason = "Carrier applicat
     reason,
   );
 
+  // Interactive custom-id buttons must be owned by the application. Use a bot
+  // message for the review centre even when a branded channel webhook exists.
   const reviewResult = await publishOne(
     reviewChannel,
     reviewPayload(),
@@ -226,6 +242,7 @@ async function publishCarrierApplicationPanels(guild, reason = "Carrier applicat
     PREVIOUS_REVIEW_TAGS,
     LEGACY_REVIEW_FOOTER,
     reason,
+    { forceBot: true },
   );
 
   return {
@@ -260,8 +277,8 @@ module.exports = {
         `Staff reviews: ${result.reviewChannel} • ${result.reviewMessage.url}`,
         `Branding: public **${result.publicVia}** • reviews **${result.reviewVia}**`,
         "",
-        "Staff reviews happen in Discord through `/carrier-app-review`. Google Sheets is backend-only.",
-        "Old application-review webhook posts were removed. Carrier News and unrelated channels were not touched.",
+        "Staff can click **Open Review Panel** directly in the review channel. `/carrier-app-review` remains available as a backup.",
+        "Google Sheets is backend-only. Old application-review posts were removed. Carrier News and unrelated channels were not touched.",
       ].join("\n"));
     } catch (error) {
       console.error("[CARRIER APPLICATIONS PUBLISH]", error);
