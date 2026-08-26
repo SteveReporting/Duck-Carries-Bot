@@ -79,8 +79,8 @@ function stockLines(items) {
   return output;
 }
 
-async function collectColorComponents() {
-  const items = await fetchStock("collect");
+async function collectColorComponents(prefetchedItems = null) {
+  const items = prefetchedItems || await fetchStock("collect");
   const colors = [...new Set(items.map((item) => String(item.collect_color || "").trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b))
     .slice(0, 25);
@@ -130,39 +130,40 @@ async function handleTreasuryStockInteraction(interaction) {
   if (!interaction.guild) return false;
 
   if (interaction.isButton() && interaction.customId === "treasury_stock_legendary") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const items = await fetchStock("legendary");
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [new EmbedBuilder()
         .setTitle("⚔️ Treasury Legendaries")
         .setDescription(stockLines(items))
         .setFooter({ text: `${items.length} Legendary item${items.length === 1 ? "" : "s"} currently available` })
         .setTimestamp()],
-      flags: MessageFlags.Ephemeral,
     });
     return true;
   }
 
   if (interaction.isButton() && interaction.customId === "treasury_stock_collect") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const items = await fetchStock("collect");
-    const components = await collectColorComponents();
-    await interaction.reply({
+    const components = await collectColorComponents(items);
+    await interaction.editReply({
       embeds: [new EmbedBuilder()
         .setTitle("🏆 Treasury Collects")
         .setDescription(items.length ? "Select a **Collect colour** below to see the stock in that section." : "*No Collects are currently in stock.*")
         .setFooter({ text: "Treasury stock is separate from Marketplace listings" })
         .setTimestamp()],
       components,
-      flags: MessageFlags.Ephemeral,
     });
     return true;
   }
 
   if (interaction.isStringSelectMenu() && interaction.customId === "treasury_stock_color") {
+    await interaction.deferUpdate();
     const color = interaction.values[0];
     const items = await fetchStock("collect", color);
-    await interaction.update({
+    await interaction.editReply({
       embeds: [new EmbedBuilder()
-        .setTitle(`🏆 ${color} Collects`) 
+        .setTitle(`🏆 ${color} Collects`)
         .setDescription(stockLines(items))
         .setFooter({ text: `${items.length} item${items.length === 1 ? "" : "s"} currently available` })
         .setTimestamp()],
