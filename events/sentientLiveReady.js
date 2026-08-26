@@ -2,7 +2,7 @@ const liveStore = require("../sentient/liveStore");
 const { liveConfig } = require("../sentient/liveConfig");
 
 module.exports = {
-    name: "ready",
+    name: "clientReady",
     once: true,
     async execute() {
         // Never auto-enable Project Sentient when the Carry Tavern bot restarts.
