@@ -14,6 +14,9 @@ const {
 } = require("discord.js");
 
 const GOLD = 0xF2B705;
+const PASS_MARK = 14;
+const APPLICATION_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdIT98g11GKA2uJ9iTDGrOIHgK3FNrj-oo94g56JJBws8S-rQ/viewform";
+const RECRUITMENT_SOP_URL = "https://docs.google.com/document/d/1eJublVgllteB_6IcAiqTxNcGUenG9m8J0FiPGJzUd7M/edit?usp=drivesdk";
 const ALLOWED_ROLES = new Set([
   "headofcarriers",
   "deputyheadofcarriers",
@@ -76,9 +79,31 @@ function safe(value, max = 1000) {
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
 }
 
+function numericScore(app) {
+  const score = Number(app?.total);
+  return Number.isFinite(score) ? score : null;
+}
+
 function scoreText(app) {
-  if (app.total == null || app.total === "") return "Not scored";
-  return `${app.total}/20${app.recommendation ? ` • ${app.recommendation}` : ""}`;
+  const score = numericScore(app);
+  if (score == null) return "Not scored";
+  return `${score}/20${app.recommendation ? ` • ${app.recommendation}` : ""}`;
+}
+
+function decisionBucket(app) {
+  const decision = normalize(app?.decision || "");
+  const status = normalize(app?.status || "");
+  const score = numericScore(app);
+
+  if (["deny", "denied", "reject", "rejected", "fail", "failed"].some((value) => decision === value || status === value)) return "failed";
+  if (["accept", "accepted", "accepttrial", "approved", "pass", "passed"].some((value) => decision === value || status === value)) return "passed";
+  if (score != null) return score >= PASS_MARK ? "passed" : "failed";
+  return "review";
+}
+
+function filteredApplicants(applicants, filterMode) {
+  if (filterMode === "all") return applicants;
+  return applicants.filter((item) => decisionBucket(item) === filterMode);
 }
 
 function groupAnswers(app) {
@@ -96,8 +121,9 @@ function groupAnswers(app) {
   return groups.length ? groups : [{ section: "Application", answers: [] }];
 }
 
-function applicantSelect(applicants, selectedId) {
-  const options = applicants.slice(0, 25).map((app) =>
+function applicantSelect(applicants, selectedId, filterMode) {
+  const filtered = filteredApplicants(applicants, filterMode);
+  const options = filtered.slice(0, 25).map((app) =>
     new StringSelectMenuOptionBuilder()
       .setLabel(safe(`${app.applicationId} • ${app.discordUsername || "Unknown"}`, 100))
       .setDescription(safe(`${app.robloxUsername || "No Roblox"} • ${app.status || "New"} • ${scoreText(app)}`, 100))
@@ -108,11 +134,32 @@ function applicantSelect(applicants, selectedId) {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId("carrier_review_applicant")
-      .setPlaceholder(applicants.length ? "Select an applicant" : "No applications found")
-      .setDisabled(!applicants.length)
+      .setPlaceholder(filtered.length ? `Select an applicant • ${filterMode}` : `No ${filterMode} applications found`)
+      .setDisabled(!filtered.length)
       .addOptions(options.length ? options : [
         new StringSelectMenuOptionBuilder().setLabel("No applications").setValue("none"),
       ]),
+  );
+}
+
+function filterSelect(filterMode) {
+  const options = [
+    ["all", "All Applications", "Everything returned by the application archive"],
+    ["review", "Needs Review", "Not yet scored or decided"],
+    ["passed", "Passed", `Scored ${PASS_MARK}/20+ or accepted`],
+    ["failed", "Failed / Denied", `Scored below ${PASS_MARK}/20 or denied`],
+  ];
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId("carrier_review_filter")
+      .setPlaceholder("Filter / recall applications")
+      .addOptions(options.map(([value, label, description]) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(label)
+          .setValue(value)
+          .setDescription(description)
+          .setDefault(filterMode === value),
+      )),
   );
 }
 
@@ -141,18 +188,20 @@ function controls(page, totalPages, hasApp) {
   );
 }
 
-function reviewEmbed(app, page) {
+function reviewEmbed(app, page, filterMode = "all") {
   if (!app) {
     return new EmbedBuilder()
       .setColor(GOLD)
       .setAuthor({ name: "THE CARRY TAVERN • CARRIER RECRUITMENT" })
       .setTitle("⚔️ Carrier Application Review")
-      .setDescription("Select an applicant from the dropdown below. Their Google Form answers will be loaded here privately for you.")
+      .setDescription(`Select an applicant from the dropdown below. Filter: **${filterMode}**.`)
       .setFooter({ text: "Private staff review console • Google Sheets stays backend-only" });
   }
 
   const groups = groupAnswers(app);
   const group = groups[Math.max(0, Math.min(page, groups.length - 1))];
+  const score = numericScore(app);
+  const outcome = score == null ? "Not graded" : score >= PASS_MARK ? `✅ Pass (${PASS_MARK}/20 required)` : `❌ Fail (${PASS_MARK}/20 required)`;
   const embed = new EmbedBuilder()
     .setColor(GOLD)
     .setAuthor({ name: "THE CARRY TAVERN • CARRIER RECRUITMENT" })
@@ -164,7 +213,9 @@ function reviewEmbed(app, page) {
       `**Status:** ${safe(app.status, 80)}`,
       `**Reviewer:** ${safe(app.reviewer || "Unassigned", 100)}`,
       `**Score:** ${scoreText(app)}`,
+      `**Threshold:** ${outcome}`,
       `**Decision:** ${safe(app.decision || "Pending", 80)}`,
+      `**Archive Filter:** ${filterMode}`,
       "",
       `### ${group.section}`,
     ].join("\n"));
@@ -221,6 +272,84 @@ function parseIntRange(value, min, max, label) {
   return n;
 }
 
+function weakAreas(app) {
+  const s = app?.scores || {};
+  const checks = [
+    ["Capability", Number(s.capability), 5],
+    ["Reliability & Activity", Number(s.reliability), 4],
+    ["Communication", Number(s.communication), 3],
+    ["Attitude & Maturity", Number(s.maturity), 3],
+    ["Dungeon Quest Knowledge", Number(s.knowledge), 3],
+    ["Application Effort", Number(s.effort), 2],
+  ];
+  return checks
+    .filter(([, value, max]) => Number.isFinite(value) && value < Math.ceil(max * 0.67))
+    .map(([label, value, max]) => `${label} (${value}/${max})`)
+    .slice(0, 4);
+}
+
+function finalOutcome(decision, app) {
+  const normalized = normalize(decision);
+  if (["accept", "accepttrial", "accepted", "approved", "pass", "passed"].includes(normalized)) return "passed";
+  if (["deny", "denied", "reject", "rejected", "fail", "failed"].includes(normalized)) return "failed";
+  if (normalized === "interview" || normalized === "pending") return null;
+  return numericScore(app) != null ? (numericScore(app) >= PASS_MARK ? "passed" : "failed") : null;
+}
+
+async function dmDecisionResult(client, app, decision) {
+  const discordId = String(app?.discordUserId || "").trim();
+  if (!/^\d{15,22}$/.test(discordId)) return { sent: false, reason: "Applicant Discord ID is missing or invalid." };
+
+  const outcome = finalOutcome(decision, app);
+  if (!outcome) return { sent: false, reason: "Decision is not final yet." };
+
+  const score = numericScore(app);
+  const user = await client.users.fetch(discordId).catch(() => null);
+  if (!user) return { sent: false, reason: "Could not find the applicant's Discord account." };
+
+  const lines = outcome === "passed"
+    ? [
+        "🍺 **The Carry Tavern — Carrier Team Application Result**",
+        "",
+        `✅ **Result: PASSED${decision ? ` • ${decision}` : ""}**`,
+        score == null ? null : `📊 **Score:** ${score}/20 — pass mark is ${PASS_MARK}/20`,
+        app?.reasoning ? `📝 **Reviewer note:** ${safe(app.reasoning, 700)}` : null,
+        "",
+        "### What happens next",
+        "1. You will move into the **Trainee Carrier** stage.",
+        "2. Read the recruitment/training process before your assessment.",
+        "3. Complete training and the practical assessment when Carrier management schedules it.",
+        "4. Successful trainees then complete the **7-day probation** before becoming a full Carrier.",
+        app?.nextAction ? `5. **Your next action:** ${safe(app.nextAction, 500)}` : null,
+        "",
+        `📚 **Recruitment / Training Process:** ${RECRUITMENT_SOP_URL}`,
+        "",
+        "Official Tavern carries are free. Carriers must never demand Robux, gold, items, gifts or payment for an official carry.",
+      ]
+    : [
+        "🍺 **The Carry Tavern — Carrier Team Application Result**",
+        "",
+        `❌ **Result: NOT PASSED${decision ? ` • ${decision}` : ""}**`,
+        score == null ? null : `📊 **Score:** ${score}/20 — pass mark is ${PASS_MARK}/20`,
+        app?.reasoning ? `📝 **Reviewer note:** ${safe(app.reasoning, 700)}` : null,
+        weakAreas(app).length ? `📌 **Areas to improve:** ${weakAreas(app).join(", ")}` : null,
+        app?.nextAction ? `➡️ **Next action:** ${safe(app.nextAction, 500)}` : null,
+        "",
+        "Your previous application remains in the staff archive so recruitment staff can recall it for future reviews.",
+        `📚 **Recruitment Process:** ${RECRUITMENT_SOP_URL}`,
+        `📝 **Application Form:** ${APPLICATION_FORM_URL}`,
+        "",
+        "You can apply again when you are ready and recruitment is accepting applications.",
+      ];
+
+  try {
+    await user.send(lines.filter(Boolean).join("\n").slice(0, 1950));
+    return { sent: true };
+  } catch (error) {
+    return { sent: false, reason: `DM failed: ${error.message}` };
+  }
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("carrier-app-review")
@@ -236,9 +365,10 @@ module.exports = {
     let applicants = [];
     let app = null;
     let page = 0;
+    let filterMode = "review";
 
     const loadList = async () => {
-      const body = await apiGet("list");
+      const body = await apiGet("list", { includeArchived: 1, includeFailed: 1 });
       applicants = Array.isArray(body.applicants) ? body.applicants : [];
     };
 
@@ -249,12 +379,25 @@ module.exports = {
       page = 0;
     };
 
+    const pickFirstVisible = async () => {
+      const visible = filteredApplicants(applicants, filterMode);
+      if (!visible.length) {
+        app = null;
+        page = 0;
+        return;
+      }
+      if (!app || !visible.some((item) => item.applicationId === app.applicationId)) {
+        await loadApp(visible[0].applicationId);
+      }
+    };
+
     const payload = () => {
       const groups = app ? groupAnswers(app) : [];
       return {
-        embeds: [reviewEmbed(app, page)],
+        embeds: [reviewEmbed(app, page, filterMode)],
         components: [
-          applicantSelect(applicants, app?.applicationId),
+          filterSelect(filterMode),
+          applicantSelect(applicants, app?.applicationId, filterMode),
           controls(page, groups.length || 1, Boolean(app)),
           ...(app ? [decisionSelect(app)] : []),
         ],
@@ -263,7 +406,11 @@ module.exports = {
 
     try {
       await loadList();
-      if (applicants.length) await loadApp(applicants[0].applicationId);
+      await pickFirstVisible();
+      if (!app && applicants.length) {
+        filterMode = "all";
+        await pickFirstVisible();
+      }
     } catch (error) {
       return interaction.editReply(`❌ Could not load Carrier applications: ${error.message}`.slice(0, 1900));
     }
@@ -277,6 +424,13 @@ module.exports = {
       }
 
       try {
+        if (i.customId === "carrier_review_filter") {
+          filterMode = i.values[0] || "all";
+          await i.deferUpdate();
+          await pickFirstVisible();
+          return interaction.editReply(payload());
+        }
+
         if (i.customId === "carrier_review_applicant") {
           const id = i.values[0];
           if (id === "none") return i.deferUpdate();
@@ -299,8 +453,8 @@ module.exports = {
           await i.deferUpdate();
           const selected = app?.applicationId;
           await loadList();
-          if (selected) await loadApp(selected).catch(async () => applicants.length && loadApp(applicants[0].applicationId));
-          else if (applicants.length) await loadApp(applicants[0].applicationId);
+          if (selected) await loadApp(selected).catch(() => {});
+          await pickFirstVisible();
           return interaction.editReply(payload());
         }
 
@@ -322,9 +476,12 @@ module.exports = {
             knowledge: parseIntRange(pair[0], 0, 3, "DQ Knowledge"),
             effort: parseIntRange(pair[1], 0, 2, "Application Effort"),
           };
+          const total = Object.values(scores).reduce((sum, value) => sum + value, 0);
+          const threshold = total >= PASS_MARK ? "✅ PASS" : "❌ FAIL";
 
           await apiPost({ action: "saveReview", applicationId: app.applicationId, reviewerDiscordId: submitted.user.id, reviewerName: submitted.user.username, scores });
-          await submitted.reply({ content: "✅ Application grade saved.", flags: MessageFlags.Ephemeral });
+          await submitted.reply({ content: `✅ Application grade saved: **${total}/20 • ${threshold}**. Set a final decision to DM the applicant their result.`, flags: MessageFlags.Ephemeral });
+          await loadList();
           await loadApp(app.applicationId);
           return interaction.editReply(payload());
         }
@@ -349,9 +506,20 @@ module.exports = {
 
         if (i.customId === "carrier_review_decision") {
           const decision = i.values[0];
+          const previousDecision = String(app.decision || "Pending");
           await i.deferUpdate();
           await apiPost({ action: "saveReview", applicationId: app.applicationId, reviewerDiscordId: i.user.id, reviewerName: i.user.username, decision });
+          await loadList();
           await loadApp(app.applicationId);
+
+          if (normalize(previousDecision) !== normalize(decision) && finalOutcome(decision, app)) {
+            const dm = await dmDecisionResult(i.client, app, decision);
+            const note = dm.sent
+              ? `✅ Final decision saved and **${app.discordUsername || "the applicant"}** was DMed their result and next-step documents.`
+              : `⚠️ Final decision saved, but the applicant could not be DMed: ${dm.reason}`;
+            await interaction.followUp({ content: note.slice(0, 1900), flags: MessageFlags.Ephemeral }).catch(() => {});
+          }
+
           return interaction.editReply(payload());
         }
       } catch (error) {
