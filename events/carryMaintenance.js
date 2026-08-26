@@ -4,7 +4,7 @@ const { expireReadyChecks } = require("../platform/carryReadyCheckRequeue");
 let timer = null;
 
 module.exports = {
-  name: "ready",
+  name: "clientReady",
 
   execute(client) {
     if (timer) return;
