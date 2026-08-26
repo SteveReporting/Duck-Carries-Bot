@@ -10,6 +10,13 @@ const DEPARTMENT_ROLE_SPECS = [
   { name: "Trainee Carrier", color: "#6B6258" },
 ];
 
+const SEPARATOR_ROLE_SPECS = [
+  "━━━ 🍺 TAVERN LEADERSHIP ━━━",
+  "━━━ 🛡️ CARRIER MANAGEMENT ━━━",
+  "━━━ 🏆 CARRIER PROGRESSION ━━━",
+  "━━━ ➕ ADDITIONAL ROLES ━━━",
+];
+
 function normalizeName(value) {
   return String(value || "")
     .toLowerCase()
@@ -25,14 +32,22 @@ function findRole(guild, name) {
 
 async function ensureCarrierDepartmentStartup(client) {
   if (!process.env.GUILD_ID) {
-    return { created: [], traineesAssigned: 0, warnings: ["GUILD_ID is not configured."] };
+    return {
+      created: [],
+      separatorsCreated: [],
+      traineesAssigned: 0,
+      bartendersScanned: 0,
+      warnings: ["GUILD_ID is not configured."],
+    };
   }
 
   const guild = await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
   if (!guild) {
     return {
       created: [],
+      separatorsCreated: [],
       traineesAssigned: 0,
+      bartendersScanned: 0,
       warnings: [`Could not access configured guild ${process.env.GUILD_ID}.`],
     };
   }
@@ -43,12 +58,15 @@ async function ensureCarrierDepartmentStartup(client) {
   if (!botMember?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
     return {
       created: [],
+      separatorsCreated: [],
       traineesAssigned: 0,
+      bartendersScanned: 0,
       warnings: ["Bot does not have Manage Roles, so Carrier Department startup repair was skipped."],
     };
   }
 
   const created = [];
+  const separatorsCreated = [];
   const warnings = [];
   const roles = new Map();
 
@@ -75,32 +93,58 @@ async function ensureCarrierDepartmentStartup(client) {
     roles.set(spec.name, role);
   }
 
+  // The explicit hierarchy command still controls positioning. Startup only
+  // guarantees that the revised separator roles exist; it never moves roles.
+  for (const name of SEPARATOR_ROLE_SPECS) {
+    if (findRole(guild, name)) continue;
+
+    try {
+      const role = await guild.roles.create({
+        name,
+        permissions: [],
+        hoist: false,
+        mentionable: false,
+        color: 0,
+        reason: "Automatic Carrier Department startup repair",
+      });
+      separatorsCreated.push(role.name);
+    } catch (error) {
+      warnings.push(`Could not create ${name}: ${error.message}`);
+    }
+  }
+
   const traineeRole = roles.get("Trainee Carrier") || findRole(guild, "Trainee Carrier");
   const bartenderRole = findRole(guild, "Bartender");
 
   if (!traineeRole) {
     warnings.push("Trainee Carrier role is unavailable, so no trainees were assigned.");
-    return { created, traineesAssigned: 0, warnings };
+    return { created, separatorsCreated, traineesAssigned: 0, bartendersScanned: 0, warnings };
   }
 
   if (!bartenderRole) {
     warnings.push("Bartender role was not found, so no existing Bartenders were assumed to be trainees.");
-    return { created, traineesAssigned: 0, warnings };
+    return { created, separatorsCreated, traineesAssigned: 0, bartendersScanned: 0, warnings };
   }
 
   if (botMember.roles.highest.comparePositionTo(traineeRole) <= 0) {
     warnings.push("Trainee Carrier is above the bot role, so the bot cannot assign it. Move the bot role above Trainee Carrier.");
-    return { created, traineesAssigned: 0, warnings };
+    return {
+      created,
+      separatorsCreated,
+      traineesAssigned: 0,
+      bartendersScanned: bartenderRole.members.size,
+      warnings,
+    };
   }
 
-  try {
-    await guild.members.fetch();
-  } catch (error) {
-    warnings.push(`Could not fetch all guild members before trainee migration: ${error.message}`);
-  }
-
+  // Do NOT request a full GuildMembers opcode-8 fetch here. Other Tavern startup
+  // services already maintain the member cache, and forcing another full fetch on
+  // every restart can be rate-limited for ~30 seconds and stall this repair. The
+  // cached Bartender set is migrated immediately instead.
+  const bartenders = [...bartenderRole.members.values()].filter((member) => !member.user?.bot);
   let traineesAssigned = 0;
-  for (const member of bartenderRole.members.values()) {
+
+  for (const member of bartenders) {
     if (member.roles.cache.has(traineeRole.id)) continue;
 
     try {
@@ -114,10 +158,17 @@ async function ensureCarrierDepartmentStartup(client) {
     }
   }
 
-  return { created, traineesAssigned, warnings };
+  return {
+    created,
+    separatorsCreated,
+    traineesAssigned,
+    bartendersScanned: bartenders.length,
+    warnings,
+  };
 }
 
 module.exports = {
   DEPARTMENT_ROLE_SPECS,
+  SEPARATOR_ROLE_SPECS,
   ensureCarrierDepartmentStartup,
 };
