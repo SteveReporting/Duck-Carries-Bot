@@ -1,7 +1,7 @@
 const { retrofitCarryControlCenters } = require("../platform/carryControlCenter");
 
 module.exports = {
-  name: "ready",
+  name: "clientReady",
   once: true,
   async execute(client) {
     setTimeout(async () => {
