@@ -46,6 +46,10 @@ const client = new Client({
     ],
 });
 
+// The bot intentionally uses modular event files, so multiple handlers may listen
+// to the same Discord event. Raise the EventEmitter warning threshold accordingly.
+client.setMaxListeners(50);
+
 client.commands = new Collection();
 
 function embedFooterText(embed) {
