@@ -10,6 +10,7 @@ const {
     positionCarrierHierarchy,
 } = require("../ai/carrierRoleSeparators");
 const { publishCarrierDepartment } = require("../ai/carrierWebhookPublisher");
+const { publishCarrierApplicationPanels } = require("./carrier-applications-publish");
 
 const ROLE_CHOICES = [
     { name: "Head of Carriers", value: "Head of Carriers" },
@@ -250,6 +251,18 @@ module.exports = {
                     carrierApplicationUrl,
                 });
 
+                if (scope === "all" || scope === "channels") {
+                    const currentApplications = await publishCarrierApplicationPanels(
+                        interaction.guild,
+                        `Current Carrier application panels restored after department publish by ${interaction.user.tag}`,
+                    );
+
+                    result.published.push(
+                        `#${currentApplications.publicChannel.name}: Current Carrier application panel (${currentApplications.publicVia})`,
+                        `#${currentApplications.reviewChannel.name}: Current Discord review panel (${currentApplications.reviewVia})`,
+                    );
+                }
+
                 const lines = [
                     "✅ **Carrier Department webhook publish complete**",
                     `Published: **${result.published.length}**`,
@@ -259,7 +272,11 @@ module.exports = {
                 if (result.skipped.length) {
                     lines.push("", "⚠️ **Skipped**", ...result.skipped.map((item) => `• ${item}`));
                 }
-                lines.push("", "The publisher only replaces its own tagged Tavern webhook posts. Normal messages are untouched.");
+                lines.push(
+                    "",
+                    "Application channels are automatically restored to the current Google Form + Discord review workflow after a channel publish.",
+                    "The publisher only replaces its own tagged Tavern posts. Normal messages are untouched.",
+                );
 
                 return interaction.editReply({ content: lines.join("\n").slice(0, 1900) });
             }
