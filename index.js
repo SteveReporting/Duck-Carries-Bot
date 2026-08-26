@@ -6,6 +6,7 @@ const {
     Client,
     Collection,
     GatewayIntentBits,
+    MessageFlags,
     REST,
     Routes,
     TextChannel,
@@ -51,6 +52,30 @@ const client = new Client({
 client.setMaxListeners(50);
 
 client.commands = new Collection();
+
+// Ready-check interactions have a strict Discord acknowledgement window. Because
+// this bot intentionally has many modular interactionCreate listeners, acknowledge
+// the latency-sensitive ready buttons before any normal event module gets a turn.
+// The ready-check module awaits this promise before continuing, preventing both
+// interaction expiry and double acknowledgement.
+client.prependListener("interactionCreate", (interaction) => {
+    if (!interaction?.isButton?.()) return;
+
+    const customId = String(interaction.customId || "");
+    const latencySensitive =
+        customId === "carry_readycheck_start" ||
+        /^carry_ready_yes_[0-9a-f-]{36}$/i.test(customId);
+
+    if (!latencySensitive || interaction.deferred || interaction.replied || interaction.__carryFastAckPromise) return;
+
+    interaction.__carryFastAckPromise = interaction
+        .deferReply({ flags: MessageFlags.Ephemeral })
+        .then(() => true)
+        .catch((error) => {
+            console.warn(`[CARRY FAST ACK] ${customId}: ${error.message}`);
+            return false;
+        });
+});
 
 function embedFooterText(embed) {
     if (!embed) return "";
