@@ -92,6 +92,7 @@ async function ensureMemberSeparatorRoles(member, reason = "Automatic Carrier se
 async function listAllMembersRest(guild) {
   const members = new Map();
   let after;
+  let pageNumber = 0;
 
   while (true) {
     const page = await guild.members.list({
@@ -100,14 +101,17 @@ async function listAllMembersRest(guild) {
       cache: true,
     });
 
+    pageNumber += 1;
     for (const [id, member] of page) members.set(id, member);
+    console.log(`[CARRIER SEPARATORS] Loaded member page ${pageNumber}: ${page.size} member(s), ${members.size} total so far.`);
+
     if (page.size < 1000) break;
 
     after = [...page.keys()].at(-1);
     if (!after) break;
   }
 
-  return [...members.values()];
+  return [...members.values()].filter((member) => !member.user?.bot);
 }
 
 async function syncSeparatorMembershipForMembers(members, reason) {
@@ -120,7 +124,7 @@ async function syncSeparatorMembershipForMembers(members, reason) {
   };
 
   const list = [...members];
-  const concurrency = 8;
+  const concurrency = 6;
 
   for (let index = 0; index < list.length; index += concurrency) {
     const chunk = list.slice(index, index + concurrency);
@@ -135,6 +139,12 @@ async function syncSeparatorMembershipForMembers(members, reason) {
       if (result.progressionRemoved) summary.progressionRemoved += 1;
       summary.warnings.push(...result.warnings);
     }
+
+    if (summary.scanned % 50 === 0 || summary.scanned === list.length) {
+      console.log(
+        `[CARRIER SEPARATORS] Progress: ${summary.scanned}/${list.length} checked • ${summary.additionalAdded} Additional Roles added • ${summary.progressionAdded} Carrier Progression added.`,
+      );
+    }
   }
 
   return summary;
@@ -148,7 +158,10 @@ function startCarrierSeparatorMembership(client) {
 
   const run = async () => {
     const guildId = process.env.GUILD_ID;
-    if (!guildId) return;
+    if (!guildId) {
+      console.warn("[CARRIER SEPARATORS] Backfill skipped because GUILD_ID is not configured.");
+      return;
+    }
 
     const guild = await client.guilds.fetch(guildId).catch(() => null);
     if (!guild) {
@@ -157,9 +170,12 @@ function startCarrierSeparatorMembership(client) {
     }
 
     await guild.roles.fetch().catch(() => null);
+    console.log(`[CARRIER SEPARATORS] Starting full separator membership backfill for ${guild.name}.`);
 
     try {
       const members = await listAllMembersRest(guild);
+      console.log(`[CARRIER SEPARATORS] ${members.length} non-bot member(s) loaded. Beginning role sync.`);
+
       const summary = await syncSeparatorMembershipForMembers(
         members,
         "Automatic Carrier separator membership backfill",
