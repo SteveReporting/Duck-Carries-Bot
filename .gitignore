@@ -4,3 +4,5 @@ node_modules/
 .pm2/
 database/*.db
 database/*.db-*
+data/security-state.json
+data/security-state.json.tmp
