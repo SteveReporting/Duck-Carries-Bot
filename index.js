@@ -39,8 +39,10 @@ const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildModeration,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildWebhooks,
     ],
 });
 
@@ -120,9 +122,6 @@ function installUnifiedCarrySendInterceptor() {
             console.warn(`[CARRY CONTROL CENTER] Could not replace legacy ticket panel in #${this.name}:`, error.message);
         }
 
-        // Fail open if the request has not been attached yet or the unified panel
-        // cannot be loaded for some other reason. The normal ticket message is safer
-        // than silently losing the controls.
         return originalSend.call(this, payload);
     };
 
@@ -201,10 +200,6 @@ function loadEvents() {
                 if (event.name === "interactionCreate") {
                     const interaction = args[0];
 
-                    // Warm the Discord member cache in the background for grouped
-                    // carry ticket permission overwrites. Never block the component
-                    // interaction here, because Discord only gives us a few seconds
-                    // to acknowledge a select-menu click.
                     if (interaction?.isStringSelectMenu?.() && interaction.customId === "queue_run_select") {
                         void warmGuildMemberCache(interaction);
                     }
