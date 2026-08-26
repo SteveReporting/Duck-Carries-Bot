@@ -7,9 +7,15 @@ module.exports = {
   name: "interactionCreate",
   async execute(interaction) {
     try {
-      // The integrity check can touch Supabase, so acknowledge Start Ready Check
-      // before doing any network work. Discord invalidates unacknowledged
-      // interactions after a few seconds.
+      // index.js pre-acknowledges latency-sensitive ready-check buttons before
+      // the modular interaction listeners run. Wait for that acknowledgement so
+      // downstream handlers never race it with a second deferReply().
+      if (interaction.__carryFastAckPromise) {
+        await interaction.__carryFastAckPromise;
+      }
+
+      // Fallback for Start Ready Check when this module is used without the
+      // index-level pre-ack hook.
       if (
         interaction.isButton?.() &&
         interaction.customId === "carry_readycheck_start" &&
