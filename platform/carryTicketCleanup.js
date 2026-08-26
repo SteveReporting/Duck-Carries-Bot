@@ -43,7 +43,7 @@ async function activePlatformRequests(channelId) {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("carry_requests")
-    .select("id,status")
+    .select("id,status,requester_id,carrier_id,runs_requested,runs_completed")
     .eq("ticket_channel_id", String(channelId))
     .in("status", ["claimed", "in_progress"]);
   if (error) throw new Error(`Could not check active carry requests: ${error.message}`);
@@ -53,7 +53,7 @@ async function activePlatformRequests(channelId) {
 function activeLegacyRequests(channelId) {
   try {
     return db.prepare(`
-      SELECT id,status
+      SELECT id,status,user,carrier,runs
       FROM queue
       WHERE ticket_channel = ? AND status = 'claimed'
     `).all(String(channelId));
@@ -71,13 +71,93 @@ async function canManageTicket(interaction) {
   return hasAnyPlatformRole(profile.id, CARRIER_PLATFORM_ROLES);
 }
 
-async function sendCloseLog(interaction) {
+async function requeueActivePlatformRequests(channelId) {
+  const supabase = getSupabase();
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("carry_requests")
+    .update({
+      status: "queued",
+      carrier_id: null,
+      claimed_at: null,
+      started_at: null,
+      ticket_channel_id: null,
+      session_runs: null,
+      carrier_confirmed_at: null,
+      requester_confirmed_at: null,
+      updated_at: now,
+    })
+    .eq("ticket_channel_id", String(channelId))
+    .in("status", ["claimed", "in_progress"])
+    .select("id,requester_id,status,runs_requested,runs_completed");
+
+  if (error) throw new Error(`Could not return active platform requests to the queue: ${error.message}`);
+  return data || [];
+}
+
+function requeueActiveLegacyRequests(channelId) {
+  try {
+    const rows = activeLegacyRequests(channelId);
+    if (!rows.length) return [];
+
+    db.prepare(`
+      UPDATE queue
+      SET carrier = NULL,
+          status = 'waiting',
+          ticket_channel = NULL,
+          carrier_confirmed = 0,
+          requester_confirmed = 0
+      WHERE ticket_channel = ? AND status = 'claimed'
+    `).run(String(channelId));
+
+    return rows;
+  } catch (error) {
+    if (String(error.message || "").includes("no such column")) return [];
+    throw error;
+  }
+}
+
+async function notifyRequeuedPlatformRequesters(interaction, rows) {
+  if (!rows.length) return;
+
+  const supabase = getSupabase();
+  const requesterIds = [...new Set(rows.map((row) => row.requester_id).filter(Boolean))];
+  if (!requesterIds.length) return;
+
+  const { data: profiles, error } = await supabase
+    .from("profiles")
+    .select("id,discord_id")
+    .in("id", requesterIds);
+  if (error) {
+    console.warn(`[CARRY TICKET CLOSE] Could not load requester profiles for requeue DMs: ${error.message}`);
+    return;
+  }
+
+  const discordByProfile = new Map((profiles || []).map((profile) => [profile.id, profile.discord_id]));
+  for (const row of rows) {
+    const discordId = discordByProfile.get(row.requester_id);
+    if (!discordId) continue;
+
+    try {
+      const user = await interaction.client.users.fetch(discordId);
+      const left = Math.max(0, Number(row.runs_requested || 0) - Number(row.runs_completed || 0));
+      await user.send([
+        "🔒 **Your carry ticket was closed by a Carrier or staff member.**",
+        `Your request has been returned to the queue${left ? ` with **${left} run${left === 1 ? "" : "s"} remaining**` : ""}.`,
+        "You do not need to submit a new request.",
+      ].join("\n"));
+    } catch {}
+  }
+}
+
+async function sendCloseLog(interaction, { platformRequeued = 0, legacyRequeued = 0 } = {}) {
   if (!process.env.MOD_LOG_CHANNEL_ID) return;
   const logChannel = await interaction.client.channels
     .fetch(process.env.MOD_LOG_CHANNEL_ID)
     .catch(() => null);
   if (!logChannel?.isTextBased?.()) return;
 
+  const totalRequeued = platformRequeued + legacyRequeued;
   const embed = new EmbedBuilder()
     .setColor(0xdc2626)
     .setTitle("🔒 Carry Ticket Closed")
@@ -85,7 +165,7 @@ async function sendCloseLog(interaction) {
       `**Ticket:** #${interaction.channel?.name || interaction.channelId}`,
       `**Channel ID:** \`${interaction.channelId}\``,
       `**Closed by:** <@${interaction.user.id}>`,
-      "**Reason:** No active carry requests remained in the ticket.",
+      `**Active requests returned to queue:** ${totalRequeued}`,
     ].join("\n"))
     .setFooter({ text: "The Carry Tavern • Carry Logs" })
     .setTimestamp();
@@ -108,25 +188,38 @@ async function handleCarryTicketClose(interaction) {
     return true;
   }
 
+  if (interaction.message?.editable) {
+    await interaction.message.edit({ components: [closeRow(true)] }).catch(() => {});
+  }
+
   const [platformRows, legacyRows] = await Promise.all([
     activePlatformRequests(interaction.channelId),
     Promise.resolve(activeLegacyRequests(interaction.channelId)),
   ]);
 
-  const active = [...platformRows, ...legacyRows];
-  if (active.length) {
-    await interaction.editReply(
-      `❌ This ticket still has **${active.length} active carry request${active.length === 1 ? "" : "s"}**. Complete, release or cancel the active request before closing the channel.`,
-    );
-    return true;
+  let platformRequeued = [];
+  let legacyRequeued = [];
+
+  if (platformRows.length) {
+    platformRequeued = await requeueActivePlatformRequests(interaction.channelId);
+    await notifyRequeuedPlatformRequesters(interaction, platformRequeued).catch(() => {});
   }
 
-  if (interaction.message?.editable) {
-    await interaction.message.edit({ components: [closeRow(true)] }).catch(() => {});
+  if (legacyRows.length) {
+    legacyRequeued = requeueActiveLegacyRequests(interaction.channelId);
   }
 
-  await sendCloseLog(interaction).catch(() => {});
-  await interaction.editReply("🔒 No active carry requests remain. This ticket will close in **10 seconds**.");
+  await sendCloseLog(interaction, {
+    platformRequeued: platformRequeued.length,
+    legacyRequeued: legacyRequeued.length,
+  }).catch(() => {});
+
+  const totalRequeued = platformRequeued.length + legacyRequeued.length;
+  await interaction.editReply(
+    totalRequeued
+      ? `🔒 Closing this ticket in **10 seconds**. **${totalRequeued} active carry request${totalRequeued === 1 ? " was" : "s were"} returned to the queue** so no request is lost.`
+      : "🔒 This ticket will close in **10 seconds**.",
+  );
 
   const channel = interaction.channel;
   setTimeout(() => {
@@ -147,7 +240,8 @@ async function ensureCarryTicketClosePanel(channel) {
   await channel.send({
     content: [
       "🔒 **Ticket Controls**",
-      "When this carry has no active requests left, the Carrier or staff can close the ticket here.",
+      "Carriers or staff can close the ticket at any time.",
+      "If active carry requests are still attached, they are safely returned to the queue with their existing progress preserved.",
     ].join("\n"),
     components: [closeRow(false)],
   });
