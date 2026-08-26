@@ -1,4 +1,28 @@
+const { AuditLogEvent } = require("discord.js");
 const { removeOrphanedCarryTicket } = require("../platform/carryTicketLifecycleGuard");
+
+async function wasAntiNukeRestore(channel) {
+  try {
+    const logs = await channel.guild.fetchAuditLogs({
+      type: AuditLogEvent.ChannelCreate,
+      limit: 8,
+    });
+
+    const now = Date.now();
+    const entry = logs.entries.find(
+      (item) =>
+        String(item.targetId) === String(channel.id) &&
+        now - item.createdTimestamp <= 15_000,
+    );
+
+    return Boolean(
+      entry &&
+      String(entry.reason || "").startsWith("Anti-nuke restore of deleted channel"),
+    );
+  } catch {
+    return false;
+  }
+}
 
 module.exports = {
   name: "channelCreate",
@@ -6,11 +30,26 @@ module.exports = {
   async execute(channel) {
     if (!channel?.isTextBased?.() || !String(channel.name || "").toLowerCase().startsWith("carry-")) return;
 
-    // Legitimate carry tickets are linked to their request immediately after creation.
-    // Anti-nuke restores of already-closed tickets receive a brand-new channel ID and
-    // therefore have no active request linked to them. Give normal ticket creation a
-    // few seconds to finish before deciding whether this new channel is orphaned.
-    const timer = setTimeout(async () => {
+    // The security system can restore a deleted ticket from its anti-nuke snapshot.
+    // If this exact channel creation is an anti-nuke restore, remove it immediately.
+    const immediateTimer = setTimeout(async () => {
+      const current = await channel.guild.channels.fetch(channel.id).catch(() => null);
+      if (!current) return;
+
+      try {
+        if (await wasAntiNukeRestore(current)) {
+          await current.delete("Closed Carry Tavern ticket must not be restored by anti-nuke");
+          console.log(`[CARRY TICKET GUARD] Removed anti-nuke restored ticket #${current.name} (${current.id}).`);
+        }
+      } catch (error) {
+        console.warn(`[CARRY TICKET GUARD] Anti-nuke restore check failed for #${channel.name}: ${error.message}`);
+      }
+    }, 1_000);
+    immediateTimer.unref?.();
+
+    // Fallback: legitimate tickets are linked to an active request immediately after
+    // creation. A restored/closed ticket gets a fresh channel ID and no active DB link.
+    const orphanTimer = setTimeout(async () => {
       const current = await channel.guild.channels.fetch(channel.id).catch(() => null);
       if (!current) return;
 
@@ -24,6 +63,6 @@ module.exports = {
       }
     }, 7_500);
 
-    timer.unref?.();
+    orphanTimer.unref?.();
   },
 };
