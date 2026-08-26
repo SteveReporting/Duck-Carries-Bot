@@ -6,6 +6,7 @@ const { carryClaimRoleId } = require("../platform/carryClaimAccess");
 const { startWebsiteCarryActions } = require("../platform/webCarryActions");
 const { startCarryCleanup } = require("../platform/carryCleanup");
 const { startLiveCarrierLeaderboard } = require("../platform/liveCarrierLeaderboard");
+const { ensureCarrierDepartmentStartup } = require("../platform/carrierDepartmentStartup");
 
 function configuredCarrierRoles() {
   return [
@@ -60,6 +61,19 @@ module.exports = {
   async execute(client) {
     console.log(`${client.user.tag} is online`);
     client.user.setActivity("The Carry Tavern 🍺");
+
+    const departmentStartup = await ensureCarrierDepartmentStartup(client).catch((error) => ({
+      created: [],
+      traineesAssigned: 0,
+      warnings: [error.message || "Unknown Carrier Department startup error"],
+    }));
+
+    console.log(
+      `✅ [CARRIER DEPARTMENT] Startup repair complete: ${departmentStartup.created.length} role(s) created, ${departmentStartup.traineesAssigned} existing Bartender(s) assigned Trainee Carrier.`,
+    );
+    for (const warning of departmentStartup.warnings || []) {
+      console.warn(`[CARRIER DEPARTMENT] ${warning}`);
+    }
 
     await validateRoleConfiguration(client).catch((error) => {
       console.warn("[ROLE CHECK] Validation failed:", error.message);
