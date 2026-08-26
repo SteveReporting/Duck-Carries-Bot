@@ -9,6 +9,12 @@ const { SecurityHeartbeat } = require('./heartbeat');
 let runtime = null;
 let starting = null;
 
+const TICKETS_V2_BOT_ID = '1325579039888511056';
+const PERMANENT_SECURITY_IMMUNE_ACTORS = new Set([
+  '1137081101341433936', // Chicken
+  TICKETS_V2_BOT_ID, // Tickets v2
+]);
+
 function normalizeChannelName(value) {
   return String(value || '')
     .toLowerCase()
@@ -71,6 +77,24 @@ async function startSecurity(client) {
     const guild = client.guilds.cache.get(config.discord.guildId)
       || await client.guilds.fetch(config.discord.guildId);
 
+    // Recover Tickets v2 if this security system previously false-positive banned it.
+    // Unbanning does not add the bot back by itself, but it makes the normal Discord
+    // app invite/install work again immediately.
+    const ticketsV2Ban = await guild.bans.fetch(TICKETS_V2_BOT_ID).catch(() => null);
+    if (ticketsV2Ban) {
+      const unbanned = await guild.members.unban(
+        TICKETS_V2_BOT_ID,
+        'Recovering trusted Tickets v2 bot after false-positive anti-nuke containment',
+      ).then(() => true).catch((error) => {
+        console.warn(`[security] Could not auto-unban Tickets v2 (${TICKETS_V2_BOT_ID}): ${error.message}`);
+        return false;
+      });
+
+      if (unbanned) {
+        console.log(`[security] Auto-unbanned trusted Tickets v2 bot (${TICKETS_V2_BOT_ID}).`);
+      }
+    }
+
     // Prime configured member/role targets used by channel permission overwrites.
     for (const ownerId of [...config.securityOwners]) {
       const member = guild.members.cache.get(ownerId)
@@ -103,6 +127,48 @@ async function startSecurity(client) {
     });
 
     const engine = new SecurityEngine(client, config, store, ai);
+
+    // Permanent immunity is stronger than the ordinary trusted-user threshold.
+    // These actors must never be counted toward anti-nuke, contained, timed out,
+    // stripped of roles, or banned by this security engine.
+    const originalIsTrustedActor = engine.isTrustedActor.bind(engine);
+    engine.isTrustedActor = async (userId, targetGuild) => {
+      if (PERMANENT_SECURITY_IMMUNE_ACTORS.has(String(userId))) return true;
+      return originalIsTrustedActor(userId, targetGuild);
+    };
+
+    const originalRecordDangerousAction = engine.recordDangerousAction.bind(engine);
+    engine.recordDangerousAction = async (targetGuild, actorId, kind, target) => {
+      if (PERMANENT_SECURITY_IMMUNE_ACTORS.has(String(actorId))) {
+        console.log(`[security] Ignored ${kind} from permanently immune actor ${actorId}: ${target}.`);
+        return;
+      }
+      return originalRecordDangerousAction(targetGuild, actorId, kind, target);
+    };
+
+    const originalContainActor = engine.containActor.bind(engine);
+    engine.containActor = async (targetGuild, actorId, reason) => {
+      if (PERMANENT_SECURITY_IMMUNE_ACTORS.has(String(actorId))) {
+        console.log(`[security] Blocked containment attempt against permanently immune actor ${actorId}: ${reason}.`);
+        return;
+      }
+      return originalContainActor(targetGuild, actorId, reason);
+    };
+
+    // Tickets v2 itself is an approved bot. Never treat the bot being re-added as
+    // an unauthorized bot addition, regardless of which moderator performs the invite.
+    const originalOnMemberAdd = engine.onMemberAdd.bind(engine);
+    engine.onMemberAdd = async (member) => {
+      if (String(member?.id) === TICKETS_V2_BOT_ID) {
+        console.log(`[security] Approved Tickets v2 bot joined (${TICKETS_V2_BOT_ID}); anti-bot enforcement skipped.`);
+        await engine.log(
+          'security-audit',
+          `✅ Approved Tickets v2 bot <@${TICKETS_V2_BOT_ID}> joined; anti-bot enforcement skipped.`,
+        );
+        return;
+      }
+      return originalOnMemberAdd(member);
+    };
 
     // Normal ticket closures can delete several channels within seconds. Those
     // deletions are expected lifecycle actions, not server destruction. Bypass
