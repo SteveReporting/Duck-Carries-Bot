@@ -9,6 +9,52 @@ const { SecurityHeartbeat } = require('./heartbeat');
 let runtime = null;
 let starting = null;
 
+function normalizeChannelName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+function isDisposableTicketChannel(channel) {
+  if (!channel?.guild || channel.isThread?.()) return false;
+
+  const channelName = normalizeChannelName(channel.name);
+  const parentName = normalizeChannelName(
+    channel.parent?.name
+      || channel.guild.channels.cache.get(channel.parentId)?.name
+      || '',
+  );
+
+  if (!channelName || !parentName) return false;
+
+  // Never suppress anti-nuke inside security or development/test areas.
+  if (
+    parentName.includes('security')
+    || parentName.includes('test')
+    || parentName.includes('demo')
+  ) {
+    return false;
+  }
+
+  // Ticket channels are intentionally disposable. Requiring both a ticket-like
+  // category and an ephemeral ticket naming pattern keeps permanent channels
+  // protected while allowing normal moderator/ticket-bot closes.
+  const parentIsTicketArea =
+    parentName.includes('ticket')
+    || parentName.includes('carryrequest')
+    || parentName.includes('carrierapplication')
+    || parentName.includes('recruitment');
+
+  if (!parentIsTicketArea) return false;
+
+  return (
+    /^duckrequest\d+$/.test(channelName)
+    || /^ticket\d+$/.test(channelName)
+    || /^carry[a-z0-9]*\d{3,}$/.test(channelName)
+    || /^carrier(?:application|app|request)[a-z0-9]*\d+$/.test(channelName)
+  );
+}
+
 async function startSecurity(client) {
   if (runtime) return runtime;
   if (starting) return starting;
@@ -51,6 +97,30 @@ async function startSecurity(client) {
     });
 
     const engine = new SecurityEngine(client, config, store, ai);
+
+    // Normal ticket closures can delete several channels within seconds. Those
+    // deletions are expected lifecycle actions, not server destruction. Bypass
+    // channel-delete anti-nuke accounting/restoration only for clearly disposable
+    // ticket channels; all permanent channels remain protected as before.
+    const originalOnChannelDelete = engine.onChannelDelete.bind(engine);
+    engine.onChannelDelete = async (channel) => {
+      if (isDisposableTicketChannel(channel)) {
+        const parentName = channel.parent?.name
+          || channel.guild?.channels?.cache?.get(channel.parentId)?.name
+          || 'unknown category';
+        console.log(
+          `[security] Expected ticket closure ignored by anti-nuke: #${channel.name} under ${parentName}.`,
+        );
+        await engine.log(
+          'security-audit',
+          `🧾 Expected ticket closure ignored by anti-nuke: **#${channel.name}** under **${parentName}**.`,
+        );
+        return;
+      }
+
+      return originalOnChannelDelete(channel);
+    };
+
     const heartbeat = new SecurityHeartbeat(client, engine);
     engine.bind();
     await engine.initialize(guild);
