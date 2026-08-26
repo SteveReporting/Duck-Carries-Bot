@@ -126,11 +126,20 @@ async function ensureTreasuryStockPanel(client) {
   }
 }
 
+async function ensureEphemeralDeferred(interaction) {
+  if (interaction.__carryFastAckPromise) {
+    await interaction.__carryFastAckPromise;
+  }
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  }
+}
+
 async function handleTreasuryStockInteraction(interaction) {
   if (!interaction.guild) return false;
 
   if (interaction.isButton() && interaction.customId === "treasury_stock_legendary") {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    await ensureEphemeralDeferred(interaction);
     const items = await fetchStock("legendary");
     await interaction.editReply({
       embeds: [new EmbedBuilder()
@@ -143,7 +152,7 @@ async function handleTreasuryStockInteraction(interaction) {
   }
 
   if (interaction.isButton() && interaction.customId === "treasury_stock_collect") {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    await ensureEphemeralDeferred(interaction);
     const items = await fetchStock("collect");
     const components = await collectColorComponents(items);
     await interaction.editReply({
