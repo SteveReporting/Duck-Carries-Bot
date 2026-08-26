@@ -37,7 +37,7 @@ class SecurityHeartbeat {
 
     const dangerousRolesAbove = guild.roles.cache.filter((role) =>
       role.id !== guild.roles.everyone.id &&
-      role.position >= me.roles.highest.position &&
+      role.position > me.roles.highest.position &&
       [
         PermissionFlagsBits.Administrator,
         PermissionFlagsBits.ManageGuild,
@@ -59,7 +59,7 @@ class SecurityHeartbeat {
       const problems = [];
       if (missing.length) problems.push(`Missing permissions: ${missing.join(', ')}`);
       if (dangerousRolesAbove.size) {
-        problems.push(`Dangerous roles at/above bot role: ${[...dangerousRolesAbove.values()].map((r) => `@${r.name}`).join(', ')}`);
+        problems.push(`Dangerous roles above bot role: ${[...dangerousRolesAbove.values()].map((r) => `@${r.name}`).join(', ')}`);
       }
       await this.security.incident('security-integrity-degraded', 'critical', {
         details: problems.join('\n'),
