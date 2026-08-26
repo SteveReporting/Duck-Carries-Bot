@@ -44,34 +44,39 @@ function normalize(value) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
-function hasMemberSpecificOverwrite(channel) {
-  return Boolean(
-    channel?.permissionOverwrites?.cache?.some((overwrite) => Number(overwrite.type) === 1),
-  );
-}
-
 function parentLooksLikeCarrierRecruitment(channel) {
   const parentName = normalize(channel?.parent?.name || "");
+  if (!parentName) return false;
+
+  // Explicitly ignore unrelated ticket areas and test/demo categories.
+  if (
+    parentName.includes("supportticket") ||
+    parentName.includes("ticketv2test") ||
+    parentName.includes("test") ||
+    parentName.includes("demo")
+  ) {
+    return false;
+  }
+
+  // The old application system used "Carrier Team Tickets" with channels such
+  // as duck-request-208. Also support clearly named Carrier recruitment areas.
   return Boolean(
-    parentName.includes("carrierteam") ||
+    parentName.includes("carrierteamticket") ||
     parentName.includes("carrierapplication") ||
     parentName.includes("carrierrecruitment") ||
-    parentName.includes("applications") ||
-    parentName.includes("recruitment") ||
-    parentName.includes("applicant")
+    (parentName.includes("carrier") && parentName.includes("application")) ||
+    (parentName.includes("carrier") && parentName.includes("recruitment"))
   );
 }
 
 function nameLooksLikeApplicationTicket(channel) {
   const channelName = normalize(channel?.name || "");
   return Boolean(
+    channelName.startsWith("duckrequest") ||
     channelName.includes("carrierapplication") ||
-    channelName.includes("application") ||
-    channelName.includes("applicant") ||
-    channelName.includes("interview") ||
-    channelName.startsWith("carrierapp") ||
-    channelName.startsWith("app") ||
-    channelName.startsWith("ticket")
+    channelName.includes("carrierapplicant") ||
+    channelName.includes("carrierinterview") ||
+    channelName.startsWith("carrierapp")
   );
 }
 
@@ -80,43 +85,18 @@ function topicLooksLikeApplicationTicket(channel) {
   return Boolean(
     topic.includes("carrierapplication") ||
     topic.includes("carrierteamapplication") ||
-    topic.includes("applicationticket") ||
-    topic.includes("applicant") ||
     topic.includes("carrierrecruitment") ||
-    topic.includes("interview")
+    topic.includes("carrierapplicant")
   );
 }
 
-function messageText(message) {
-  const parts = [message?.content || ""];
-
-  for (const embed of message?.embeds || []) {
-    parts.push(embed.title || "", embed.description || "", embed.footer?.text || "");
-    for (const field of embed.fields || []) {
-      parts.push(field.name || "", field.value || "");
-    }
-  }
-
-  return normalize(parts.join(" "));
-}
-
-function historyLooksLikeCarrierApplication(messages) {
-  if (!messages) return false;
-
-  const combined = [...messages.values()]
-    .map(messageText)
-    .join("");
-
+function isKnownFalsePositiveArea(channel) {
+  const parentName = normalize(channel?.parent?.name || "");
   return Boolean(
-    combined.includes("carrierteamapplication") ||
-    combined.includes("carrierapplication") ||
-    combined.includes("applyforcarrier") ||
-    combined.includes("applyingforcarrier") ||
-    combined.includes("carrierapplicant") ||
-    combined.includes("carrierrecruitment") ||
-    combined.includes("whywouldyouliketobeacarrier") ||
-    combined.includes("whydoyouwanttobeacarrier") ||
-    combined.includes("carrierapplicationticket")
+    parentName.includes("supportticket") ||
+    parentName.includes("ticketv2test") ||
+    parentName.includes("test") ||
+    parentName.includes("demo")
   );
 }
 
@@ -126,28 +106,16 @@ async function looksLikeLegacyApplicationTicket(channel) {
   const channelName = normalize(channel.name);
   if (!channelName || PERMANENT_CHANNEL_NAMES.has(channelName)) return false;
 
-  const memberSpecific = hasMemberSpecificOverwrite(channel);
   const parentRelevant = parentLooksLikeCarrierRecruitment(channel);
-  const nameRelevant = nameLooksLikeApplicationTicket(channel);
-  const topicRelevant = topicLooksLikeApplicationTicket(channel);
+  if (!parentRelevant) return false;
 
-  // Normal legacy layouts: applicant/user-named private channels inside a Carrier
-  // recruitment category, or explicitly named application/interview ticket channels.
-  if ((parentRelevant && memberSpecific) ||
-      (nameRelevant && (parentRelevant || memberSpecific)) ||
-      (topicRelevant && (parentRelevant || memberSpecific))) {
-    return true;
-  }
+  // Every old duck-request-* channel under Carrier Team Tickets is a legacy
+  // Carrier Team application ticket. Other Carrier recruitment categories need
+  // either an application-looking channel name or application topic.
+  const parentName = normalize(channel.parent?.name || "");
+  if (parentName.includes("carrierteamticket")) return true;
 
-  // Older ticket bots often named channels only after the applicant, and sometimes
-  // moved them into generic ticket categories. For private/member-specific channels,
-  // inspect recent ticket content for unmistakable Carrier application language.
-  if (memberSpecific && channel.isTextBased?.()) {
-    const messages = await channel.messages.fetch({ limit: 35 }).catch(() => null);
-    if (historyLooksLikeCarrierApplication(messages)) return true;
-  }
-
-  return false;
+  return nameLooksLikeApplicationTicket(channel) || topicLooksLikeApplicationTicket(channel);
 }
 
 function closeRow(disabled = false) {
@@ -207,7 +175,7 @@ async function handleCarrierApplicationTicketClose(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   if (!(await looksLikeLegacyApplicationTicket(interaction.channel))) {
-    await interaction.editReply("❌ This is not recognised as a legacy Carrier application ticket.");
+    await interaction.editReply("❌ This is not recognised as a legacy Carrier Team application ticket.");
     return true;
   }
 
@@ -253,17 +221,44 @@ async function ensureCarrierApplicationClosePanel(channel) {
   return true;
 }
 
+async function removeStrayClosePanels(channel) {
+  if (!channel?.isTextBased?.()) return 0;
+
+  const messages = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  if (!messages) return 0;
+
+  let removed = 0;
+  for (const message of messages.values()) {
+    if (message.author?.id !== channel.client.user.id || !hasCloseButton(message)) continue;
+
+    try {
+      await message.delete();
+      removed += 1;
+      console.log(
+        `[CARRIER APPLICATION TICKET] Removed stray close panel from #${channel.name} under ${channel.parent?.name || "no category"}.`,
+      );
+    } catch (error) {
+      console.warn(
+        `[CARRIER APPLICATION TICKET] Could not remove stray panel from #${channel.name}: ${error.message}`,
+      );
+    }
+  }
+
+  return removed;
+}
+
 async function retrofitCarrierApplicationTicketClosePanels(client) {
-  if (!process.env.GUILD_ID) return { checked: 0, added: 0, matched: [] };
+  if (!process.env.GUILD_ID) return { checked: 0, added: 0, removed: 0, matched: [] };
 
   const guild = await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
-  if (!guild) return { checked: 0, added: 0, matched: [] };
+  if (!guild) return { checked: 0, added: 0, removed: 0, matched: [] };
 
   const channels = await guild.channels.fetch().catch(() => null);
-  if (!channels) return { checked: 0, added: 0, matched: [] };
+  if (!channels) return { checked: 0, added: 0, removed: 0, matched: [] };
 
   let checked = 0;
   let added = 0;
+  let removed = 0;
   const matched = [];
 
   for (const channel of channels.values()) {
@@ -277,7 +272,14 @@ async function retrofitCarrierApplicationTicketClosePanels(client) {
       continue;
     }
 
-    if (!legacy) continue;
+    if (!legacy) {
+      // Clean the false-positive panels created by the previous broad detector.
+      if (isKnownFalsePositiveArea(channel)) {
+        removed += await removeStrayClosePanels(channel);
+      }
+      continue;
+    }
+
     checked += 1;
     matched.push(channel.name);
     console.log(
@@ -291,7 +293,7 @@ async function retrofitCarrierApplicationTicketClosePanels(client) {
     }
   }
 
-  return { checked, added, matched };
+  return { checked, added, removed, matched };
 }
 
 module.exports = {
