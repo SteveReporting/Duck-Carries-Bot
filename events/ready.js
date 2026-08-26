@@ -64,12 +64,14 @@ module.exports = {
 
     const departmentStartup = await ensureCarrierDepartmentStartup(client).catch((error) => ({
       created: [],
+      separatorsCreated: [],
       traineesAssigned: 0,
+      bartendersScanned: 0,
       warnings: [error.message || "Unknown Carrier Department startup error"],
     }));
 
     console.log(
-      `✅ [CARRIER DEPARTMENT] Startup repair complete: ${departmentStartup.created.length} role(s) created, ${departmentStartup.traineesAssigned} existing Bartender(s) assigned Trainee Carrier.`,
+      `✅ [CARRIER DEPARTMENT] Startup repair complete: ${departmentStartup.created.length} department role(s) created, ${departmentStartup.separatorsCreated?.length || 0} separator role(s) created, ${departmentStartup.traineesAssigned}/${departmentStartup.bartendersScanned || 0} cached Bartender(s) newly assigned Trainee Carrier.`,
     );
     for (const warning of departmentStartup.warnings || []) {
       console.warn(`[CARRIER DEPARTMENT] ${warning}`);
