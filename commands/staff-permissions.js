@@ -263,6 +263,13 @@ async function preview(interaction) {
   return interaction.editReply({ embeds: [embed] });
 }
 
+function expectedPermissionChanges(client) {
+  if (!(client.__securityExpectedRolePermissionChanges instanceof Map)) {
+    client.__securityExpectedRolePermissionChanges = new Map();
+  }
+  return client.__securityExpectedRolePermissionChanges;
+}
+
 async function apply(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const plan = await buildRolePlan(interaction);
@@ -295,6 +302,7 @@ async function apply(interaction) {
   const results = [];
   let changed = 0;
   let unchanged = 0;
+  const expected = expectedPermissionChanges(interaction.client);
 
   for (const row of plan.rows) {
     if (!row.changed) {
@@ -303,12 +311,24 @@ async function apply(interaction) {
       continue;
     }
 
-    await row.role.setPermissions(
-      row.target,
-      `Staff permission profile applied by ${interaction.user.username} (${interaction.user.id})`,
-    );
-    changed += 1;
-    results.push(`✅ **${row.config.label}** — ${row.config.permissions.length ? row.config.permissions.map(prettyPermission).join(", ") : "no elevated server-wide permissions"}`);
+    expected.set(String(row.role.id), {
+      bitfield: row.target.bitfield.toString(),
+      expiresAt: Date.now() + 15_000,
+      source: "staff-permissions",
+      requestedBy: String(interaction.user.id),
+    });
+
+    try {
+      await row.role.setPermissions(
+        row.target,
+        `Staff permission profile applied by ${interaction.user.username} (${interaction.user.id})`,
+      );
+      changed += 1;
+      results.push(`✅ **${row.config.label}** — ${row.config.permissions.length ? row.config.permissions.map(prettyPermission).join(", ") : "no elevated server-wide permissions"}`);
+    } catch (error) {
+      expected.delete(String(row.role.id));
+      throw error;
+    }
   }
 
   return interaction.editReply({
