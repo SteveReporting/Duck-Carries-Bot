@@ -163,7 +163,7 @@ function uniqueRoleResult(candidates, config, source) {
   if (candidates.size === 1) return { role: candidates.first(), source };
   if (candidates.size > 1) {
     return {
-      error: `${config.label}: multiple matching roles found (${candidates.map((role) => role.name).join(", ")}). Select the exact role in the command.`,
+      error: `${config.label}: multiple matching roles found (${candidates.map((role) => role.name).join(", ")}). Select the exact role in the command if you want that rank repaired.`,
     };
   }
   return null;
@@ -205,14 +205,12 @@ function resolveConfiguredOrNamedRole(guild, config, explicit = null, predicate 
 }
 
 function resolvePositionRole(guild, config, explicit = null) {
-  const resolved = resolveConfiguredOrNamedRole(
+  return resolveConfiguredOrNamedRole(
     guild,
     config,
     explicit,
     (role) => !looksLikeSeparatorRole(role),
   );
-  if (resolved.error || resolved.role) return resolved;
-  return { error: `${config.label}: role not found. Select ${config.option} or set ${config.env}.` };
 }
 
 function resolveOptionalSharedRole(guild, config) {
@@ -283,10 +281,14 @@ async function buildPlan(interaction) {
   const roleErrors = [];
   for (const [key, config] of Object.entries(POSITION_CONFIG)) {
     const resolved = resolvePositionRole(guild, config, selectedRole(interaction, config.option));
-    if (resolved.error) roleErrors.push(resolved.error);
-    else {
+    if (resolved.error) {
+      roleErrors.push(resolved.error);
+      roleSources.set(key, "unresolved — rank left untouched");
+    } else if (resolved.role) {
       roleMap.set(key, resolved.role);
       roleSources.set(key, resolved.source);
+    } else {
+      roleSources.set(key, "not detected — rank left untouched");
     }
   }
 
@@ -418,11 +420,12 @@ function planLines(plan) {
   const lines = [];
   for (const item of plan.matched) {
     const companyRole = item.companyRole || `*${item.companyLabel} role will be created on apply*`;
+    const rankState = item.positionRole ? item.positionRole.toString() : "current rank left untouched";
     const separators = item.desiredSeparators.length
       ? item.desiredSeparators.map((role) => role.name).join(", ")
       : "none detected";
     lines.push(
-      `✅ ${item.member} — **${item.positionLabel}** — **${item.timezone}** — ${companyRole} | separators: ${separators}`,
+      `✅ ${item.member} — **${item.positionLabel}** (${rankState}) — **${item.timezone}** — ${companyRole} | separators: ${separators}`,
     );
   }
   for (const item of plan.missing) {
@@ -456,7 +459,7 @@ async function preview(interaction) {
   const roleSummary = Object.entries(POSITION_CONFIG).map(([key, config]) => {
     const role = plan.roleMap.get(key);
     const source = plan.roleSources.get(key);
-    return `${role ? "✅" : "❌"} ${config.label}: ${role || "not resolved"}${source ? ` (${source})` : ""}`;
+    return `${role ? "✅" : "ℹ️"} ${config.label}: ${role || "not resolved"}${source ? ` (${source})` : ""}`;
   }).join("\n");
 
   const companySummary = Object.entries(COMPANY_CONFIG).map(([key, config]) => {
@@ -489,6 +492,7 @@ async function preview(interaction) {
       "",
       "**Position roles**",
       roleSummary,
+      "Unresolved position roles are skipped and the member's current rank is left untouched.",
       "",
       "**Regional companies**",
       companySummary,
@@ -498,7 +502,7 @@ async function preview(interaction) {
       "",
       "**Separator roles**",
       separatorSummary,
-      ...(plan.roleErrors.length ? ["", "**Blocking role issues**", ...plan.roleErrors.map((x) => `• ${x}`)] : []),
+      ...(plan.roleErrors.length ? ["", "**Position-role notes (non-blocking)**", ...plan.roleErrors.map((x) => `• ${x}`)] : []),
       ...(plan.companyIssues.length ? ["", "**Company-role issues**", ...plan.companyIssues.map((x) => `• ${x}`)] : []),
       ...(plan.sharedIssues.length ? ["", "**Shared-role issues**", ...plan.sharedIssues.map((x) => `• ${x}`)] : []),
       ...(plan.separatorIssues.length ? ["", "**Separator issues**", ...plan.separatorIssues.map((x) => `• ${x}`)] : []),
@@ -514,11 +518,10 @@ async function apply(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const plan = await buildPlan(interaction);
 
-  if (plan.roleErrors.length || plan.companyIssues.length) {
+  if (plan.companyIssues.length) {
     return interaction.editReply({
       content: [
-        "❌ Required roles could not be safely resolved, so nothing was changed.",
-        ...plan.roleErrors.map((x) => `• ${x}`),
+        "❌ Regional company roles could not be safely resolved, so nothing was changed.",
         ...plan.companyIssues.map((x) => `• ${x}`),
       ].join("\n").slice(0, 1900),
     });
@@ -535,15 +538,17 @@ async function apply(interaction) {
 
   for (const item of plan.matched) {
     const desiredRoles = new Map();
-    desiredRoles.set(item.positionRole.id, item.positionRole);
-    desiredRoles.set(item.companyRole.id, item.companyRole);
+    if (item.positionRole) desiredRoles.set(item.positionRole.id, item.positionRole);
+    if (item.companyRole) desiredRoles.set(item.companyRole.id, item.companyRole);
     desiredRoles.set(plan.supportTeamRole.id, plan.supportTeamRole);
     desiredRoles.set(plan.ticketSupportRole.id, plan.ticketSupportRole);
     for (const role of plan.sharedRoles) desiredRoles.set(role.id, role);
     for (const role of item.desiredSeparators) desiredRoles.set(role.id, role);
 
     const managedRolePool = new Map();
-    for (const role of allPositionRoles) managedRolePool.set(role.id, role);
+    if (item.positionRole) {
+      for (const role of allPositionRoles) managedRolePool.set(role.id, role);
+    }
     for (const role of allCompanyRoles) managedRolePool.set(role.id, role);
     for (const role of plan.allRecognizedSeparators) managedRolePool.set(role.id, role);
 
@@ -605,8 +610,9 @@ async function apply(interaction) {
       `🛟 Ticket Support: ${plan.ticketSupportRole}`,
       `🛡️ **Americas:** ${FINAL_ROSTER.filter((x) => x.company === "americas").length} staff`,
       `🌍 **Europe & Asia:** ${FINAL_ROSTER.filter((x) => x.company === "europe-asia").length} staff`,
+      ...(plan.roleErrors.length ? ["", `ℹ️ ${plan.roleErrors.length} unresolved position role(s) were left untouched.`] : []),
       "",
-      "All matched accepted staff received both selected support roles. Unrelated roles were untouched.",
+      "All matched accepted staff received both selected support roles. Unresolved ranks were left untouched.",
     ].join("\n"),
   });
 
@@ -635,7 +641,7 @@ function addRoleSelectors(subcommand) {
     subcommand.addRoleOption((option) =>
       option
         .setName(config.option)
-        .setDescription(`Exact ${config.label} role (use if auto-detection is wrong)`)
+        .setDescription(`Exact ${config.label} role (optional; leave blank to leave unresolved ranks alone)`)
         .setRequired(false),
     );
   }
