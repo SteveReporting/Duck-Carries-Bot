@@ -180,19 +180,18 @@ function fuzzyRoleCandidates(guild, aliases, predicate = () => true) {
   const wanted = aliases.map(normalize).filter((value) => value.length >= 5);
   return guild.roles.cache.filter((role) => {
     if (role.id === guild.id || !predicate(role)) return false;
-    const roleName = normalize(role.name);
-    if (!roleName) return false;
-    return wanted.some((alias) => roleName.includes(alias) || alias.includes(roleName));
+    const name = normalize(role.name);
+    return name && wanted.some((alias) => name.includes(alias) || alias.includes(name));
   });
 }
 
-function resolveConfiguredOrNamedRole(guild, config, explicitRole, predicate = () => true) {
-  if (explicitRole) return { role: explicitRole, source: "command selection" };
+function resolveConfiguredOrNamedRole(guild, config, explicit = null, predicate = () => true) {
+  if (explicit) return { role: explicit, source: "command selection" };
 
   const configuredId = String(process.env[config.env] || "").trim();
   if (configuredId) {
-    const byId = guild.roles.cache.get(configuredId);
-    if (byId) return { role: byId, source: config.env };
+    const role = guild.roles.cache.get(configuredId);
+    if (role) return { role, source: config.env };
     return { error: `${config.label}: ${config.env} points to missing role ${configuredId}` };
   }
 
@@ -205,33 +204,32 @@ function resolveConfiguredOrNamedRole(guild, config, explicitRole, predicate = (
   return { role: null, source: "not-detected" };
 }
 
-function resolvePositionRole(guild, config, explicitRole = null) {
+function resolvePositionRole(guild, config, explicit = null) {
   const resolved = resolveConfiguredOrNamedRole(
     guild,
     config,
-    explicitRole,
+    explicit,
     (role) => !looksLikeSeparatorRole(role),
   );
   if (resolved.error || resolved.role) return resolved;
-  return { error: `${config.label}: role not found. Select ${config.option} in the command or set ${config.env}.` };
+  return { error: `${config.label}: role not found. Select ${config.option} or set ${config.env}.` };
 }
 
 function resolveOptionalSharedRole(guild, config) {
-  const resolved = resolveConfiguredOrNamedRole(
+  return resolveConfiguredOrNamedRole(
     guild,
     config,
     null,
     (role) => !looksLikeSeparatorRole(role),
   );
-  return resolved.error ? resolved : { role: resolved.role || null, source: resolved.source };
 }
 
-function resolveSeparatorRole(guild, config, explicitRole = null) {
-  return resolveConfiguredOrNamedRole(guild, config, explicitRole, (role) => looksLikeSeparatorRole(role));
+function resolveSeparatorRole(guild, config, explicit = null) {
+  return resolveConfiguredOrNamedRole(guild, config, explicit, (role) => looksLikeSeparatorRole(role));
 }
 
-function resolveCompanyRole(guild, config, explicitRole = null) {
-  return resolveConfiguredOrNamedRole(guild, config, explicitRole);
+function resolveCompanyRole(guild, config, explicit = null) {
+  return resolveConfiguredOrNamedRole(guild, config, explicit);
 }
 
 function rankSpecificSeparatorApplies(role, position) {
@@ -239,21 +237,13 @@ function rankSpecificSeparatorApplies(role, position) {
   const name = normalize(role.name);
   if (!name) return false;
 
-  if (name.includes("highinnkeeper") || name.includes("senioradministrator")) {
-    return position === "high-innkeeper";
-  }
-  if (name.includes("innkeeper") || name.includes("administrator")) {
-    return position === "innkeeper";
-  }
+  if (name.includes("highinnkeeper") || name.includes("senioradministrator")) return position === "high-innkeeper";
+  if (name.includes("innkeeper") || name.includes("administrator")) return position === "innkeeper";
   if ((name.includes("senior") || name.includes("sr")) && (name.includes("moderator") || name.includes("mod"))) {
     return position === "senior-moderator";
   }
-  if (name.includes("doorhand") || name.includes("juniormoderator")) {
-    return position === "doorhand";
-  }
-  if (name.includes("treasurer")) {
-    return position === "treasurer";
-  }
+  if (name.includes("doorhand") || name.includes("juniormoderator")) return position === "doorhand";
+  if (name.includes("treasurer")) return position === "treasurer";
   return false;
 }
 
@@ -265,8 +255,8 @@ function memberIdentityValues(member) {
   return [member.user?.username, member.user?.globalName, member.displayName, member.nickname].filter(Boolean);
 }
 
-function findExactMembers(guild, applicationUsername) {
-  const target = String(applicationUsername || "").trim().toLowerCase();
+function findExactMembers(guild, username) {
+  const target = String(username || "").trim().toLowerCase();
   const targetNormalized = normalize(target);
   return guild.members.cache.filter((member) =>
     memberIdentityValues(member).some((value) => {
@@ -276,7 +266,7 @@ function findExactMembers(guild, applicationUsername) {
   );
 }
 
-function explicitRole(interaction, optionName) {
+function selectedRole(interaction, optionName) {
   return interaction.options.getRole(optionName) || null;
 }
 
@@ -285,12 +275,14 @@ async function buildPlan(interaction) {
   await guild.roles.fetch();
   await guild.members.fetch();
 
+  const supportTeamRole = selectedRole(interaction, "support_team_role");
+  const ticketSupportRole = selectedRole(interaction, "ticket_support_role");
+
   const roleMap = new Map();
   const roleSources = new Map();
   const roleErrors = [];
-
   for (const [key, config] of Object.entries(POSITION_CONFIG)) {
-    const resolved = resolvePositionRole(guild, config, explicitRole(interaction, config.option));
+    const resolved = resolvePositionRole(guild, config, selectedRole(interaction, config.option));
     if (resolved.error) roleErrors.push(resolved.error);
     else {
       roleMap.set(key, resolved.role);
@@ -302,7 +294,7 @@ async function buildPlan(interaction) {
   const companySources = new Map();
   const companyIssues = [];
   for (const [key, config] of Object.entries(COMPANY_CONFIG)) {
-    const resolved = resolveCompanyRole(guild, config, explicitRole(interaction, config.option));
+    const resolved = resolveCompanyRole(guild, config, selectedRole(interaction, config.option));
     if (resolved.error) companyIssues.push(resolved.error);
     else if (resolved.role) {
       companyMap.set(key, resolved.role);
@@ -322,7 +314,7 @@ async function buildPlan(interaction) {
   const separatorSources = new Map();
   const separatorIssues = [];
   for (const [key, config] of Object.entries(SEPARATOR_CONFIG)) {
-    const resolved = resolveSeparatorRole(guild, config, explicitRole(interaction, config.option));
+    const resolved = resolveSeparatorRole(guild, config, selectedRole(interaction, config.option));
     if (resolved.error) separatorIssues.push(resolved.error);
     else if (resolved.role) {
       separatorMap.set(key, resolved.role);
@@ -333,7 +325,9 @@ async function buildPlan(interaction) {
   const allRecognizedSeparators = new Map();
   for (const role of separatorMap.values()) allRecognizedSeparators.set(role.id, role);
   for (const position of Object.keys(POSITION_CONFIG)) {
-    for (const role of autoRankSeparatorRoles(guild, position).values()) allRecognizedSeparators.set(role.id, role);
+    for (const role of autoRankSeparatorRoles(guild, position).values()) {
+      allRecognizedSeparators.set(role.id, role);
+    }
   }
 
   const matched = [];
@@ -346,7 +340,7 @@ async function buildPlan(interaction) {
     const positionLabel = POSITION_CONFIG[entry.position]?.label || entry.position;
     const companyLabel = COMPANY_CONFIG[entry.company]?.label || entry.company;
 
-    if (candidates.size === 0) {
+    if (!candidates.size) {
       missing.push({ ...entry, positionLabel, companyLabel });
       continue;
     }
@@ -365,7 +359,9 @@ async function buildPlan(interaction) {
       const role = separatorMap.get(key);
       if (role && config.positions.includes(entry.position)) desiredSeparators.set(role.id, role);
     }
-    for (const role of autoRankSeparatorRoles(guild, entry.position).values()) desiredSeparators.set(role.id, role);
+    for (const role of autoRankSeparatorRoles(guild, entry.position).values()) {
+      desiredSeparators.set(role.id, role);
+    }
 
     matched.push({
       ...entry,
@@ -379,8 +375,11 @@ async function buildPlan(interaction) {
   }
 
   return {
+    supportTeamRole,
+    ticketSupportRole,
     roleMap,
     roleSources,
+    roleErrors,
     companyMap,
     companySources,
     companyIssues,
@@ -390,7 +389,6 @@ async function buildPlan(interaction) {
     separatorSources,
     separatorIssues,
     allRecognizedSeparators: [...allRecognizedSeparators.values()],
-    roleErrors,
     matched,
     missing,
     ambiguous,
@@ -398,10 +396,9 @@ async function buildPlan(interaction) {
 }
 
 async function ensureCompanyRoles(interaction, plan) {
-  const guild = interaction.guild;
   for (const [key, config] of Object.entries(COMPANY_CONFIG)) {
     if (plan.companyMap.has(key)) continue;
-    const role = await guild.roles.create({
+    const role = await interaction.guild.roles.create({
       name: config.roleName,
       permissions: 0n,
       hoist: false,
@@ -412,7 +409,9 @@ async function ensureCompanyRoles(interaction, plan) {
     plan.companySources.set(key, "created by /staff-onboard apply");
   }
 
-  for (const item of plan.matched) item.companyRole = plan.companyMap.get(item.company) || null;
+  for (const item of plan.matched) {
+    item.companyRole = plan.companyMap.get(item.company) || null;
+  }
 }
 
 function planLines(plan) {
@@ -468,7 +467,7 @@ async function preview(interaction) {
 
   const sharedSummary = plan.sharedRoles.length
     ? plan.sharedRoles.map((role) => `✅ Shared: ${role}`).join("\n")
-    : "ℹ️ No non-separator Staff/Trial shared role detected.";
+    : "ℹ️ No Staff/Trial shared role detected.";
 
   const separatorSummary = Object.entries(SEPARATOR_CONFIG).map(([key, config]) => {
     const role = plan.separatorMap.get(key);
@@ -477,12 +476,16 @@ async function preview(interaction) {
   }).join("\n");
 
   const first = new EmbedBuilder()
-    .setTitle("🍺 Staff Onboarding + Regional Company Preview")
+    .setTitle("🍺 Staff Onboarding Preview")
     .setDescription([
       `**Accepted roster:** ${FINAL_ROSTER.length}`,
       `**Matched:** ${plan.matched.length}`,
       `**Missing:** ${plan.missing.length}`,
       `**Ambiguous:** ${plan.ambiguous.length}`,
+      "",
+      "**Selected access roles — given to ALL matched staff**",
+      `✅ Support Team: ${plan.supportTeamRole}`,
+      `✅ Ticket Support: ${plan.ticketSupportRole}`,
       "",
       "**Position roles**",
       roleSummary,
@@ -534,6 +537,8 @@ async function apply(interaction) {
     const desiredRoles = new Map();
     desiredRoles.set(item.positionRole.id, item.positionRole);
     desiredRoles.set(item.companyRole.id, item.companyRole);
+    desiredRoles.set(plan.supportTeamRole.id, plan.supportTeamRole);
+    desiredRoles.set(plan.ticketSupportRole.id, plan.ticketSupportRole);
     for (const role of plan.sharedRoles) desiredRoles.set(role.id, role);
     for (const role of item.desiredSeparators) desiredRoles.set(role.id, role);
 
@@ -545,7 +550,9 @@ async function apply(interaction) {
     const toRemove = [...managedRolePool.values()].filter(
       (role) => item.member.roles.cache.has(role.id) && !desiredRoles.has(role.id),
     );
-    const toAdd = [...desiredRoles.values()].filter((role) => !item.member.roles.cache.has(role.id));
+    const toAdd = [...desiredRoles.values()].filter(
+      (role) => !item.member.roles.cache.has(role.id),
+    );
 
     if (!toRemove.length && !toAdd.length) {
       unchanged += 1;
@@ -557,13 +564,13 @@ async function apply(interaction) {
       if (toRemove.length) {
         await item.member.roles.remove(
           toRemove,
-          `Staff rank/company repair by ${interaction.user.username} (${interaction.user.id})`,
+          `Staff onboarding repair by ${interaction.user.username} (${interaction.user.id})`,
         );
       }
       if (toAdd.length) {
         await item.member.roles.add(
           toAdd,
-          `Staff rank/company/separator repair by ${interaction.user.username} (${interaction.user.id})`,
+          `Staff onboarding rank/company/access repair by ${interaction.user.username} (${interaction.user.id})`,
         );
       }
 
@@ -587,17 +594,19 @@ async function apply(interaction) {
 
   await interaction.editReply({
     content: [
-      "## 🍺 Staff regional company repair complete",
+      "## 🍺 Staff onboarding repair complete",
       `✅ Repaired: **${repaired}**`,
       `☑️ Already correct: **${unchanged}**`,
       `❌ Failed: **${failed}**`,
       `❓ Missing: **${plan.missing.length}**`,
       `⚠️ Ambiguous: **${plan.ambiguous.length}**`,
       "",
+      `🎫 Support Team: ${plan.supportTeamRole}`,
+      `🛟 Ticket Support: ${plan.ticketSupportRole}`,
       `🛡️ **Americas:** ${FINAL_ROSTER.filter((x) => x.company === "americas").length} staff`,
       `🌍 **Europe & Asia:** ${FINAL_ROSTER.filter((x) => x.company === "europe-asia").length} staff`,
       "",
-      "The repair reconciles staff rank, regional company and recognized separator roles. Unrelated roles are untouched.",
+      "All matched accepted staff received both selected support roles. Unrelated roles were untouched.",
     ].join("\n"),
   });
 
@@ -607,6 +616,21 @@ async function apply(interaction) {
 }
 
 function addRoleSelectors(subcommand) {
+  // Required first: Discord requires required options before optional options.
+  subcommand
+    .addRoleOption((option) =>
+      option
+        .setName("support_team_role")
+        .setDescription("Support Team role to give every accepted staff member")
+        .setRequired(true),
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("ticket_support_role")
+        .setDescription("Ticket Support role to give every accepted staff member")
+        .setRequired(true),
+    );
+
   for (const config of Object.values(POSITION_CONFIG)) {
     subcommand.addRoleOption((option) =>
       option
@@ -620,7 +644,7 @@ function addRoleSelectors(subcommand) {
     subcommand.addRoleOption((option) =>
       option
         .setName(config.option)
-        .setDescription(`Exact ${config.label} role (optional; created on apply if missing)`)
+        .setDescription(`Exact ${config.label} role (created on apply if missing)`)
         .setRequired(false),
     );
   }
@@ -629,49 +653,61 @@ function addRoleSelectors(subcommand) {
     subcommand.addRoleOption((option) =>
       option
         .setName(config.option)
-        .setDescription(`Exact ${config.label} (optional; decorated roles are auto-detected)`)
+        .setDescription(`Exact ${config.label} (decorated roles are also auto-detected)`)
         .setRequired(false),
     );
   }
+
   return subcommand;
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("staff-onboard")
-    .setDescription("Preview or repair accepted staff ranks, companies and separators")
+    .setDescription("Preview or repair accepted staff roles and access")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand((subcommand) =>
       addRoleSelectors(
         subcommand
           .setName("preview")
-          .setDescription("Check final ranks, timezone companies and separators without changing anything"),
+          .setDescription("Preview accepted staff ranks, companies, separators and access roles"),
       ),
     )
     .addSubcommand((subcommand) =>
       addRoleSelectors(
         subcommand
           .setName("apply")
-          .setDescription("Repair accepted staff ranks and assign regional company/separator roles"),
+          .setDescription("Repair accepted staff roles and give selected support access"),
       ),
     ),
 
   async execute(interaction) {
     if (!interaction.inGuild()) {
-      return interaction.reply({ content: "❌ This command can only be used in the server.", flags: MessageFlags.Ephemeral });
+      return interaction.reply({
+        content: "❌ This command can only be used in the server.",
+        flags: MessageFlags.Ephemeral,
+      });
     }
     if (!isAdministrator(interaction)) {
-      return interaction.reply({ content: "❌ Administrator permission is required.", flags: MessageFlags.Ephemeral });
+      return interaction.reply({
+        content: "❌ Administrator permission is required.",
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     try {
       const subcommand = interaction.options.getSubcommand();
       if (subcommand === "preview") return preview(interaction);
       if (subcommand === "apply") return apply(interaction);
-      return interaction.reply({ content: "❌ Unknown staff onboarding action.", flags: MessageFlags.Ephemeral });
+      return interaction.reply({
+        content: "❌ Unknown staff onboarding action.",
+        flags: MessageFlags.Ephemeral,
+      });
     } catch (error) {
       console.error("[STAFF ONBOARD]", error);
-      const payload = { content: `❌ ${error.message || "Staff onboarding failed."}`.slice(0, 1900) };
+      const payload = {
+        content: `❌ ${error.message || "Staff onboarding failed."}`.slice(0, 1900),
+      };
       if (interaction.deferred || interaction.replied) return interaction.editReply(payload);
       return interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
     }
