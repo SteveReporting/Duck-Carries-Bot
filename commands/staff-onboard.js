@@ -6,38 +6,38 @@ const {
 } = require("discord.js");
 
 const FINAL_ROSTER = [
-  { username: "Xx_JTea_xX", position: "high-innkeeper" },
-  { username: "swirlyshawn", position: "high-innkeeper" },
+  { username: "Xx_JTea_xX", position: "high-innkeeper", timezone: "EST", company: "americas" },
+  { username: "swirlyshawn", position: "high-innkeeper", timezone: "GMT+8", company: "europe-asia" },
 
-  { username: "pbaox4", position: "innkeeper" },
-  { username: "resilienttt", position: "innkeeper" },
-  { username: "cq4w", position: "innkeeper" },
-  { username: ".noctyx.", position: "innkeeper" },
+  { username: "pbaox4", position: "innkeeper", timezone: "EST", company: "americas" },
+  { username: "resilienttt", position: "innkeeper", timezone: "GMT+3", company: "europe-asia" },
+  { username: "cq4w", position: "innkeeper", timezone: "EST", company: "americas" },
+  { username: ".noctyx.", position: "innkeeper", timezone: "GMT+1", company: "europe-asia" },
 
-  { username: "csaboh_", position: "senior-moderator" },
-  { username: "cedbriick", position: "senior-moderator" },
-  { username: ".swattie", position: "senior-moderator" },
-  { username: "vi_akame", position: "senior-moderator" },
-  { username: "Verexu", position: "senior-moderator" },
-  { username: "inkopscentralensaktiebolag", position: "senior-moderator" },
-  { username: "RainbowCatplayzagain", position: "senior-moderator" },
-  { username: "holospices.", position: "senior-moderator" },
+  { username: "csaboh_", position: "senior-moderator", timezone: "UTC+1/2", company: "europe-asia" },
+  { username: "cedbriick", position: "senior-moderator", timezone: "CET", company: "europe-asia" },
+  { username: ".swattie", position: "senior-moderator", timezone: "GMT+2", company: "europe-asia" },
+  { username: "vi_akame", position: "senior-moderator", timezone: "GMT+7", company: "europe-asia" },
+  { username: "Verexu", position: "senior-moderator", timezone: "EET", company: "europe-asia" },
+  { username: "inkopscentralensaktiebolag", position: "senior-moderator", timezone: "CEST", company: "europe-asia" },
+  { username: "RainbowCatplayzagain", position: "senior-moderator", timezone: "GMT-5", company: "americas" },
+  { username: "holospices.", position: "senior-moderator", timezone: "GMT+8", company: "europe-asia" },
 
-  { username: "dasbonkersa_1", position: "moderator" },
-  { username: "Saellies.", position: "moderator" },
-  { username: "donification", position: "moderator" },
-  { username: "yizzzz69", position: "moderator" },
-  { username: "jnxy_xl", position: "moderator" },
-  { username: "zenoispro", position: "moderator" },
-  { username: "crimordial", position: "moderator" },
-  { username: "paxrizz", position: "moderator" },
+  { username: "dasbonkersa_1", position: "moderator", timezone: "AEST", company: "europe-asia" },
+  { username: "Saellies.", position: "moderator", timezone: "GMT+1", company: "europe-asia" },
+  { username: "donification", position: "moderator", timezone: "EST", company: "americas" },
+  { username: "yizzzz69", position: "moderator", timezone: "GMT+8", company: "europe-asia" },
+  { username: "jnxy_xl", position: "moderator", timezone: "GMT+8", company: "europe-asia" },
+  { username: "zenoispro", position: "moderator", timezone: "GMT+1", company: "europe-asia" },
+  { username: "crimordial", position: "moderator", timezone: "PST", company: "americas" },
+  { username: "paxrizz", position: "moderator", timezone: "EST", company: "americas" },
 
-  { username: "9kaz", position: "doorhand" },
-  { username: "hello33368", position: "doorhand" },
-  { username: "Dogestrate", position: "doorhand" },
+  { username: "9kaz", position: "doorhand", timezone: "EDT", company: "americas" },
+  { username: "hello33368", position: "doorhand", timezone: "GMT+2", company: "europe-asia" },
+  { username: "Dogestrate", position: "doorhand", timezone: "GMT", company: "europe-asia" },
 
-  { username: "aorkza", position: "treasurer" },
-  { username: "burgerwall", position: "treasurer" },
+  { username: "aorkza", position: "treasurer", timezone: "UTC+1", company: "europe-asia" },
+  { username: "burgerwall", position: "treasurer", timezone: "EST-4", company: "americas" },
 ];
 
 const POSITION_CONFIG = {
@@ -76,6 +76,23 @@ const POSITION_CONFIG = {
     env: "STAFF_ROLE_TREASURER",
     option: "treasurer_role",
     aliases: ["Treasurer", "Staff Treasurer"],
+  },
+};
+
+const COMPANY_CONFIG = {
+  americas: {
+    label: "🛡️ Americas",
+    roleName: "🛡️ Americas",
+    env: "STAFF_COMPANY_AMERICAS_ROLE_ID",
+    option: "americas_role",
+    aliases: ["Americas", "Americas Company", "Western Company"],
+  },
+  "europe-asia": {
+    label: "🌍 Europe & Asia",
+    roleName: "🌍 Europe & Asia",
+    env: "STAFF_COMPANY_EUROPE_ASIA_ROLE_ID",
+    option: "europe_asia_role",
+    aliases: ["Europe & Asia", "Europe Asia", "Europe / Asia", "Europe Asia Company", "Eastern Company"],
   },
 };
 
@@ -169,7 +186,7 @@ function fuzzyRoleCandidates(guild, aliases, predicate = () => true) {
   });
 }
 
-function resolvePositionRole(guild, config, explicitRole = null) {
+function resolveConfiguredOrNamedRole(guild, config, explicitRole, predicate = () => true) {
   if (explicitRole) return { role: explicitRole, source: "command selection" };
 
   const configuredId = String(process.env[config.env] || "").trim();
@@ -179,50 +196,42 @@ function resolvePositionRole(guild, config, explicitRole = null) {
     return { error: `${config.label}: ${config.env} points to missing role ${configuredId}` };
   }
 
-  const allowed = (role) => !looksLikeSeparatorRole(role);
-  const exact = uniqueRoleResult(roleCandidatesByAlias(guild, config.aliases, allowed), config, "exact name");
+  const exact = uniqueRoleResult(roleCandidatesByAlias(guild, config.aliases, predicate), config, "exact name");
   if (exact) return exact;
 
-  const fuzzy = uniqueRoleResult(fuzzyRoleCandidates(guild, config.aliases, allowed), config, "unique name match");
+  const fuzzy = uniqueRoleResult(fuzzyRoleCandidates(guild, config.aliases, predicate), config, "unique name match");
   if (fuzzy) return fuzzy;
 
+  return { role: null, source: "not-detected" };
+}
+
+function resolvePositionRole(guild, config, explicitRole = null) {
+  const resolved = resolveConfiguredOrNamedRole(
+    guild,
+    config,
+    explicitRole,
+    (role) => !looksLikeSeparatorRole(role),
+  );
+  if (resolved.error || resolved.role) return resolved;
   return { error: `${config.label}: role not found. Select ${config.option} in the command or set ${config.env}.` };
 }
 
 function resolveOptionalSharedRole(guild, config) {
-  const configuredId = String(process.env[config.env] || "").trim();
-  if (configuredId) {
-    const byId = guild.roles.cache.get(configuredId);
-    if (byId) return { role: byId, source: config.env };
-    return { error: `${config.label}: ${config.env} points to missing role ${configuredId}` };
-  }
-
-  const candidates = roleCandidatesByAlias(guild, config.aliases, (role) => !looksLikeSeparatorRole(role));
-  if (candidates.size === 1) return { role: candidates.first(), source: "name" };
-  if (candidates.size > 1) {
-    return { error: `${config.label}: multiple matching shared roles found (${candidates.map((role) => role.name).join(", ")})` };
-  }
-  return { role: null, source: "not-configured" };
+  const resolved = resolveConfiguredOrNamedRole(
+    guild,
+    config,
+    null,
+    (role) => !looksLikeSeparatorRole(role),
+  );
+  return resolved.error ? resolved : { role: resolved.role || null, source: resolved.source };
 }
 
 function resolveSeparatorRole(guild, config, explicitRole = null) {
-  if (explicitRole) return { role: explicitRole, source: "command selection" };
+  return resolveConfiguredOrNamedRole(guild, config, explicitRole, (role) => looksLikeSeparatorRole(role));
+}
 
-  const configuredId = String(process.env[config.env] || "").trim();
-  if (configuredId) {
-    const byId = guild.roles.cache.get(configuredId);
-    if (byId) return { role: byId, source: config.env };
-    return { error: `${config.label}: ${config.env} points to missing role ${configuredId}` };
-  }
-
-  const decorated = (role) => looksLikeSeparatorRole(role);
-  const exact = uniqueRoleResult(roleCandidatesByAlias(guild, config.aliases, decorated), config, "decorated exact name");
-  if (exact) return exact;
-
-  const fuzzy = uniqueRoleResult(fuzzyRoleCandidates(guild, config.aliases, decorated), config, "decorated name match");
-  if (fuzzy) return fuzzy;
-
-  return { role: null, source: "not-detected" };
+function resolveCompanyRole(guild, config, explicitRole = null) {
+  return resolveConfiguredOrNamedRole(guild, config, explicitRole);
 }
 
 function rankSpecificSeparatorApplies(role, position) {
@@ -245,7 +254,6 @@ function rankSpecificSeparatorApplies(role, position) {
   if (name.includes("treasurer")) {
     return position === "treasurer";
   }
-
   return false;
 }
 
@@ -254,33 +262,22 @@ function autoRankSeparatorRoles(guild, position) {
 }
 
 function memberIdentityValues(member) {
-  return [
-    member.user?.username,
-    member.user?.globalName,
-    member.displayName,
-    member.nickname,
-  ].filter(Boolean);
+  return [member.user?.username, member.user?.globalName, member.displayName, member.nickname].filter(Boolean);
 }
 
 function findExactMembers(guild, applicationUsername) {
   const target = String(applicationUsername || "").trim().toLowerCase();
   const targetNormalized = normalize(target);
-
-  return guild.members.cache.filter((member) => {
-    const values = memberIdentityValues(member);
-    return values.some((value) => {
+  return guild.members.cache.filter((member) =>
+    memberIdentityValues(member).some((value) => {
       const text = String(value).trim();
       return text.toLowerCase() === target || normalize(text) === targetNormalized;
-    });
-  });
+    }),
+  );
 }
 
-function explicitPositionRole(interaction, config) {
-  return interaction.options.getRole(config.option) || null;
-}
-
-function explicitSeparatorRole(interaction, config) {
-  return interaction.options.getRole(config.option) || null;
+function explicitRole(interaction, optionName) {
+  return interaction.options.getRole(optionName) || null;
 }
 
 async function buildPlan(interaction) {
@@ -293,11 +290,23 @@ async function buildPlan(interaction) {
   const roleErrors = [];
 
   for (const [key, config] of Object.entries(POSITION_CONFIG)) {
-    const resolved = resolvePositionRole(guild, config, explicitPositionRole(interaction, config));
+    const resolved = resolvePositionRole(guild, config, explicitRole(interaction, config.option));
     if (resolved.error) roleErrors.push(resolved.error);
     else {
       roleMap.set(key, resolved.role);
       roleSources.set(key, resolved.source);
+    }
+  }
+
+  const companyMap = new Map();
+  const companySources = new Map();
+  const companyIssues = [];
+  for (const [key, config] of Object.entries(COMPANY_CONFIG)) {
+    const resolved = resolveCompanyRole(guild, config, explicitRole(interaction, config.option));
+    if (resolved.error) companyIssues.push(resolved.error);
+    else if (resolved.role) {
+      companyMap.set(key, resolved.role);
+      companySources.set(key, resolved.source);
     }
   }
 
@@ -313,7 +322,7 @@ async function buildPlan(interaction) {
   const separatorSources = new Map();
   const separatorIssues = [];
   for (const [key, config] of Object.entries(SEPARATOR_CONFIG)) {
-    const resolved = resolveSeparatorRole(guild, config, explicitSeparatorRole(interaction, config));
+    const resolved = resolveSeparatorRole(guild, config, explicitRole(interaction, config.option));
     if (resolved.error) separatorIssues.push(resolved.error);
     else if (resolved.role) {
       separatorMap.set(key, resolved.role);
@@ -324,9 +333,7 @@ async function buildPlan(interaction) {
   const allRecognizedSeparators = new Map();
   for (const role of separatorMap.values()) allRecognizedSeparators.set(role.id, role);
   for (const position of Object.keys(POSITION_CONFIG)) {
-    for (const role of autoRankSeparatorRoles(guild, position).values()) {
-      allRecognizedSeparators.set(role.id, role);
-    }
+    for (const role of autoRankSeparatorRoles(guild, position).values()) allRecognizedSeparators.set(role.id, role);
   }
 
   const matched = [];
@@ -337,15 +344,17 @@ async function buildPlan(interaction) {
     const candidates = findExactMembers(guild, entry.username);
     const positionRole = roleMap.get(entry.position) || null;
     const positionLabel = POSITION_CONFIG[entry.position]?.label || entry.position;
+    const companyLabel = COMPANY_CONFIG[entry.company]?.label || entry.company;
 
     if (candidates.size === 0) {
-      missing.push({ ...entry, positionLabel });
+      missing.push({ ...entry, positionLabel, companyLabel });
       continue;
     }
     if (candidates.size > 1) {
       ambiguous.push({
         ...entry,
         positionLabel,
+        companyLabel,
         candidates: candidates.map((member) => `${member.user.username} (${member.id})`),
       });
       continue;
@@ -356,15 +365,15 @@ async function buildPlan(interaction) {
       const role = separatorMap.get(key);
       if (role && config.positions.includes(entry.position)) desiredSeparators.set(role.id, role);
     }
-    for (const role of autoRankSeparatorRoles(guild, entry.position).values()) {
-      desiredSeparators.set(role.id, role);
-    }
+    for (const role of autoRankSeparatorRoles(guild, entry.position).values()) desiredSeparators.set(role.id, role);
 
     matched.push({
       ...entry,
       positionLabel,
+      companyLabel,
       member: candidates.first(),
       positionRole,
+      companyRole: companyMap.get(entry.company) || null,
       desiredSeparators: [...desiredSeparators.values()],
     });
   }
@@ -372,6 +381,9 @@ async function buildPlan(interaction) {
   return {
     roleMap,
     roleSources,
+    companyMap,
+    companySources,
+    companyIssues,
     sharedRoles,
     sharedIssues,
     separatorMap,
@@ -385,19 +397,40 @@ async function buildPlan(interaction) {
   };
 }
 
+async function ensureCompanyRoles(interaction, plan) {
+  const guild = interaction.guild;
+  for (const [key, config] of Object.entries(COMPANY_CONFIG)) {
+    if (plan.companyMap.has(key)) continue;
+    const role = await guild.roles.create({
+      name: config.roleName,
+      permissions: 0n,
+      hoist: false,
+      mentionable: false,
+      reason: `Staff timezone company created by ${interaction.user.username} (${interaction.user.id})`,
+    });
+    plan.companyMap.set(key, role);
+    plan.companySources.set(key, "created by /staff-onboard apply");
+  }
+
+  for (const item of plan.matched) item.companyRole = plan.companyMap.get(item.company) || null;
+}
+
 function planLines(plan) {
   const lines = [];
   for (const item of plan.matched) {
-    const separatorText = item.desiredSeparators.length
-      ? ` | separators: ${item.desiredSeparators.map((role) => role.name).join(", ")}`
-      : " | separators: none detected";
-    lines.push(`✅ ${item.member} — **${item.positionLabel}** → ${item.positionRole}${separatorText}`);
+    const companyRole = item.companyRole || `*${item.companyLabel} role will be created on apply*`;
+    const separators = item.desiredSeparators.length
+      ? item.desiredSeparators.map((role) => role.name).join(", ")
+      : "none detected";
+    lines.push(
+      `✅ ${item.member} — **${item.positionLabel}** — **${item.timezone}** — ${companyRole} | separators: ${separators}`,
+    );
   }
   for (const item of plan.missing) {
-    lines.push(`❓ **${item.username}** — ${item.positionLabel} — member not found`);
+    lines.push(`❓ **${item.username}** — ${item.positionLabel} — ${item.timezone} — ${item.companyLabel} — member not found`);
   }
   for (const item of plan.ambiguous) {
-    lines.push(`⚠️ **${item.username}** — ${item.positionLabel} — ambiguous (${item.candidates.length} matches)`);
+    lines.push(`⚠️ **${item.username}** — ${item.positionLabel} — ${item.companyLabel} — ambiguous (${item.candidates.length} matches)`);
   }
   return lines;
 }
@@ -420,13 +453,17 @@ function chunkLines(lines, max = 3600) {
 async function preview(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const plan = await buildPlan(interaction);
-  const lines = planLines(plan);
-  const chunks = chunkLines(lines);
 
   const roleSummary = Object.entries(POSITION_CONFIG).map(([key, config]) => {
     const role = plan.roleMap.get(key);
     const source = plan.roleSources.get(key);
     return `${role ? "✅" : "❌"} ${config.label}: ${role || "not resolved"}${source ? ` (${source})` : ""}`;
+  }).join("\n");
+
+  const companySummary = Object.entries(COMPANY_CONFIG).map(([key, config]) => {
+    const role = plan.companyMap.get(key);
+    const source = plan.companySources.get(key);
+    return `${role ? "✅" : "🆕"} ${config.label}: ${role || "will be created on apply"}${source ? ` (${source})` : ""}`;
   }).join("\n");
 
   const sharedSummary = plan.sharedRoles.length
@@ -440,7 +477,7 @@ async function preview(interaction) {
   }).join("\n");
 
   const first = new EmbedBuilder()
-    .setTitle("🍺 Staff Onboarding Repair Preview")
+    .setTitle("🍺 Staff Onboarding + Regional Company Preview")
     .setDescription([
       `**Accepted roster:** ${FINAL_ROSTER.length}`,
       `**Matched:** ${plan.matched.length}`,
@@ -450,18 +487,22 @@ async function preview(interaction) {
       "**Position roles**",
       roleSummary,
       "",
+      "**Regional companies**",
+      companySummary,
+      "",
       "**Shared roles**",
       sharedSummary,
       "",
       "**Separator roles**",
       separatorSummary,
       ...(plan.roleErrors.length ? ["", "**Blocking role issues**", ...plan.roleErrors.map((x) => `• ${x}`)] : []),
+      ...(plan.companyIssues.length ? ["", "**Company-role issues**", ...plan.companyIssues.map((x) => `• ${x}`)] : []),
       ...(plan.sharedIssues.length ? ["", "**Shared-role issues**", ...plan.sharedIssues.map((x) => `• ${x}`)] : []),
       ...(plan.separatorIssues.length ? ["", "**Separator issues**", ...plan.separatorIssues.map((x) => `• ${x}`)] : []),
     ].join("\n").slice(0, 4000));
 
   await interaction.editReply({ embeds: [first] });
-  for (const chunk of chunks) {
+  for (const chunk of chunkLines(planLines(plan))) {
     await interaction.followUp({ content: chunk, flags: MessageFlags.Ephemeral });
   }
 }
@@ -470,13 +511,20 @@ async function apply(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const plan = await buildPlan(interaction);
 
-  if (plan.roleErrors.length) {
+  if (plan.roleErrors.length || plan.companyIssues.length) {
     return interaction.editReply({
-      content: `❌ Staff position roles are not fully resolved, so nothing was changed.\n${plan.roleErrors.map((x) => `• ${x}`).join("\n")}`.slice(0, 1900),
+      content: [
+        "❌ Required roles could not be safely resolved, so nothing was changed.",
+        ...plan.roleErrors.map((x) => `• ${x}`),
+        ...plan.companyIssues.map((x) => `• ${x}`),
+      ].join("\n").slice(0, 1900),
     });
   }
 
+  await ensureCompanyRoles(interaction, plan);
+
   const allPositionRoles = [...plan.roleMap.values()];
+  const allCompanyRoles = [...plan.companyMap.values()];
   const results = [];
   let repaired = 0;
   let unchanged = 0;
@@ -485,11 +533,13 @@ async function apply(interaction) {
   for (const item of plan.matched) {
     const desiredRoles = new Map();
     desiredRoles.set(item.positionRole.id, item.positionRole);
+    desiredRoles.set(item.companyRole.id, item.companyRole);
     for (const role of plan.sharedRoles) desiredRoles.set(role.id, role);
     for (const role of item.desiredSeparators) desiredRoles.set(role.id, role);
 
     const managedRolePool = new Map();
     for (const role of allPositionRoles) managedRolePool.set(role.id, role);
+    for (const role of allCompanyRoles) managedRolePool.set(role.id, role);
     for (const role of plan.allRecognizedSeparators) managedRolePool.set(role.id, role);
 
     const toRemove = [...managedRolePool.values()].filter(
@@ -497,9 +547,9 @@ async function apply(interaction) {
     );
     const toAdd = [...desiredRoles.values()].filter((role) => !item.member.roles.cache.has(role.id));
 
-    if (toRemove.length === 0 && toAdd.length === 0) {
+    if (!toRemove.length && !toAdd.length) {
       unchanged += 1;
-      results.push(`☑️ ${item.member} — **${item.positionLabel}** already correct`);
+      results.push(`☑️ ${item.member} — **${item.positionLabel}** — ${item.companyLabel} already correct`);
       continue;
     }
 
@@ -507,13 +557,13 @@ async function apply(interaction) {
       if (toRemove.length) {
         await item.member.roles.remove(
           toRemove,
-          `Staff onboarding rank repair by ${interaction.user.username} (${interaction.user.id})`,
+          `Staff rank/company repair by ${interaction.user.username} (${interaction.user.id})`,
         );
       }
       if (toAdd.length) {
         await item.member.roles.add(
           toAdd,
-          `Staff onboarding rank/separator repair by ${interaction.user.username} (${interaction.user.id})`,
+          `Staff rank/company/separator repair by ${interaction.user.username} (${interaction.user.id})`,
         );
       }
 
@@ -521,30 +571,33 @@ async function apply(interaction) {
       const changes = [];
       if (toRemove.length) changes.push(`removed: ${toRemove.map((role) => role.name).join(", ")}`);
       if (toAdd.length) changes.push(`added: ${toAdd.map((role) => role.name).join(", ")}`);
-      results.push(`✅ ${item.member} — **${item.positionLabel}** (${changes.join(" | ")})`);
+      results.push(`✅ ${item.member} — **${item.positionLabel}** — **${item.timezone}** — ${item.companyLabel} (${changes.join(" | ")})`);
     } catch (error) {
       failed += 1;
-      results.push(`❌ ${item.member} — **${item.positionLabel}** — ${error.message || "role repair failed"}`);
+      results.push(`❌ ${item.member} — **${item.positionLabel}** — ${item.companyLabel} — ${error.message || "role repair failed"}`);
     }
   }
 
   for (const item of plan.missing) {
-    results.push(`❓ **${item.username}** — ${item.positionLabel} — skipped: member not found`);
+    results.push(`❓ **${item.username}** — ${item.positionLabel} — ${item.companyLabel} — skipped: member not found`);
   }
   for (const item of plan.ambiguous) {
-    results.push(`⚠️ **${item.username}** — ${item.positionLabel} — skipped: ambiguous member match`);
+    results.push(`⚠️ **${item.username}** — ${item.positionLabel} — ${item.companyLabel} — skipped: ambiguous member match`);
   }
 
   await interaction.editReply({
     content: [
-      "## 🍺 Staff onboarding repair complete",
+      "## 🍺 Staff regional company repair complete",
       `✅ Repaired: **${repaired}**`,
       `☑️ Already correct: **${unchanged}**`,
       `❌ Failed: **${failed}**`,
       `❓ Missing: **${plan.missing.length}**`,
       `⚠️ Ambiguous: **${plan.ambiguous.length}**`,
       "",
-      "This repair reconciles only the six staff-position roles and recognized staff separator roles. Unrelated member/reward roles are untouched.",
+      `🛡️ **Americas:** ${FINAL_ROSTER.filter((x) => x.company === "americas").length} staff`,
+      `🌍 **Europe & Asia:** ${FINAL_ROSTER.filter((x) => x.company === "europe-asia").length} staff`,
+      "",
+      "The repair reconciles staff rank, regional company and recognized separator roles. Unrelated roles are untouched.",
     ].join("\n"),
   });
 
@@ -563,6 +616,15 @@ function addRoleSelectors(subcommand) {
     );
   }
 
+  for (const config of Object.values(COMPANY_CONFIG)) {
+    subcommand.addRoleOption((option) =>
+      option
+        .setName(config.option)
+        .setDescription(`Exact ${config.label} role (optional; created on apply if missing)`)
+        .setRequired(false),
+    );
+  }
+
   for (const config of Object.values(SEPARATOR_CONFIG)) {
     subcommand.addRoleOption((option) =>
       option
@@ -571,27 +633,26 @@ function addRoleSelectors(subcommand) {
         .setRequired(false),
     );
   }
-
   return subcommand;
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("staff-onboard")
-    .setDescription("Preview or repair the accepted staff application roster")
+    .setDescription("Preview or repair accepted staff ranks, companies and separators")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand((subcommand) =>
       addRoleSelectors(
         subcommand
           .setName("preview")
-          .setDescription("Check final ranks and separator mappings without changing anything"),
+          .setDescription("Check final ranks, timezone companies and separators without changing anything"),
       ),
     )
     .addSubcommand((subcommand) =>
       addRoleSelectors(
         subcommand
           .setName("apply")
-          .setDescription("Repair accepted staff ranks and assign required separator roles"),
+          .setDescription("Repair accepted staff ranks and assign regional company/separator roles"),
       ),
     ),
 
