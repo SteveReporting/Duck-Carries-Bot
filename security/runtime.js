@@ -212,6 +212,35 @@ async function startSecurity(client) {
       return originalRestoreDeletedChannel(targetGuild, oldId);
     };
 
+    // Commands that intentionally update a staff role register the exact role ID
+    // and exact final permission bitfield before calling Discord. This prevents an
+    // audit-log race from making anti-raid revert the bot's own approved change.
+    // The exception is single-use, exact-match only, and expires after 15 seconds.
+    const originalOnRoleUpdate = engine.onRoleUpdate.bind(engine);
+    engine.onRoleUpdate = async (oldRole, newRole) => {
+      const expected = client.__securityExpectedRolePermissionChanges;
+      const key = String(newRole?.id || '');
+      const token = expected instanceof Map ? expected.get(key) : null;
+
+      if (token) {
+        if (Date.now() > Number(token.expiresAt || 0)) {
+          expected.delete(key);
+        } else if (String(newRole.permissions.bitfield) === String(token.bitfield)) {
+          expected.delete(key);
+          console.log(
+            `[security] Expected staff permission update accepted for @${newRole.name} (${newRole.id}).`,
+          );
+          await engine.log(
+            'security-audit',
+            `✅ Expected staff permission update accepted for **@${newRole.name}**. Anti-raid remained active for all other role changes.`,
+          );
+          return;
+        }
+      }
+
+      return originalOnRoleUpdate(oldRole, newRole);
+    };
+
     const heartbeat = new SecurityHeartbeat(client, engine);
     engine.bind();
     await engine.initialize(guild);
