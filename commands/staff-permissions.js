@@ -105,7 +105,13 @@ function isAdministrator(interaction) {
   return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
 }
 
-function resolveRole(guild, config) {
+function resolveRole(guild, config, explicitRole = null) {
+  if (explicitRole) {
+    const guildRole = guild.roles.cache.get(explicitRole.id);
+    if (!guildRole) return { error: `${config.label}: selected role is not available in this server.` };
+    return { role: guildRole, source: "command-selection" };
+  }
+
   const configuredId = String(process.env[config.env] || "").trim();
   if (configuredId) {
     const role = guild.roles.cache.get(configuredId);
@@ -130,11 +136,17 @@ function resolveRole(guild, config) {
 
     if (partialMatches.size === 1) return { role: partialMatches.first(), source: "unique-partial-name" };
     if (partialMatches.size > 1) {
-      return { error: `${config.label}: multiple possible roles found (${partialMatches.map((r) => r.name).join(", ")}). Set ${config.env} to the correct role ID.` };
+      return { error: `${config.label}: multiple possible roles found (${partialMatches.map((r) => r.name).join(", ")}). Select the exact role in the slash command.` };
     }
   }
 
-  return { error: `${config.label}: role not found. Set ${config.env} to its Discord role ID.` };
+  const selectionHint = config.label === "Moderator"
+    ? " Select it using the moderator_role option."
+    : config.label === "Senior Moderator"
+      ? " Select it using the senior_moderator_role option."
+      : ` Set ${config.env} to its Discord role ID.`;
+
+  return { error: `${config.label}: role not found.${selectionHint}` };
 }
 
 function buildTargetPermissions(config) {
@@ -170,14 +182,22 @@ function permissionNames(bits) {
     .sort();
 }
 
+function explicitRoleOverrides(interaction) {
+  return new Map([
+    ["moderator", interaction.options.getRole("moderator_role") || null],
+    ["senior-moderator", interaction.options.getRole("senior_moderator_role") || null],
+  ]);
+}
+
 async function buildRolePlan(interaction) {
   await interaction.guild.roles.fetch();
 
+  const overrides = explicitRoleOverrides(interaction);
   const rows = [];
   const errors = [];
 
   for (const [key, config] of Object.entries(STAFF_ROLES)) {
-    const resolved = resolveRole(interaction.guild, config);
+    const resolved = resolveRole(interaction.guild, config, overrides.get(key) || null);
     if (resolved.error) {
       errors.push(resolved.error);
       continue;
@@ -191,6 +211,7 @@ async function buildRolePlan(interaction) {
       key,
       config,
       role: resolved.role,
+      source: resolved.source,
       target,
       currentNames,
       targetNames,
@@ -233,6 +254,7 @@ async function preview(interaction) {
       value: [
         `**Target:** ${target}`,
         `**Current:** ${current}`,
+        `**Resolved by:** ${row.source}`,
         `**Editable by bot:** ${row.editable ? "Yes" : "No"}`,
       ].join("\n").slice(0, 1024),
     });
@@ -248,6 +270,18 @@ async function apply(interaction) {
   if (plan.errors.length) {
     return interaction.editReply({
       content: `❌ No permissions were changed because some staff roles could not be resolved.\n${plan.errors.map((x) => `• ${x}`).join("\n")}`.slice(0, 1900),
+    });
+  }
+
+  const uniqueRoleIds = new Set();
+  const duplicateMappings = [];
+  for (const row of plan.rows) {
+    if (uniqueRoleIds.has(row.role.id)) duplicateMappings.push(`${row.config.label} → ${row.role.name}`);
+    uniqueRoleIds.add(row.role.id);
+  }
+  if (duplicateMappings.length) {
+    return interaction.editReply({
+      content: `❌ No permissions were changed because the same Discord role was selected/resolved for multiple staff ranks: ${duplicateMappings.join(", ")}.`,
     });
   }
 
@@ -290,20 +324,40 @@ async function apply(interaction) {
   });
 }
 
+function addRoleSelectors(subcommand) {
+  return subcommand
+    .addRoleOption((option) =>
+      option
+        .setName("moderator_role")
+        .setDescription("Select the exact Discord Moderator role if auto-detection fails")
+        .setRequired(false),
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("senior_moderator_role")
+        .setDescription("Select the exact Discord Senior Moderator role if auto-detection fails")
+        .setRequired(false),
+    );
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("staff-permissions")
     .setDescription("Preview or apply safe server-wide permissions to staff roles")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand((subcommand) =>
-      subcommand
-        .setName("preview")
-        .setDescription("Show current and proposed permissions without changing anything"),
+      addRoleSelectors(
+        subcommand
+          .setName("preview")
+          .setDescription("Show current and proposed permissions without changing anything"),
+      ),
     )
     .addSubcommand((subcommand) =>
-      subcommand
-        .setName("apply")
-        .setDescription("Replace staff role permissions with the approved permission profiles"),
+      addRoleSelectors(
+        subcommand
+          .setName("apply")
+          .setDescription("Replace staff role permissions with the approved permission profiles"),
+      ),
     ),
 
   async execute(interaction) {
