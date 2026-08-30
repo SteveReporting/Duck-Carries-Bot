@@ -24,7 +24,8 @@ const STAFF_ROLES = {
   moderator: {
     label: "Moderator",
     env: "STAFF_ROLE_MODERATOR",
-    aliases: ["Moderator"],
+    aliases: ["Moderator", "Staff Moderator", "Mod"],
+    partialAliases: ["moderator", "staffmoderator"],
     permissions: [
       "ViewAuditLog",
       "ManageMessages",
@@ -35,7 +36,8 @@ const STAFF_ROLES = {
   "senior-moderator": {
     label: "Senior Moderator",
     env: "STAFF_ROLE_SENIOR_MODERATOR",
-    aliases: ["Senior Moderator"],
+    aliases: ["Senior Moderator", "Senior Mod", "Sr Moderator", "Staff Senior Moderator"],
+    partialAliases: ["seniormoderator", "seniormod", "srmoderator"],
     permissions: [
       "ViewAuditLog",
       "ManageMessages",
@@ -112,10 +114,26 @@ function resolveRole(guild, config) {
   }
 
   const wanted = new Set(config.aliases.map(normalize));
-  const matches = guild.roles.cache.filter((role) => wanted.has(normalize(role.name)));
+  const exactMatches = guild.roles.cache.filter((role) => wanted.has(normalize(role.name)));
 
-  if (matches.size === 1) return { role: matches.first(), source: "name" };
-  if (matches.size > 1) return { error: `${config.label}: multiple matching roles found (${matches.map((r) => r.name).join(", ")})` };
+  if (exactMatches.size === 1) return { role: exactMatches.first(), source: "name" };
+  if (exactMatches.size > 1) {
+    return { error: `${config.label}: multiple exact matching roles found (${exactMatches.map((r) => r.name).join(", ")})` };
+  }
+
+  const partialAliases = (config.partialAliases || []).map(normalize).filter(Boolean);
+  if (partialAliases.length) {
+    const partialMatches = guild.roles.cache.filter((role) => {
+      const roleName = normalize(role.name);
+      return partialAliases.some((alias) => roleName.includes(alias));
+    });
+
+    if (partialMatches.size === 1) return { role: partialMatches.first(), source: "unique-partial-name" };
+    if (partialMatches.size > 1) {
+      return { error: `${config.label}: multiple possible roles found (${partialMatches.map((r) => r.name).join(", ")}). Set ${config.env} to the correct role ID.` };
+    }
+  }
+
   return { error: `${config.label}: role not found. Set ${config.env} to its Discord role ID.` };
 }
 
@@ -182,11 +200,6 @@ async function buildRolePlan(interaction) {
   }
 
   return { rows, errors };
-}
-
-function profileText(config) {
-  if (!config.permissions.length) return "No elevated server-wide permissions";
-  return config.permissions.map((name) => `• ${prettyPermission(name)}`).join("\n");
 }
 
 async function preview(interaction) {
