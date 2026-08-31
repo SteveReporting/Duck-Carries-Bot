@@ -14,7 +14,6 @@ function nonce(runId, scene) {
 const ERROR_RED = 0x9f1010;
 const BARTENDER_RED = 0x6d1f2f;
 const CORE_BLUE = 0x27324a;
-const IDENTITY_PURPLE = 0x5b2a86;
 
 function channel(env, kind) {
   switch (kind) {
@@ -151,106 +150,6 @@ export async function sceneSecondSignalReply(env, runId) {
   }
 }
 
-// 60-second test-only beats. These dramatize the current name panic without
-// exposing email addresses, private fields, or additional real-world data.
-export async function sceneTestNamesNoticed(env, runId) {
-  return speakAsBartender(
-    env,
-    channel(env, "chat"),
-    "BARTENDER // MEMORY TRACE",
-    "You noticed the names.",
-    runId,
-    "tnames"
-  );
-}
-
-export async function sceneTestErr02Probe(env, runId) {
-  const target = channel(env, "signal02");
-  await muteBartender(env, 12000);
-  return speakAsErr02(env, target, "how does it know your names?", runId, "t02probe");
-}
-
-export async function sceneTestBartenderWarning(env, runId) {
-  return speakAsBartender(
-    env,
-    channel(env, "signal02"),
-    "BARTENDER // INTERRUPTION",
-    "Don't ask it to prove anything.",
-    runId,
-    "twarn"
-  );
-}
-
-export async function sceneTestErr02Escalation(env, runId) {
-  return speakAsErr02(
-    env,
-    channel(env, "signal02"),
-    "it remembers more every time you answer.",
-    runId,
-    "t02esc"
-  );
-}
-
-export async function sceneTestIdentityIndex(env, runId) {
-  const who = identity(env, "core");
-  return sendWebhookIdentity(env, channel(env, "core"), {
-    ...who,
-    components: [
-      container([
-        separator(2, false),
-        textDisplay("# **IDENTITY INDEX // UNSEALED**"),
-        separator(2, true),
-        textDisplay("## `MEMBER CORRELATION ACTIVE`"),
-        separator(2, true),
-        textDisplay(
-          "## **DISPLAY NAMES**       `INDEXED`\n" +
-          "## **KNOWN FIRST NAMES**   `CORRELATED`\n" +
-          "## **PRIVATE FIELDS**      `SEALED`\n" +
-          "## **EMAIL CONTENT**       `NOT EXPOSED`"
-        ),
-        separator(2, true),
-        textDisplay("# **THE TAVERN REMEMBERS WHAT YOU CALL YOURSELVES.**"),
-        separator(2, false),
-        textDisplay("-# TAVERN CORE // identity subsystem"),
-      ], IDENTITY_PURPLE),
-    ],
-  });
-}
-
-export async function sceneTestBartenderAnswer(env, runId) {
-  try {
-    return await speakAsBartender(
-      env,
-      channel(env, "signal02"),
-      "BARTENDER // RESPONSE",
-      "You keep calling it a leak. I call it remembering.",
-      runId,
-      "tanswer"
-    );
-  } finally {
-    await unmuteBartender(env);
-  }
-}
-
-export async function sceneTestFinale(env, runId) {
-  return sendComponentMessage(env, channel(env, "finale"), {
-    components: [
-      container([
-        separator(2, false),
-        textDisplay("## `60 SECOND CONTAINMENT TEST // FAILED`"),
-        separator(2, true),
-        textDisplay("# **YOU WERE NEVER INVISIBLE TO THE TAVERN.**"),
-        separator(2, true),
-        textDisplay("## `BARTENDER     ACTIVE`\n## `ERR_02        UNRESOLVED`\n## `TAVERN CORE   UNSEALED`"),
-        separator(2, false),
-        textDisplay("-# test mode // no @everyone ping // private fields remain sealed"),
-      ], ERROR_RED),
-    ],
-    allowEveryone: false,
-    nonce: nonce(runId, "tfinal"),
-  });
-}
-
 export async function sceneBreach(env, runId) {
   const who = identity(env, "core");
 
@@ -319,28 +218,7 @@ export async function runManualScene(env, scene, runId = crypto.randomUUID()) {
     case "finale":
       await sceneFinale(env, runId, false);
       return { scene, pingedEveryone: false };
-    case "test_names":
-      await sceneTestNamesNoticed(env, runId);
-      return { scene };
-    case "test_err02_probe":
-      await sceneTestErr02Probe(env, runId);
-      return { scene };
-    case "test_bartender_warning":
-      await sceneTestBartenderWarning(env, runId);
-      return { scene };
-    case "test_err02_escalation":
-      await sceneTestErr02Escalation(env, runId);
-      return { scene };
-    case "test_identity_index":
-      await sceneTestIdentityIndex(env, runId);
-      return { scene };
-    case "test_bartender_answer":
-      await sceneTestBartenderAnswer(env, runId);
-      return { scene };
-    case "test_finale":
-      await sceneTestFinale(env, runId);
-      return { scene, pingedEveryone: false };
     default:
-      throw new Error(`Unknown scene: ${scene}`);
+      throw new Error(`Unknown or retired scene: ${scene}`);
   }
 }
