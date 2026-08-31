@@ -15,19 +15,13 @@ const BRAND = {
   colour: 0xF2B705,
 };
 
-const SERVICE_TIME_RESET_AT = Date.parse("2026-08-24T03:53:00+01:00");
+const SERVICE_TIME_RESET_AT = Date.parse("2026-08-31T03:11:31+01:00");
 const REFRESH_MS = 60_000;
 const WEBSITE_URL = "https://carry-tavern.davidtennyson846.workers.dev/leaderboard";
 
-// Preserved verified service-time totals from before the service-time reset.
-// These are added once to post-reset verified sessions so Discord stays aligned
-// with the restored website leaderboard instead of losing those known minutes.
-const PRESERVED_BASELINE = new Map([
-  ["619639952828923935", { seconds: 52 * 60, sessions: 2 }],
-  ["893135357367943218", { seconds: 43 * 60, sessions: 2 }],
-  ["1144979479442235492", { seconds: 43 * 60, sessions: 1 }],
-  ["850488844788563999", { seconds: 20 * 60, sessions: 1 }],
-]);
+// Weekly service time starts fresh from the reset cutoff. Historical service
+// records remain in SQLite; only the displayed/ranked service window resets.
+const PRESERVED_BASELINE = new Map();
 
 const PROGRESSION_ROLES = [
   "Master of the Tap",
@@ -189,7 +183,7 @@ async function buildPayload(guild) {
     .setColor(BRAND.colour)
     .setTitle("🏆 THE CARRY TAVERN • LIVE CARRIER LEADERBOARD")
     .setDescription([
-      "### Verified Service Time • All Time",
+      "### Verified Service Time • Current Week",
       "`🟢 LIVE`  This board automatically refreshes every **60 seconds** by editing this same message.",
       "",
       "Service time is the primary ranking metric. Grouped requesters never multiply time.",
