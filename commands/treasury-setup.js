@@ -10,6 +10,7 @@ const {
     treasuryPanelComponents,
     treasuryPanelEmbed,
 } = require("../treasury/treasury");
+const { goldDonationButtonRow } = require("../treasury/goldDonations");
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -60,7 +61,10 @@ module.exports = {
 
         await panel.send({
             embeds: [treasuryPanelEmbed()],
-            components: treasuryPanelComponents(),
+            components: [
+                ...treasuryPanelComponents(),
+                goldDonationButtonRow(),
+            ],
         });
 
         return interaction.reply({
