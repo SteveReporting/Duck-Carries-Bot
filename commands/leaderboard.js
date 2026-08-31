@@ -5,7 +5,7 @@ const { verifiedServiceBoard } = require("../platform/carryServiceTime");
 
 // Only verified service time was reset. Ratings, carries, runs and their
 // historical records continue to use their normal full-history windows.
-const SERVICE_TIME_RESET_AT = Date.parse("2026-08-24T03:53:00+01:00");
+const SERVICE_TIME_RESET_AT = Date.parse("2026-08-31T03:11:31+01:00");
 
 function sinceFor(timeframe) {
   const now = Date.now();
