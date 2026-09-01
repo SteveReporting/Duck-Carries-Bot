@@ -4,11 +4,22 @@ const { DUNGEONS } = require("../platform/dungeons");
 const {
   clearCarrierPermissions,
   listCarrierPermissions,
+  noShowSummary,
   removeCarrierPermission,
   setCarrierPermission,
 } = require("../platform/communitySystems");
+const carrierDepartment = require("./carrier-department");
 
 const DIFFICULTIES = ["*", "Easy", "Medium", "Hard", "Insane", "Insane Hardcore", "Nightmare", "Nightmare Hardcore"];
+const DEPARTMENT_ROLES = [
+  { name: "Head of Carriers", value: "Head of Carriers" },
+  { name: "Deputy Head of Carriers", value: "Deputy Head of Carriers" },
+  { name: "Recruitment Lead", value: "Recruitment Lead" },
+  { name: "Training Lead", value: "Training Lead" },
+  { name: "Carrier Supervisor", value: "Carrier Supervisor" },
+  { name: "Carrier Mentor", value: "Carrier Mentor" },
+  { name: "Trainee Carrier", value: "Trainee Carrier" },
+];
 
 function requireStaff(interaction) {
   return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageRoles) || interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
@@ -49,10 +60,25 @@ async function changeCommand(interaction, mode) {
   });
 }
 
+async function noShowSummaryCommand(interaction) {
+  const target = interaction.options.getUser("user", true);
+  const summary = noShowSummary(interaction.guildId, target.id, 30);
+  const embed = new EmbedBuilder()
+    .setTitle(`🚫 No-Show Record • ${target.username}`)
+    .setThumbnail(target.displayAvatarURL({ size: 128 }))
+    .addFields(
+      { name: "Total (30d)", value: String(summary.total), inline: true },
+      { name: "As Requester", value: String(summary.requester), inline: true },
+      { name: "As Carrier", value: String(summary.carrier), inline: true },
+    )
+    .setFooter({ text: "No-show reports are staff safety signals, not automatic punishment." });
+  return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("carrier-admin")
-    .setDescription("Manage Carrier dungeon permissions")
+    .setDescription("Carrier staff controls")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles)
     .addSubcommand((s) => s.setName("allow").setDescription("Allow a Carrier dungeon/difficulty scope")
       .addUserOption((o) => o.setName("user").setDescription("Carrier").setRequired(true))
@@ -69,7 +95,14 @@ module.exports = {
     .addSubcommand((s) => s.setName("clear").setDescription("Clear every scoped permission for a Carrier")
       .addUserOption((o) => o.setName("user").setDescription("Carrier").setRequired(true)))
     .addSubcommand((s) => s.setName("list").setDescription("View a Carrier's dungeon permissions")
-      .addUserOption((o) => o.setName("user").setDescription("Carrier").setRequired(true))),
+      .addUserOption((o) => o.setName("user").setDescription("Carrier").setRequired(true)))
+    .addSubcommand((s) => s.setName("assign").setDescription("Assign a Carrier Department role")
+      .addStringOption((o) => o.setName("role").setDescription("Department role").setRequired(true).addChoices(...DEPARTMENT_ROLES))
+      .addUserOption((o) => o.setName("member").setDescription("Member to receive the role").setRequired(true)))
+    .addSubcommand((s) => s.setName("hierarchy").setDescription("Place the Carrier role block below a chosen role")
+      .addRoleOption((o) => o.setName("below").setDescription("Role directly above Head of Carriers").setRequired(true)))
+    .addSubcommand((s) => s.setName("noshow-summary").setDescription("View a member's 30-day carry no-show record")
+      .addUserOption((o) => o.setName("user").setDescription("Member to view").setRequired(true))),
 
   async autocomplete(interaction) {
     const focused = interaction.options.getFocused(true);
@@ -90,6 +123,8 @@ module.exports = {
     if (!requireStaff(interaction)) return interaction.reply({ content: "❌ Manage Roles permission is required.", flags: MessageFlags.Ephemeral });
     try {
       const sub = interaction.options.getSubcommand();
+      if (sub === "assign" || sub === "hierarchy") return carrierDepartment.execute(interaction);
+      if (sub === "noshow-summary") return noShowSummaryCommand(interaction);
       if (sub === "list") return listCommand(interaction);
       if (sub === "clear") {
         const target = interaction.options.getUser("user", true);
@@ -99,7 +134,8 @@ module.exports = {
       return changeCommand(interaction, sub);
     } catch (error) {
       console.error("[CARRIER ADMIN]", error);
-      return interaction.reply({ content: `❌ ${error.message || "Carrier permission update failed."}`, flags: MessageFlags.Ephemeral });
+      if (interaction.deferred || interaction.replied) return interaction.editReply({ content: `❌ ${error.message || "Carrier admin update failed."}` });
+      return interaction.reply({ content: `❌ ${error.message || "Carrier admin update failed."}`, flags: MessageFlags.Ephemeral });
     }
   },
 };
