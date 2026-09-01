@@ -9,78 +9,68 @@ const {
 const HELP = {
   home: {
     title: "🍺 The Carry Tavern Help",
-    text: "Choose a section below. The bot now combines carries, Carrier tools, Roblox verification, trading, moderation and Tavern platform features.",
+    text: "The command list has been cleaned up. Choose a section below to see the production commands that remain.",
   },
   carries: {
     title: "⚔️ Carries & Queue",
     text: [
-      "`/queue request` - request 1-15 runs using dungeon autocomplete.",
-      "`/queue view` - grouped queue, priority and estimated wait time.",
-      "`/queue cancel` - cancel your request when allowed.",
-      "Carry tickets require both Carrier and requester confirmation.",
-      "Unclaimed requests time out after 24 hours.",
-      "The request panel can also be created with `/panel`.",
+      "`/queue request` - request a carry.",
+      "`/queue view` - view the grouped live queue.",
+      "`/queue active` - view/recover your active claims.",
+      "`/queue claim` - claim a specific carry.",
+      "`/queue start` - start a claimed carry.",
+      "`/queue complete` - confirm completed runs.",
+      "`/queue cancel` - cancel your own request.",
+      "`/queue noshow` - report the other side after a claimed carry no-show.",
     ].join("\n"),
   },
   carrier: {
     title: "🍻 Carrier Tools",
     text: [
-      "`/carrier available` / `/carrier unavailable` - control smart-match DMs.",
-      "`/carrier session-start` - focus on one dungeon + difficulty.",
-      "`/carrier session-end` - end the focused session.",
-      "`/carrier profile` - ratings, stats, no-shows and dungeon permissions.",
-      "`/leaderboard` - daily, weekly, monthly and all-time Carrier boards.",
-      "Staff: `/carrier-admin` manages allowed/denied dungeons.",
+      "`/carrier available` / `/carrier unavailable` - control smart-match availability.",
+      "`/carrier session-start` / `session-end` - manage a focused Carrier session.",
+      "`/carrier profile` - ratings, service, permissions and no-show information.",
+      "`/leaderboard` - Carrier rankings by timeframe and metric.",
+      "Staff use `/carrier-admin` for permissions, role assignment, hierarchy and no-show summaries.",
     ].join("\n"),
   },
-  roblox: {
-    title: "🟥 Roblox & Onboarding",
+  marketplace: {
+    title: "💰 Marketplace & Reputation",
     text: [
-      "`/onboarding guide` - your server unlock checklist.",
-      "`/roblox link` - connect a Roblox username.",
-      "`/roblox verify` - verify through your Roblox About code.",
-      "`/roblox profile` - view a linked Roblox/Tavern profile card.",
-      "Verified members have their server nickname synced to their Roblox username.",
+      "`/marketplace add` / `mine` / `remove` - manage your listings.",
+      "`/marketplace search` - find active listings.",
+      "`/marketplace offer` / `offers` - manage offers.",
+      "`/marketplace watch` / `renew` - watch or renew listings.",
+      "`/marketplace rate` - rate someone after a completed trade.",
+      "`/marketplace reputation` - view trade reputation.",
+      "`/report scam` / `dispute` - open a staff case.",
     ].join("\n"),
   },
-  trade: {
-    title: "💰 Trading & Reputation",
+  tavern: {
+    title: "🏆 Tavern Account",
     text: [
-      "`/marketplace` - marketplace listings, offers and watchlist.",
-      "`/trade rate` - leave 1-5 star feedback after a trade.",
-      "`/trade reputation` - view a trader's reputation.",
-      "`/report scam` - report suspected scamming.",
-      "`/report dispute` - open a trade dispute for staff review.",
-    ].join("\n"),
-  },
-  community: {
-    title: "🏆 Tavern & Community",
-    text: [
-      "`/tavern profile` - your Tavern platform profile.",
-      "`/tavern events` - events and Event channel feed.",
-      "`/tavern announcements` - important announcements.",
-      "`/tavern status` - platform status.",
-      "`/stats` - legacy carry statistics.",
-      "`/leaderboard` - Carrier leaderboard.",
-    ].join("\n"),
-  },
-  staff: {
-    title: "🛡️ Staff & Safety",
-    text: [
-      "`/warn add/list/remove` - staff warning system.",
-      "`/carrier-admin` - Carrier dungeon permissions.",
-      "`/report resolve` - close reviewed disputes.",
-      "Anti-abuse monitoring combines repeated no-shows, claim releases, warnings, request bursts and reports into staff-only flags.",
-      "`/ai` - controlled Tavern AI management tools for authorised managers.",
+      "`/tavern profile` - view your Tavern profile.",
+      "`/tavern status` - view platform status.",
+      "`/tavern roblox-sync` - sync your Roblox identity from Bloxlink.",
+      "`/tavern roblox-profile` - view a member's Roblox + Tavern profile.",
     ].join("\n"),
   },
   treasury: {
     title: "🏦 Treasury",
     text: [
-      "`/treasury-setup` - Treasury configuration.",
-      "`/treasury-admin` - Treasury management.",
-      "`/treasury-close` - close Treasury flows.",
-      "Website Treasury pages handle loans, donations and item records.",
+      "`/treasury stock` - browse Treasury stock.",
+      "`/treasury close` - close a resolved Treasury ticket.",
+      "Treasury staff: `/treasury admin view`, `/treasury admin trust`, `/treasury admin clear-scam`.",
+    ].join("\n"),
+  },
+  staff: {
+    title: "🛡️ Staff & Security",
+    text: [
+      "`/warn add` / `list` / `remove` - moderation warnings.",
+      "`/report resolve` - resolve reviewed report cases.",
+      "`/carrier-admin` - Carrier staff controls.",
+      "`/security` - anti-raid, audit search, bot/app allowlist and lockdown controls.",
+      "`/botfix` - owner-only emergency bot repair.",
     ].join("\n"),
   },
 };
@@ -93,11 +83,10 @@ function menu() {
       .addOptions(
         { label: "Carries & Queue", value: "carries", emoji: "⚔️" },
         { label: "Carrier Tools", value: "carrier", emoji: "🍻" },
-        { label: "Roblox & Onboarding", value: "roblox", emoji: "🟥" },
-        { label: "Trading & Reputation", value: "trade", emoji: "💰" },
-        { label: "Tavern & Community", value: "community", emoji: "🏆" },
+        { label: "Marketplace & Reputation", value: "marketplace", emoji: "💰" },
+        { label: "Tavern Account", value: "tavern", emoji: "🏆" },
         { label: "Treasury", value: "treasury", emoji: "🏦" },
-        { label: "Staff & Safety", value: "staff", emoji: "🛡️" },
+        { label: "Staff & Security", value: "staff", emoji: "🛡️" },
       ),
   );
 }
@@ -107,7 +96,7 @@ function embedFor(section) {
   return new EmbedBuilder()
     .setTitle(item.title)
     .setDescription(item.text)
-    .setFooter({ text: "The Carry Tavern • use the menu to switch sections" });
+    .setFooter({ text: "The Carry Tavern • cleaned production command set" });
 }
 
 async function handleHelpComponent(interaction) {
