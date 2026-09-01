@@ -10,6 +10,7 @@ const {
   findOrCreateCatalogueItem,
   publishItemImageBytes,
 } = require("../platform/marketplaceCatalog");
+const trade = require("./trade");
 
 const MAX_GOLD = 9_000_000_000_000_000;
 const MAX_PROOF_BYTES = 5 * 1024 * 1024;
@@ -230,16 +231,26 @@ module.exports = {
     .addSubcommand((s) => s.setName("offer").setDescription("Make an offer on a listing").addStringOption((o) => o.setName("listing").setDescription("Listing UUID").setRequired(true).setMinLength(36).setMaxLength(36)).addStringOption((o) => o.setName("amount").setDescription("Gold per item").setRequired(true).setMaxLength(32)).addIntegerOption((o) => o.setName("quantity").setDescription("Quantity").setMinValue(1).setMaxValue(999)).addStringOption((o) => o.setName("message").setDescription("Optional note to seller").setMaxLength(1000)))
     .addSubcommand((s) => s.setName("offers").setDescription("Show your recent marketplace offers"))
     .addSubcommand((s) => s.setName("watch").setDescription("Toggle a listing on your price watchlist").addStringOption((o) => o.setName("listing").setDescription("Listing UUID").setRequired(true).setMinLength(36).setMaxLength(36)))
-    .addSubcommand((s) => s.setName("renew").setDescription("Renew one of your listings for 30 days").addStringOption((o) => o.setName("listing").setDescription("Listing UUID").setRequired(true).setMinLength(36).setMaxLength(36))),
+    .addSubcommand((s) => s.setName("renew").setDescription("Renew one of your listings for 30 days").addStringOption((o) => o.setName("listing").setDescription("Listing UUID").setRequired(true).setMinLength(36).setMaxLength(36)))
+    .addSubcommand((s) => s.setName("rate").setDescription("Rate someone after a completed trade")
+      .addUserOption((o) => o.setName("user").setDescription("Person you traded with").setRequired(true))
+      .addIntegerOption((o) => o.setName("score").setDescription("1-5 stars").setRequired(true).setMinValue(1).setMaxValue(5))
+      .addStringOption((o) => o.setName("reference").setDescription("Listing ID, trade ID or unique deal reference").setRequired(true).setMaxLength(120))
+      .addStringOption((o) => o.setName("note").setDescription("Optional feedback").setMaxLength(500)))
+    .addSubcommand((s) => s.setName("reputation").setDescription("View someone's trade reputation")
+      .addUserOption((o) => o.setName("user").setDescription("Member to view"))),
 
   async execute(interaction) {
+    const sub = interaction.options.getSubcommand();
+    if (sub === "rate") return trade.rateCommand(interaction);
+    if (sub === "reputation") return trade.reputationCommand(interaction);
+
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     let supabase;
     try { supabase = getSupabase(); } catch (error) { await interaction.editReply(`❌ ${error.message}`); return; }
     try {
       const profile = await requireProfile(interaction, supabase);
       if (!profile) return;
-      const sub = interaction.options.getSubcommand();
       if (sub === "add") return await addListing(interaction, supabase, profile);
       if (sub === "mine") return await listMine(interaction, supabase, profile);
       if (sub === "remove") return await removeListing(interaction, supabase, profile);
