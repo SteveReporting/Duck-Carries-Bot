@@ -12,6 +12,7 @@ const {
     TextChannel,
 } = require("discord.js");
 const db = require("./database/database");
+const COMMAND_FILES = require("./command-manifest");
 const {
     guardCarryClaimInteraction,
     isCarryClaimInteraction,
@@ -180,18 +181,19 @@ installUnifiedCarrySendInterceptor();
 
 function loadCommands() {
     const directory = path.join(__dirname, "commands");
-    const files = fs.readdirSync(directory)
-        .filter((name) => name.endsWith(".js"))
-        .sort();
 
-    console.log("📦 Loading commands...");
+    console.log("📦 Loading production commands...");
 
-    for (const file of files) {
+    for (const file of COMMAND_FILES) {
         try {
             const command = require(path.join(directory, file));
 
             if (!command?.data?.name || typeof command.execute !== "function") {
                 throw new Error("Command must export { data, execute }.");
+            }
+
+            if (client.commands.has(command.data.name)) {
+                throw new Error(`Duplicate production command /${command.data.name}.`);
             }
 
             client.commands.set(command.data.name, command);
@@ -290,16 +292,37 @@ function loadEvents() {
     }
 }
 
+function cleanLiveCommand(command) {
+    const {
+        id,
+        application_id,
+        guild_id,
+        version,
+        ...definition
+    } = command;
+    return definition;
+}
+
 async function syncSlashCommands() {
     const body = [...client.commands.values()].map((command) => command.data.toJSON());
     const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
+    const route = Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID);
 
-    console.log(`🔄 Syncing ${body.length} guild slash commands...`);
-    await rest.put(
-        Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-        { body },
-    );
-    console.log("✅ Guild slash commands synced.");
+    // /security is owned by the standalone anti-raid service. The main bot does
+    // not load or execute it, but preserves its live registration during sync.
+    const existing = await rest.get(route).catch(() => []);
+    const security = Array.isArray(existing)
+        ? existing.find((command) => command.name === "security")
+        : null;
+    if (security) {
+        body.push(cleanLiveCommand(security));
+    } else {
+        console.warn("⚠️ /security was not found during command sync. Start the anti-raid service to register it.");
+    }
+
+    console.log(`🔄 Syncing ${body.length} production guild slash commands...`);
+    await rest.put(route, { body });
+    console.log("✅ Production guild slash commands synced.");
 }
 
 loadCommands();
