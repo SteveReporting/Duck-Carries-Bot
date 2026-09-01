@@ -4,7 +4,7 @@ module.exports = {
             name: "carry-tavern",
             script: "./index.js",
             cwd: __dirname,
-            node_args: "-r ./env-bootstrap.js -r ./security-command-pass-through.js",
+            node_args: "-r ./env-bootstrap.js -r ./global-command-cleanup.js -r ./security-command-pass-through.js",
             instances: 1,
             exec_mode: "fork",
             autorestart: true,
