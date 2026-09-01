@@ -4,23 +4,7 @@ const {
   REST,
   Routes,
 } = require("discord.js");
-
-// Production command surface. One-off setup, repair, migration, demo and legacy
-// commands remain in the repository as internal utilities but are no longer
-// registered in Discord.
-const COMMAND_FILES = [
-  "botfix.js",
-  "carrier-admin.js",
-  "carrier.js",
-  "help.js",
-  "leaderboard.js",
-  "marketplace.js",
-  "queue3.js",
-  "report.js",
-  "tavern.js",
-  "treasury.js",
-  "warn.js",
-];
+const COMMAND_FILES = require("./command-manifest");
 
 const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 const route = Routes.applicationGuildCommands(
