@@ -157,6 +157,9 @@ module.exports = {
       .setDescription("View a member's 30-day no-show count")
       .addUserOption((o) => o.setName("user").setDescription("Member to view"))),
 
+  reportCommand,
+  summaryCommand,
+
   async execute(interaction) {
     try {
       return interaction.options.getSubcommand() === "report"
