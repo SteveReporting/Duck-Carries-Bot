@@ -91,6 +91,9 @@ module.exports = {
       .setDescription("View a member's Roblox + Tavern profile card")
       .addUserOption((option) => option.setName("user").setDescription("Member to view"))),
 
+  syncCommand,
+  profileCommand,
+
   async execute(interaction) {
     try {
       const sub = interaction.options.getSubcommand();
