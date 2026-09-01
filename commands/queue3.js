@@ -1,14 +1,35 @@
 const { MessageFlags } = require("discord.js");
 
 const queue2 = require("./queue2");
+const { reportCommand: reportNoShow } = require("./noshow");
 const { claimSpecificCarryWithTicket } = require("../platform/singleCarryTicket");
 const { viewOrRepairActiveClaims } = require("../platform/activeCarryClaim");
 
-const data = queue2.data.addSubcommand((subcommand) =>
-  subcommand
-    .setName("active")
-    .setDescription("View your active carry claims and recover any missing ticket"),
-);
+const data = queue2.data
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("active")
+      .setDescription("View your active carry claims and recover any missing ticket"),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("noshow")
+      .setDescription("Report the other side for not showing up to a claimed carry")
+      .addStringOption((option) =>
+        option
+          .setName("request")
+          .setDescription("Carry request UUID; optional inside its carry ticket")
+          .setRequired(false)
+          .setMinLength(36)
+          .setMaxLength(36),
+      )
+      .addStringOption((option) =>
+        option
+          .setName("reason")
+          .setDescription("Optional details")
+          .setMaxLength(500),
+      ),
+  );
 
 async function warmGuildMembers(interaction) {
   if (!interaction.guild) return;
@@ -38,13 +59,23 @@ module.exports = {
         return await viewOrRepairActiveClaims(interaction);
       }
 
+      if (subcommand === "noshow") {
+        return await reportNoShow(interaction);
+      }
+
       return queue2.execute(interaction);
     } catch (error) {
-      const scope = subcommand === "active" ? "ACTIVE" : "CLAIM TICKET";
+      const scope = subcommand === "active"
+        ? "ACTIVE"
+        : subcommand === "noshow"
+          ? "NO-SHOW"
+          : "CLAIM TICKET";
       console.error(`[QUEUE ${scope}]`, error);
       const message = subcommand === "active"
         ? `❌ ${error.message || "Could not load or recover your active carry claims."}`
-        : `❌ ${error.message || "Could not claim the carry and create its private ticket."}`;
+        : subcommand === "noshow"
+          ? `❌ ${error.message || "Could not record the carry no-show."}`
+          : `❌ ${error.message || "Could not claim the carry and create its private ticket."}`;
 
       if (interaction.deferred || interaction.replied) {
         return interaction.editReply({ content: message, components: [], embeds: [] }).catch(() => null);
