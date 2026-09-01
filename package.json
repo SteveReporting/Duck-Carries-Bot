@@ -1,11 +1,11 @@
 {
   "name": "carry-tavern-bot",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "The Carry Tavern Discord Queue, Treasury and Marketplace Bot",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "deploy": "node deploy-commands.js",
+    "start": "node -r ./env-bootstrap.js index.js",
+    "deploy": "node -r ./env-bootstrap.js deploy-commands.js",
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:restart": "pm2 restart carry-tavern",
     "pm2:logs": "pm2 logs carry-tavern"
