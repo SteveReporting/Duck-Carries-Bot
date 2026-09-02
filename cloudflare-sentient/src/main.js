@@ -172,6 +172,41 @@ async function generateLoverReply(env, { nickname, message, history }) {
 }
 
 export class SentientGateway extends BaseSentientGateway {
+  async handleOwnerControl(message, content) {
+    if (String(message?.author?.id || "") !== OWNER_DISCORD_USER_ID) return false;
+
+    const command = firstCommandLine(content);
+    if (command === "bartender /off") {
+      this.ownerSilenced = true;
+      await this.ctx.storage.put("ownerSilenced", true);
+      await sendMessage(this.env, message.channel_id, {
+        content: "OWNER CONTROL // Bartender replies are now **OFF**.",
+        allowed_mentions: { parse: [] },
+      });
+      return true;
+    }
+
+    if (command === "bartender /on") {
+      this.ownerSilenced = false;
+      await this.ctx.storage.put("ownerSilenced", false);
+      await sendMessage(this.env, message.channel_id, {
+        content: "OWNER CONTROL // Bartender replies are now **ON**.",
+        allowed_mentions: { parse: [] },
+      });
+      return true;
+    }
+
+    if (command === "bartender /status") {
+      await sendMessage(this.env, message.channel_id, {
+        content: `OWNER CONTROL // Bartender replies are **${this.ownerSilenced ? "OFF" : "ON"}**.`,
+        allowed_mentions: { parse: [] },
+      });
+      return true;
+    }
+
+    return super.handleOwnerControl(message, content);
+  }
+
   async err02Enabled() {
     const stored = await this.ctx.storage.get(ERR02_ENABLED_STORAGE_KEY);
     return stored !== false;
