@@ -100,7 +100,7 @@ function liveAiHealth(env) {
   const missing = [];
   if (!checks.bartenderToken) missing.push("SENTIENT_BARTENDER_TOKEN");
   if (!checks.gatewayBinding) missing.push("SENTIENT_GATEWAY binding");
-  if (!checks.localAi) missing.push("LOCAL_AI_BASE_URL");
+  if (!checks.localAi) missing.push("Workers AI binding or LOCAL_AI_BASE_URL");
   if (!checks.guildId) missing.push("SENTIENT_GUILD_ID (or GUILD_ID)");
   if (!checks.channels) missing.push("SENTIENT_AI_CHANNEL_IDS (or SENTIENT_TAVERN_CHAT_CHANNEL_ID)");
 
@@ -151,6 +151,29 @@ export default {
         liveAi,
         sixtySecondTest: "removed",
       }, coreMissing.length ? 503 : 200);
+    }
+
+    // Read-only runtime diagnostics. This intentionally exposes no tokens,
+    // secrets, prompts, message contents, or mutation controls.
+    if (url.pathname === "/diagnostics" && request.method === "GET") {
+      try {
+        const liveAi = liveAiHealth(env);
+        const { response, data } = await gatewayAction(env, "status");
+        return json({
+          ok: response.ok,
+          service: "carry-tavern-sentient",
+          workersAiBound: Boolean(env.AI),
+          aiModel: localAiModel(env),
+          liveAi,
+          gateway: data,
+        }, response.status);
+      } catch (error) {
+        return json({
+          ok: false,
+          service: "carry-tavern-sentient",
+          error: error?.message || String(error),
+        }, 500);
+      }
     }
 
     if (!url.pathname.startsWith("/api/")) {
