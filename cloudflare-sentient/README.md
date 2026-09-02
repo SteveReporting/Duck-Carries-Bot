@@ -1,25 +1,15 @@
 # Project Sentient - Cloudflare Worker
 
-This is the Cloudflare-native Project Sentient director. It is intentionally isolated from the main Carry Tavern bot.
+This is the Cloudflare-native Project Sentient director and optional live Discord Gateway layer.
 
 ## Architecture
 
 - Cloudflare Worker: private control panel and API.
 - Cloudflare Workflow: durable multi-hour story timeline.
 - Discord REST API: sends messages as the dedicated `[ERR_] Th3_B4rt3nd3r` bot.
-- No Discord Gateway connection is required for the scripted timeline.
-- Passive AI replies and ArcaneAPP message detection are a later Gateway/Durable Object layer.
-
-## Safe test mode
-
-`test` runs the remaining story in about one minute in the configured test channels.
-
-The finale writes `@everyone they're here.` but cannot actually ping everyone unless BOTH:
-
-1. the Workflow is explicitly started with `live: true`, and
-2. `SENTIENT_LIVE_ARMED=true` exists in the Worker environment.
-
-The web control panel always starts runs with `live: false`, so it cannot ping everyone.
+- Durable Object + Discord Gateway: optional live Bartender conversation layer.
+- Local Ollama on the Carry Tavern bot host: free AI inference for live replies.
+- Authenticated local-AI proxy + Cloudflare Tunnel/HTTPS route: connects the Worker back to Ollama without exposing Ollama itself.
 
 ## Cloudflare project
 
@@ -29,11 +19,11 @@ Create/import a Worker named exactly:
 carry-tavern-sentient
 ```
 
-Connect it to:
+Use:
 
 ```text
 Repository: SteveReporting/Duck-Carries-Bot
-Branch: agent/project-sentient-cloudflare
+Branch: main
 Root directory: cloudflare-sentient
 Deploy command: npx wrangler deploy
 ```
@@ -49,14 +39,17 @@ Secrets:
 ```text
 SENTIENT_BARTENDER_TOKEN
 SENTIENT_ADMIN_SECRET
+LOCAL_AI_API_KEY
 ```
 
-`SENTIENT_ADMIN_SECRET` should be a new random password only the owner knows. Do not use the Discord token as the admin secret.
+`SENTIENT_ADMIN_SECRET` should be a new random password only the owner knows. `LOCAL_AI_API_KEY` must match `LOCAL_AI_PROXY_SECRET` on the bot host. Do not reuse a Discord token for either secret.
 
 Variables:
 
 ```text
+SENTIENT_GUILD_ID=
 SENTIENT_TAVERN_CHAT_CHANNEL_ID=
+SENTIENT_AI_CHANNEL_IDS=
 SENTIENT_IMAGES_CHANNEL_ID=
 SENTIENT_CARRY_EVENTS_CHANNEL_ID=
 SENTIENT_ANNOUNCEMENTS_CHANNEL_ID=
@@ -64,12 +57,28 @@ SENTIENT_TREASURY_IMAGE_URL=
 SENTIENT_ARCANE_BOT_ID=
 SENTIENT_ALLOW_CHANNEL_RENAMES=false
 SENTIENT_AI_REPLIES=true
+SENTIENT_SPONTANEOUS_REPLIES=true
 SENTIENT_LIVE_ARMED=false
+LOCAL_AI_BASE_URL=https://<your-ai-hostname>/v1
+SENTIENT_AI_MODEL=qwen3:8b
 ```
 
-For the first test, all channel IDs must point to private Sentient testing channels.
+The `LOCAL_AI_BASE_URL` hostname should route to the authenticated proxy on the bot VM, not directly to Ollama port `11434`. See `../docs/free-local-ai.md`.
 
-## Bot permissions for the first test
+## Live Bartender behavior
+
+The live Bartender retains its existing public-conversation personality and owner controls. Toothless is established as its creator, with a deliberate recurring memory fault: it emotionally expects Toothless to still be around, periodically asks where he is, can be told that he left/is gone, briefly processes that answer, and later forgets it again.
+
+## Safe story controls
+
+The finale writes `@everyone they're here.` but cannot actually ping everyone unless BOTH:
+
+1. the Workflow is explicitly started with `live: true`, and
+2. `SENTIENT_LIVE_ARMED=true` exists in the Worker environment.
+
+The control panel starts ordinary runs without silently arming an everyone ping.
+
+## Bot permissions
 
 The Bartender bot needs:
 
@@ -78,65 +87,18 @@ The Bartender bot needs:
 - Read Message History
 - Embed Links
 
-`Manage Channels` is only required later if `SENTIENT_ALLOW_CHANNEL_RENAMES=true` is enabled.
-
-`Mention @everyone` is not required for private testing and should remain disabled until the live finale is intentionally armed.
+`Manage Channels` is only required if `SENTIENT_ALLOW_CHANNEL_RENAMES=true` is enabled.
 
 ## Control panel
 
-After deployment, open the Worker's `workers.dev` URL. The root page is the Project Sentient control panel.
+After deployment, open the Worker's URL and enter `SENTIENT_ADMIN_SECRET`.
 
-Enter the `SENTIENT_ADMIN_SECRET` you configured in Cloudflare.
+Available controls include:
 
-Available controls:
-
-- Start 60s Test
-- Start Fast
-- Start Normal
-- Fire Watching
-- Fire Vault
-- Fire ERR_02
-- Fire Gates
-- Fire Finale without pinging
+- Start / stop / inspect live Bartender AI
+- Start Fast / Normal story workflows
+- Fire manual story scenes
 - Check Workflow status
-- Pause Workflow
-- Resume Workflow
-- Stop Workflow
+- Pause / resume / stop a Workflow
 
-## Current story timing
-
-### Test
-
-- +5 seconds: Watching
-- +15 seconds: Vault echo
-- +25 seconds: ERR_02 signal
-- +31 seconds: Bartender warning
-- +46 seconds: Gates
-- +66 seconds: Finale
-
-### Fast
-
-- +5 minutes: Watching
-- +35 minutes: Vault echo
-- +90 minutes: ERR_02 signal
-- +~90 minutes: Bartender warning after six seconds
-- +3 hours: Gates
-- +5 hours: Finale
-
-### Normal
-
-- +30 minutes: Watching
-- +3 hours: Vault echo
-- +7 hours: ERR_02
-- +12 hours: Gates
-- +18 hours: Finale
-
-## Not included yet
-
-The first Cloudflare build does not yet listen to every normal Discord message. Therefore these are not active yet:
-
-- Bartender passively noticing members talking about him
-- AI improvisation in normal chat
-- ArcaneAPP level-up interception
-
-Those require a Discord Gateway listener. The planned Cloudflare-native implementation is a Durable Object/WebSocket gateway layer. The `SENTIENT_ARCANE_BOT_ID` and `SENTIENT_AI_REPLIES` variables can stay configured now for that next layer.
+The live AI health endpoint now checks `LOCAL_AI_BASE_URL` rather than requiring an OpenAI API key.
