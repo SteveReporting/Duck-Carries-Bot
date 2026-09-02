@@ -3,6 +3,7 @@ export { SentientGateway } from "./gateway.js";
 
 import { adminPage } from "./adminUi.js";
 import { sendMessageWithAttachment } from "./discord.js";
+import { localAiConfigured, localAiModel } from "./aiClient.js";
 import { runManualScene } from "./scenes.js";
 
 const TEASER_CHANNEL_ID = "1538734137391849613";
@@ -88,7 +89,8 @@ function liveAiHealth(env) {
   const checks = {
     bartenderToken: Boolean(env.SENTIENT_BARTENDER_TOKEN),
     gatewayBinding: Boolean(env.SENTIENT_GATEWAY),
-    openAiKey: Boolean(env.OPENAI_API_KEY),
+    localAi: localAiConfigured(env),
+    localAiModel: localAiModel(env),
     guildId: Boolean(env.SENTIENT_GUILD_ID || env.GUILD_ID),
     channels: Boolean(String(env.SENTIENT_AI_CHANNEL_IDS || "").trim() || env.SENTIENT_TAVERN_CHAT_CHANNEL_ID),
   };
@@ -96,7 +98,7 @@ function liveAiHealth(env) {
   const missing = [];
   if (!checks.bartenderToken) missing.push("SENTIENT_BARTENDER_TOKEN");
   if (!checks.gatewayBinding) missing.push("SENTIENT_GATEWAY binding");
-  if (!checks.openAiKey) missing.push("OPENAI_API_KEY");
+  if (!checks.localAi) missing.push("LOCAL_AI_BASE_URL");
   if (!checks.guildId) missing.push("SENTIENT_GUILD_ID (or GUILD_ID)");
   if (!checks.channels) missing.push("SENTIENT_AI_CHANNEL_IDS (or SENTIENT_TAVERN_CHAT_CHANNEL_ID)");
 
@@ -274,7 +276,6 @@ export default {
   },
 
   async scheduled(_controller, env, ctx) {
-    // Keep the optional live gateway healthy, but never auto-launch a story/test.
     try {
       const stub = gatewayStub(env);
       ctx.waitUntil(stub.fetch("https://sentient-gateway/ensure", { method: "POST" }));
