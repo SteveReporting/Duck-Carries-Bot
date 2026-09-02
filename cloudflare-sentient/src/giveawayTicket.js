@@ -2,7 +2,9 @@ const DISCORD_API = "https://discord.com/api/v10";
 
 const DEFAULT_KEYWORD = "PURPLE COLLECT/T3";
 const DEFAULT_RESULT_MESSAGES = 3;
-const MAX_SCAN_PAGES = 10;
+const CURRENT_CHANNEL_SCAN_PAGES = 50;
+const LIKELY_CHANNEL_SCAN_PAGES = 20;
+const FALLBACK_CHANNEL_SCAN_PAGES = 3;
 const MAX_RATE_LIMIT_RETRIES = 8;
 
 const PERMISSIONS = {
@@ -54,8 +56,13 @@ function messageText(message) {
 
 function isGiveawayResult(message, keyword) {
   if (!message?.author?.bot) return false;
+
   const authorName = String(message.author.username || "").toLowerCase();
-  if (authorName !== "giveawaybot") return false;
+  // GiveawayBot can have cosmetic/display-name differences. Keep the check
+  // specific enough to avoid grabbing unrelated bots, but do not require an
+  // exact case-sensitive username.
+  if (!authorName.includes("giveawaybot")) return false;
+
   if (!messageText(message).toLowerCase().includes(String(keyword).toLowerCase())) return false;
   return Array.isArray(message.mentions) && message.mentions.length > 0;
 }
@@ -69,21 +76,14 @@ function retryAfterMs(response, payload) {
   if (Number.isFinite(bodySeconds) && bodySeconds >= 0) return Math.ceil(bodySeconds * 1000);
 
   const header = Number(response.headers.get("Retry-After"));
-  if (Number.isFinite(header) && header >= 0) {
-    // Discord normally returns seconds here. Keep a sane floor so a zero-value
-    // header cannot create a hot retry loop.
-    return Math.ceil(header * 1000);
-  }
-
+  if (Number.isFinite(header) && header >= 0) return Math.ceil(header * 1000);
   return 1500;
 }
 
 async function discordRequest(env, path, { method = "GET", body, reason } = {}) {
   if (!env.SENTIENT_BARTENDER_TOKEN) throw new Error("Bartender token is not configured in Cloudflare.");
 
-  const headers = {
-    Authorization: `Bot ${env.SENTIENT_BARTENDER_TOKEN}`,
-  };
+  const headers = { Authorization: `Bot ${env.SENTIENT_BARTENDER_TOKEN}` };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (reason) headers["X-Audit-Log-Reason"] = encodeURIComponent(reason).slice(0, 512);
 
@@ -119,27 +119,96 @@ async function discordRequest(env, path, { method = "GET", body, reason } = {}) 
   throw new Error("Discord API request failed after rate-limit retries.");
 }
 
-async function findGiveawayMessages(env, channelId, keyword, wanted) {
+async function scanChannel(env, channelId, keyword, maxPages) {
   const matches = [];
   let before = "";
 
-  for (let page = 0; page < MAX_SCAN_PAGES && matches.length < wanted; page += 1) {
+  for (let page = 0; page < maxPages; page += 1) {
     const query = new URLSearchParams({ limit: "100" });
     if (before) query.set("before", before);
 
-    const batch = await discordRequest(env, `/channels/${channelId}/messages?${query.toString()}`);
+    let batch;
+    try {
+      batch = await discordRequest(env, `/channels/${channelId}/messages?${query.toString()}`);
+    } catch (error) {
+      // Skip channels Bartender cannot read instead of failing the entire guild search.
+      if (error?.status === 403 || error?.discordCode === 50001 || error?.discordCode === 50013) return matches;
+      throw error;
+    }
+
     if (!Array.isArray(batch) || batch.length === 0) break;
 
     for (const message of batch) {
       if (isGiveawayResult(message, keyword)) matches.push(message);
-      if (matches.length >= wanted) break;
     }
 
     before = batch[batch.length - 1]?.id || "";
     if (!before || batch.length < 100) break;
   }
 
-  return matches.slice(0, wanted);
+  return matches;
+}
+
+function newestFirst(messages) {
+  return [...messages].sort((a, b) => {
+    try {
+      const left = BigInt(String(a?.id || "0"));
+      const right = BigInt(String(b?.id || "0"));
+      if (left === right) return 0;
+      return left > right ? -1 : 1;
+    } catch {
+      return String(b?.timestamp || "").localeCompare(String(a?.timestamp || ""));
+    }
+  });
+}
+
+function uniqueMessages(messages) {
+  const seen = new Set();
+  const result = [];
+  for (const message of newestFirst(messages)) {
+    const id = String(message?.id || "");
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push(message);
+  }
+  return result;
+}
+
+function isTextChannel(channel) {
+  return channel?.type === 0 || channel?.type === 5;
+}
+
+function looksLikeGiveawayChannel(channel) {
+  return /(giveaway|winner|event|prize|collect|reward)/i.test(String(channel?.name || ""));
+}
+
+async function findGiveawayMessages(env, guildId, currentChannelId, keyword, wanted) {
+  const collected = [];
+
+  // First search deeply in the channel where the command was used. This covers
+  // busy channels where the Sep 1 results may now be thousands of messages old.
+  collected.push(...await scanChannel(env, currentChannelId, keyword, CURRENT_CHANNEL_SCAN_PAGES));
+  let unique = uniqueMessages(collected);
+  if (unique.length >= wanted) return unique.slice(0, wanted);
+
+  // If the owner ran the command somewhere else (for example general chat),
+  // search the guild's other readable text channels automatically.
+  const guildChannels = await discordRequest(env, `/guilds/${guildId}/channels`);
+  const textChannels = (Array.isArray(guildChannels) ? guildChannels : [])
+    .filter((channel) => isTextChannel(channel) && String(channel.id) !== String(currentChannelId))
+    .sort((a, b) => Number(looksLikeGiveawayChannel(b)) - Number(looksLikeGiveawayChannel(a)));
+
+  for (const channel of textChannels) {
+    const maxPages = looksLikeGiveawayChannel(channel)
+      ? LIKELY_CHANNEL_SCAN_PAGES
+      : FALLBACK_CHANNEL_SCAN_PAGES;
+
+    collected.push(...await scanChannel(env, channel.id, keyword, maxPages));
+    unique = uniqueMessages(collected);
+    if (unique.length >= wanted) return unique.slice(0, wanted);
+  }
+
+  return unique.slice(0, wanted);
 }
 
 export async function createGiveawayWinnerTicket(env, {
@@ -152,13 +221,13 @@ export async function createGiveawayWinnerTicket(env, {
   channelName = "purple-t3-winners",
 } = {}) {
   if (!guildId) throw new Error("Guild ID is missing.");
-  if (!sourceChannelId) throw new Error("Run the command in the channel containing the GiveawayBot results.");
+  if (!sourceChannelId) throw new Error("Source channel is missing.");
   if (!botUserId) throw new Error("Bartender has not finished connecting to Discord yet.");
 
-  const resultMessages = await findGiveawayMessages(env, sourceChannelId, keyword, resultCount);
+  const resultMessages = await findGiveawayMessages(env, guildId, sourceChannelId, keyword, resultCount);
   if (resultMessages.length < resultCount) {
     throw new Error(
-      `Only found ${resultMessages.length}/${resultCount} GiveawayBot result messages containing ${keyword} in the last ${MAX_SCAN_PAGES * 100} messages. No ticket was created.`
+      `Only found ${resultMessages.length}/${resultCount} GiveawayBot result messages containing ${keyword} after searching the current channel and other readable server channels. No ticket was created.`
     );
   }
 
@@ -167,11 +236,11 @@ export async function createGiveawayWinnerTicket(env, {
   )];
   if (!winnerIds.length) throw new Error("The matching GiveawayBot messages contained no winner mentions.");
 
-  // Do not probe every winner with GET /guilds/:guild/members/:id. The previous
-  // implementation made dozens of REST requests at once and hit Discord's rate
-  // limiter. GiveawayBot already supplied real user IDs, so use those IDs
-  // directly in one channel-create request instead.
-  const sourceChannel = await discordRequest(env, `/channels/${sourceChannelId}`);
+  // Build the ticket in the same category as the newest matching GiveawayBot
+  // result, even if the owner ran the command from a different channel.
+  const resultSourceChannelId = String(resultMessages[0]?.channel_id || sourceChannelId);
+  const sourceChannel = await discordRequest(env, `/channels/${resultSourceChannelId}`);
+
   const permissionOverwrites = [
     {
       id: guildId,
@@ -222,6 +291,7 @@ export async function createGiveawayWinnerTicket(env, {
     channelName: ticket.name,
     winnerCount: winnerIds.length,
     missingCount: 0,
+    sourceChannelId: resultSourceChannelId,
     sourceMessageIds: resultMessages.map((message) => message.id),
   };
 }
