@@ -4,6 +4,7 @@ module.exports = [
   "botfix-owner.js",
   "carrier-admin.js",
   "carrier.js",
+  "giveaway-ticket.js",
   "help.js",
   "leaderboard.js",
   "marketplace.js",
