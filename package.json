@@ -4,7 +4,7 @@
   "description": "The Carry Tavern Discord Queue, Treasury and Marketplace Bot",
   "main": "index.js",
   "scripts": {
-    "start": "node -r ./env-bootstrap.js -r ./global-command-cleanup.js -r ./security-command-pass-through.js index.js",
+    "start": "node -r ./env-bootstrap.js -r ./ai/openAiCompatPreload.js -r ./global-command-cleanup.js -r ./security-command-pass-through.js -r ./platform/localAiProxyBootstrap.js index.js",
     "deploy": "node -r ./env-bootstrap.js deploy-commands.js",
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:restart": "pm2 restart carry-tavern",
