@@ -1,7 +1,6 @@
 const { Client, GatewayIntentBits } = require("discord.js");
 const { liveConfig } = require("./liveConfig");
 const liveStore = require("./liveStore");
-const giveawayTicketCommand = require("../commands/giveaway-ticket");
 
 let bartenderClient = null;
 let err02Client = null;
@@ -12,8 +11,9 @@ let coreReady = false;
 const webhookCache = new Map();
 
 function makeCharacterClient() {
-    // Character clients do not listen to public message content. Bartender also
-    // owns a guild slash command, which only requires the Guilds intent.
+    // These character clients only need to SEND. The main Carry Tavern bot is
+    // the single listener for public chat, so the character bots do not need
+    // privileged Message Content intent enabled in their own applications.
     return new Client({ intents: [GatewayIntentBits.Guilds] });
 }
 
@@ -36,52 +36,6 @@ async function loginCharacter({ token, label, onReady }) {
     }
 }
 
-async function registerBartenderGiveawayCommand(client) {
-    if (!client?.application || !liveConfig.guildId) return;
-
-    try {
-        const data = giveawayTicketCommand.data.toJSON();
-        const existing = await client.application.commands.fetch({ guildId: liveConfig.guildId });
-        const current = existing.find((command) => command.name === data.name);
-
-        if (current) {
-            await client.application.commands.edit(current.id, data, liveConfig.guildId);
-        } else {
-            await client.application.commands.create(data, liveConfig.guildId);
-        }
-
-        console.log(`🍺 Bartender registered /${data.name} in guild ${liveConfig.guildId}.`);
-    } catch (error) {
-        console.warn(`[SENTIENT] Bartender command registration failed: ${error.message}`);
-    }
-}
-
-function installBartenderCommandHandler(client) {
-    if (!client || client.__bartenderGiveawayHandlerInstalled) return;
-    client.__bartenderGiveawayHandlerInstalled = true;
-
-    client.on("interactionCreate", async (interaction) => {
-        if (!interaction.isChatInputCommand?.()) return;
-        if (interaction.commandName !== giveawayTicketCommand.data.name) return;
-
-        try {
-            await giveawayTicketCommand.execute(interaction);
-        } catch (error) {
-            console.error("[BARTENDER GIVEAWAY TICKET]", error);
-            const payload = { content: `❌ ${error.message || "Giveaway ticket command failed."}`, ephemeral: true };
-            if (interaction.deferred || interaction.replied) {
-                await interaction.followUp(payload).catch(() => {});
-            } else {
-                await interaction.reply(payload).catch(() => {});
-            }
-        }
-    });
-
-    const register = () => void registerBartenderGiveawayCommand(client);
-    if (client.isReady?.()) register();
-    else client.once("ready", register);
-}
-
 async function initLiveEntities() {
     if (!bartenderClient && liveConfig.bartenderToken) {
         bartenderClient = await loginCharacter({
@@ -89,7 +43,6 @@ async function initLiveEntities() {
             label: "Bartender",
             onReady: (value) => { bartenderReady = value; },
         });
-        if (bartenderClient) installBartenderCommandHandler(bartenderClient);
     }
 
     if (!err02Client && liveConfig.err02Token) {
