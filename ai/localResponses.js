@@ -27,6 +27,17 @@ function normalizeArguments(value) {
     }
 }
 
+function normalizeToolCalls(calls = []) {
+    return calls.map((call) => ({
+        id: call?.id || `call_${crypto.randomUUID()}`,
+        type: "function",
+        function: {
+            name: call?.function?.name || "unknown_tool",
+            arguments: normalizeArguments(call?.function?.arguments),
+        },
+    }));
+}
+
 function convertTools(tools = []) {
     return tools
         .filter((tool) => tool?.type === "function" && tool?.name)
@@ -99,7 +110,7 @@ function outputFromAssistant(message) {
     if (calls.length) {
         return calls.map((call) => ({
             type: "function_call",
-            call_id: call.id || `call_${crypto.randomUUID()}`,
+            call_id: call.id,
             name: call.function?.name || "unknown_tool",
             arguments: normalizeArguments(call.function?.arguments),
         }));
@@ -207,14 +218,19 @@ async function createLocalResponse(payload, { timeoutMs = 90000, modelFallback =
     if (Number.isFinite(payload.top_p)) request.top_p = payload.top_p;
 
     const result = await chatCompletion(request, { timeoutMs });
-    const assistant = result?.choices?.[0]?.message || { role: "assistant", content: "" };
+    const rawAssistant = result?.choices?.[0]?.message || { role: "assistant", content: "" };
+    const normalizedCalls = normalizeToolCalls(rawAssistant.tool_calls || []);
+    const assistant = {
+        ...rawAssistant,
+        tool_calls: normalizedCalls,
+    };
 
     const assistantMessage = {
         role: "assistant",
         content: assistant.content || "",
     };
-    if (Array.isArray(assistant.tool_calls) && assistant.tool_calls.length) {
-        assistantMessage.tool_calls = assistant.tool_calls;
+    if (normalizedCalls.length) {
+        assistantMessage.tool_calls = normalizedCalls;
     }
     messages.push(assistantMessage);
 
