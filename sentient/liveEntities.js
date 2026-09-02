@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits } = require("discord.js");
 const { liveConfig } = require("./liveConfig");
+const liveStore = require("./liveStore");
 
 let bartenderClient = null;
 let err02Client = null;
@@ -124,7 +125,17 @@ async function sendBartender(mainClient, channelId, content) {
     });
 }
 
+function err02Enabled() {
+    if (!liveConfig.guildId) return true;
+    return Boolean(liveStore.get(liveConfig.guildId).err02_enabled);
+}
+
 async function sendErr02(mainClient, channelId, content) {
+    // This is the final gate for every ERR_02 send path, including scripted
+    // sequences and webhook fallback. Turning ERR_02 off therefore silences it
+    // without disconnecting the character client or stopping the other entities.
+    if (!err02Enabled()) return null;
+
     if (err02Ready && err02Client) {
         const sent = await sendWithClient(err02Client, channelId, content).catch(() => null);
         if (sent) return sent;
@@ -159,6 +170,7 @@ function status() {
         bartenderReady,
         bartenderUserId: bartenderUserId(),
         err02Ready,
+        err02Enabled: err02Enabled(),
         err02UserId: err02Client?.user?.id || null,
         err02Mode: err02Ready ? "bot" : "webhook-fallback",
         coreReady,
