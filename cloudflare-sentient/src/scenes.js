@@ -52,16 +52,22 @@ function gatewayStub(env) {
 
 async function err02Enabled(env) {
   const stub = gatewayStub(env);
-  if (!stub) return true;
+  if (!stub) {
+    console.error("[SENTIENT] ERR_02 blocked because SENTIENT_GATEWAY is unavailable.");
+    return false;
+  }
 
   try {
     const response = await stub.fetch("https://sentient-gateway/err02/status", { method: "GET" });
-    if (!response.ok) return true;
+    if (!response.ok) {
+      console.error(`[SENTIENT] ERR_02 blocked because owner-switch status returned HTTP ${response.status}.`);
+      return false;
+    }
     const data = await response.json().catch(() => ({}));
-    return data.enabled !== false;
+    return data.enabled === true;
   } catch (error) {
-    console.error("[SENTIENT] Could not read ERR_02 owner switch:", error);
-    return true;
+    console.error("[SENTIENT] ERR_02 blocked because owner-switch status could not be read:", error);
+    return false;
   }
 }
 
@@ -110,22 +116,16 @@ function bartenderComponents(label, content) {
 
 async function speakAsErr02(env, target, content, runId, beat) {
   if (!(await err02Enabled(env))) {
-    return { skipped: true, entity: "ERR_02", reason: "owner switch is OFF" };
+    return { skipped: true, entity: "ERR_02", reason: "owner switch is OFF or unavailable" };
   }
 
-  const components = signalComponents(content);
-
-  if (env.SENTIENT_ERR02_TOKEN) {
-    return sendComponentMessageAsBotToken(env.SENTIENT_ERR02_TOKEN, target, {
-      components,
-      nonce: nonce(runId, beat),
-    });
+  if (!env.SENTIENT_ERR02_TOKEN) {
+    throw new Error("SENTIENT_ERR02_TOKEN is required for standalone ERR_02 delivery.");
   }
 
-  const who = identity(env, "err02");
-  return sendWebhookIdentity(env, target, {
-    ...who,
-    components,
+  return sendComponentMessageAsBotToken(env.SENTIENT_ERR02_TOKEN, target, {
+    components: signalComponents(content),
+    nonce: nonce(runId, beat),
   });
 }
 
