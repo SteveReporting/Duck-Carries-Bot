@@ -52,6 +52,8 @@ function isOwnerControlCommand(value) {
 
 function cleanReply(text) {
   return String(text || "")
+    .replace(/^[\s"'`]*(?:\[\s*ERR_?\s*\]\s*)?Th3[_ ]?B4rt3nd3r\s*:\s*/i, "")
+    .replace(/^[\s"'`]*bartender\s*:\s*/i, "")
     .replace(/[\r\n]+/g, " ")
     .replace(/[—–]/g, "-")
     .replace(/^['\"]|['\"]$/g, "")
@@ -88,6 +90,7 @@ async function generateReply(env, { nickname, message, history, direct }) {
     "Do not force horror, lore, vaults, containment or Project Sentient into every reply. Most of the time just behave like the Tavern's strange bartender.",
     "If someone jokes with you, you can joke back. If someone insults you, stay clever and composed rather than becoming defensive.",
     "Most replies should be 2 to 25 words. Use a longer reply only when the conversation genuinely calls for it.",
+    "Never prefix your reply with your own name, bot name, speaker label, [ERR_], or Th3_B4rt3nd3r:. Discord already displays your name.",
     "Never use em dashes.",
     "Never claim access to private DMs, unsent text, passwords, IP addresses, emails, private account data or anything outside the public server conversation.",
     "NAME RULE: use only Discord server nicknames supplied in the live public conversation. For the current speaker, the Current member nickname field is authoritative. If there is no server nickname, the supplied Discord display-name/username fallback is authoritative.",
