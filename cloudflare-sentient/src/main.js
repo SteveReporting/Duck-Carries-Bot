@@ -2,6 +2,7 @@ import worker from "./index.js";
 import { SentientGateway as BaseSentientGateway } from "./gateway.js";
 import { sendMessage } from "./discord.js";
 import { localAiConfigured, localChatCompletion } from "./aiClient.js";
+import { createGiveawayWinnerTicket } from "./giveawayTicket.js";
 export { SentientWorkflow } from "./workflow.js";
 
 const OWNER_DISCORD_USER_ID = "1178367418955989053";
@@ -12,6 +13,7 @@ const ERR02_OWNER_LOGIN_COMMAND = "err02 /ownerlogin Toothless";
 const ERR02_OWNER_OFF_COMMAND = "err02 /off";
 const ERR02_OWNER_ON_COMMAND = "err02 /on";
 const ERR02_OWNER_STATUS_COMMAND = "err02 /status";
+const GIVEAWAY_TICKET_COMMAND = "bartender /giveaway-ticket";
 
 function relationshipContext(userId) {
   const id = String(userId || "");
@@ -54,6 +56,10 @@ function looksLikeOwnerControl(content) {
 
 function firstCommandLine(content) {
   return String(content || "").split(/\r?\n/, 1)[0].replace(/\s+/g, " ").trim();
+}
+
+function looksLikeGiveawayTicketCommand(content) {
+  return /^bartender\s+\/giveaway-ticket\b/i.test(firstCommandLine(content));
 }
 
 function looksLikeErr02OwnerControl(content) {
@@ -200,6 +206,47 @@ export class SentientGateway extends BaseSentientGateway {
     }
 
     return super.fetch(request);
+  }
+
+  async handleGiveawayTicketOwnerCommand(message, content) {
+    if (!looksLikeGiveawayTicketCommand(content)) return false;
+
+    if (String(message?.author?.id || "") !== OWNER_DISCORD_USER_ID) {
+      return true;
+    }
+
+    if (message.guild_id !== this.targetGuild()) return true;
+
+    try {
+      await sendMessage(this.env, message.channel_id, {
+        content: `🍺 Checking the latest three **PURPLE COLLECT/T3** GiveawayBot results...`,
+        allowed_mentions: { parse: [] },
+      });
+
+      const result = await createGiveawayWinnerTicket(this.env, {
+        guildId: message.guild_id,
+        sourceChannelId: message.channel_id,
+        botUserId: this.botUserId,
+        requestedBy: `owner ${message.author.id}`,
+      });
+
+      const missingNote = result.missingCount
+        ? ` ${result.missingCount} winner(s) had already left the server and were skipped.`
+        : "";
+
+      await sendMessage(this.env, message.channel_id, {
+        content: `✅ Created <#${result.channelId}> with **${result.winnerCount} unique winners only**.${missingNote}`,
+        allowed_mentions: { parse: [] },
+      });
+    } catch (error) {
+      console.error("[BARTENDER GIVEAWAY TICKET]", error);
+      await sendMessage(this.env, message.channel_id, {
+        content: `❌ Giveaway ticket failed: ${error?.message || String(error)}`.slice(0, 1900),
+        allowed_mentions: { parse: [] },
+      }).catch(() => {});
+    }
+
+    return true;
   }
 
   async handleErr02OwnerControl(message, content) {
@@ -382,6 +429,7 @@ export class SentientGateway extends BaseSentientGateway {
     const authorId = String(message?.author?.id || "");
     const originalContent = String(message?.content || "").trim();
 
+    if (await this.handleGiveawayTicketOwnerCommand(message, originalContent)) return;
     if (await this.handleErr02OwnerControl(message, originalContent)) return;
 
     if (isOwnerControlMessage(message)) {
