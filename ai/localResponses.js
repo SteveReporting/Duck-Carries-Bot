@@ -158,9 +158,9 @@ function selectModel(requested, fallback) {
     const explicit = String(process.env.LOCAL_AI_MODEL || process.env.OLLAMA_MODEL || "").trim();
     const asked = String(requested || "").trim();
 
+    if (asked && !/^gpt-/i.test(asked)) return asked;
     if (explicit) return explicit;
-    if (!asked || /^gpt-/i.test(asked)) return getLocalAiModel(fallback);
-    return asked;
+    return getLocalAiModel(fallback);
 }
 
 async function createLocalResponse(payload, { timeoutMs = 90000, modelFallback = "qwen3:8b" } = {}) {
