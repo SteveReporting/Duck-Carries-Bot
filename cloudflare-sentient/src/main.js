@@ -7,6 +7,11 @@ export { SentientWorkflow } from "./workflow.js";
 const OWNER_DISCORD_USER_ID = "1178367418955989053";
 const OWNER_LOVER_DISCORD_USER_ID = "831530317436682291";
 const LOVER_IGNORED_STORAGE_KEY = "loverIgnoredTargetsV1";
+const ERR02_ENABLED_STORAGE_KEY = "err02EnabledV1";
+const ERR02_OWNER_LOGIN_COMMAND = "err02 /ownerlogin Toothless";
+const ERR02_OWNER_OFF_COMMAND = "err02 /off";
+const ERR02_OWNER_ON_COMMAND = "err02 /on";
+const ERR02_OWNER_STATUS_COMMAND = "err02 /status";
 
 function relationshipContext(userId) {
   const id = String(userId || "");
@@ -45,6 +50,14 @@ function isOwnerControlMessage(message) {
 
 function looksLikeOwnerControl(content) {
   return /^\s*bartender\s+\/(?:ownerlogin|off|on|status)\b/i.test(String(content || ""));
+}
+
+function firstCommandLine(content) {
+  return String(content || "").split(/\r?\n/, 1)[0].replace(/\s+/g, " ").trim();
+}
+
+function looksLikeErr02OwnerControl(content) {
+  return /^\s*err02\s+\/(?:ownerlogin|off|on|status)\b/i.test(firstCommandLine(content));
 }
 
 function normalizeName(value) {
@@ -153,6 +166,93 @@ async function generateLoverReply(env, { nickname, message, history }) {
 }
 
 export class SentientGateway extends BaseSentientGateway {
+  async err02Enabled() {
+    const stored = await this.ctx.storage.get(ERR02_ENABLED_STORAGE_KEY);
+    return stored !== false;
+  }
+
+  async setErr02Enabled(enabled) {
+    await this.ctx.storage.put(ERR02_ENABLED_STORAGE_KEY, Boolean(enabled));
+    return Boolean(enabled);
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/err02/status") {
+      return Response.json({ ok: true, enabled: await this.err02Enabled() }, {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+
+    if (url.pathname === "/err02/on" && request.method === "POST") {
+      await this.setErr02Enabled(true);
+      return Response.json({ ok: true, enabled: true }, {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+
+    if (url.pathname === "/err02/off" && request.method === "POST") {
+      await this.setErr02Enabled(false);
+      return Response.json({ ok: true, enabled: false }, {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+
+    return super.fetch(request);
+  }
+
+  async handleErr02OwnerControl(message, content) {
+    const command = firstCommandLine(content);
+    if (!looksLikeErr02OwnerControl(command)) return false;
+
+    if (String(message?.author?.id || "") !== OWNER_DISCORD_USER_ID) {
+      return true;
+    }
+
+    if (/^err02\s+\/ownerlogin\b/i.test(command) && command !== ERR02_OWNER_LOGIN_COMMAND) {
+      return true;
+    }
+
+    if (command === ERR02_OWNER_LOGIN_COMMAND) {
+      const enabled = await this.err02Enabled();
+      await sendMessage(this.env, message.channel_id, {
+        content: `ERR_02 OWNER CONTROL // authenticated\nERR_02 messages: **${enabled ? "ON" : "OFF"}**\n\`${ERR02_OWNER_OFF_COMMAND}\` - stop every ERR_02 message\n\`${ERR02_OWNER_ON_COMMAND}\` - allow ERR_02 messages again\n\`${ERR02_OWNER_STATUS_COMMAND}\` - show current state`,
+        allowed_mentions: { parse: [] },
+      });
+      return true;
+    }
+
+    if (command === ERR02_OWNER_OFF_COMMAND) {
+      await this.setErr02Enabled(false);
+      await sendMessage(this.env, message.channel_id, {
+        content: `ERR_02 OWNER CONTROL // ERR_02 messages are now **OFF** until \`${ERR02_OWNER_ON_COMMAND}\`.`,
+        allowed_mentions: { parse: [] },
+      });
+      return true;
+    }
+
+    if (command === ERR02_OWNER_ON_COMMAND) {
+      await this.setErr02Enabled(true);
+      await sendMessage(this.env, message.channel_id, {
+        content: "ERR_02 OWNER CONTROL // ERR_02 messages are now **ON**.",
+        allowed_mentions: { parse: [] },
+      });
+      return true;
+    }
+
+    if (command === ERR02_OWNER_STATUS_COMMAND) {
+      const enabled = await this.err02Enabled();
+      await sendMessage(this.env, message.channel_id, {
+        content: `ERR_02 OWNER CONTROL // ERR_02 messages are **${enabled ? "ON" : "OFF"}**.`,
+        allowed_mentions: { parse: [] },
+      });
+      return true;
+    }
+
+    return true;
+  }
+
   async getLoverIgnoredTargets() {
     const stored = await this.ctx.storage.get(LOVER_IGNORED_STORAGE_KEY);
     return new Set(Array.isArray(stored) ? stored : []);
@@ -281,6 +381,8 @@ export class SentientGateway extends BaseSentientGateway {
   async handleMessage(message) {
     const authorId = String(message?.author?.id || "");
     const originalContent = String(message?.content || "").trim();
+
+    if (await this.handleErr02OwnerControl(message, originalContent)) return;
 
     if (isOwnerControlMessage(message)) {
       return super.handleMessage(message);
