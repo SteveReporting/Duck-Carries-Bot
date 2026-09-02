@@ -5,10 +5,12 @@ function normalizeBaseUrl(value) {
   return base;
 }
 
+const DEFAULT_WORKERS_AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
+
 function workersAiModel(env) {
   return String(
     env.SENTIENT_WORKERS_AI_MODEL ||
-    "@cf/zai-org/glm-4.7-flash"
+    DEFAULT_WORKERS_AI_MODEL
   ).trim();
 }
 
@@ -26,13 +28,55 @@ export function localAiModel(env) {
   ).trim();
 }
 
+function contentPartText(value) {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part?.type === "text" && typeof part.text === "string") return part.text;
+      if (typeof part?.text === "string") return part.text;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 function responseText(payload) {
+  const choiceContent = contentPartText(payload?.choices?.[0]?.message?.content);
+  const directResponse = contentPartText(payload?.response);
+  const resultResponse = contentPartText(payload?.result?.response);
+  const outputText = contentPartText(payload?.output_text);
+
   return String(
-    payload?.choices?.[0]?.message?.content ||
-    payload?.response ||
-    payload?.result?.response ||
+    choiceContent ||
+    directResponse ||
+    resultResponse ||
+    outputText ||
     ""
   ).trim();
+}
+
+async function runWorkersAi(env, model, { messages, maxTokens, temperature }) {
+  const input = {
+    messages,
+    stream: false,
+  };
+
+  // Llama's Workers AI schema uses max_tokens. Reasoning/chat-completions style
+  // models use max_completion_tokens; give them extra room so reasoning cannot
+  // consume the entire visible-answer budget.
+  if (/glm|gpt-oss|reason/i.test(model)) {
+    input.max_completion_tokens = Math.max(512, maxTokens * 3);
+    input.reasoning_effort = "low";
+  } else {
+    input.max_tokens = maxTokens;
+  }
+
+  if (Number.isFinite(temperature)) input.temperature = temperature;
+
+  const payload = await env.AI.run(model, input);
+  return { payload, text: responseText(payload) };
 }
 
 export async function localChatCompletion(env, {
@@ -44,17 +88,30 @@ export async function localChatCompletion(env, {
   // Bartender self-contained and does not require OpenAI, Ollama, a VM-hosted
   // model, or an HTTPS tunnel back to the Carry Tavern server.
   if (env.AI) {
-    const input = {
+    const primaryModel = workersAiModel(env);
+    let result = await runWorkersAi(env, primaryModel, {
       messages,
-      max_completion_tokens: maxTokens,
-      stream: false,
-    };
-    if (Number.isFinite(temperature)) input.temperature = temperature;
+      maxTokens,
+      temperature,
+    });
 
-    const payload = await env.AI.run(workersAiModel(env), input);
-    const text = responseText(payload);
-    if (!text) throw new Error("Workers AI returned an empty Sentient reply.");
-    return text;
+    if (result.text) return result.text;
+
+    // Some reasoning models can legitimately finish with no visible content if
+    // their reasoning budget consumes the completion. Retry once on the fast,
+    // non-reasoning Llama model instead of making Discord silently stop typing.
+    if (primaryModel !== DEFAULT_WORKERS_AI_MODEL) {
+      console.warn(`[SENTIENT AI] ${primaryModel} returned empty content; retrying with ${DEFAULT_WORKERS_AI_MODEL}.`);
+      result = await runWorkersAi(env, DEFAULT_WORKERS_AI_MODEL, {
+        messages,
+        maxTokens,
+        temperature,
+      });
+      if (result.text) return result.text;
+    }
+
+    const finishReason = result.payload?.choices?.[0]?.finish_reason || "unknown";
+    throw new Error(`Workers AI returned an empty Sentient reply (model=${primaryModel}, finish=${finishReason}).`);
   }
 
   // Legacy fallback for anyone who intentionally configures an OpenAI-compatible
