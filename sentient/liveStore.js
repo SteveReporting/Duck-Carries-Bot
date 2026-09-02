@@ -5,6 +5,7 @@ db.prepare(`
     CREATE TABLE IF NOT EXISTS sentient_live_state(
         guild TEXT PRIMARY KEY,
         enabled INTEGER NOT NULL DEFAULT 0,
+        err02_enabled INTEGER NOT NULL DEFAULT 1,
         err02_used INTEGER NOT NULL DEFAULT 0,
         intro_used INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL
@@ -15,12 +16,15 @@ const columns = db.prepare("PRAGMA table_info(sentient_live_state)").all();
 if (!columns.some((column) => column.name === "intro_used")) {
     db.prepare("ALTER TABLE sentient_live_state ADD COLUMN intro_used INTEGER NOT NULL DEFAULT 0").run();
 }
+if (!columns.some((column) => column.name === "err02_enabled")) {
+    db.prepare("ALTER TABLE sentient_live_state ADD COLUMN err02_enabled INTEGER NOT NULL DEFAULT 1").run();
+}
 
 function ensure(guildId) {
     if (!guildId) return;
     db.prepare(`
-        INSERT INTO sentient_live_state(guild, enabled, err02_used, intro_used, updated_at)
-        VALUES (?, ?, 0, 0, ?)
+        INSERT INTO sentient_live_state(guild, enabled, err02_enabled, err02_used, intro_used, updated_at)
+        VALUES (?, ?, 1, 0, 0, ?)
         ON CONFLICT(guild) DO NOTHING
     `).run(guildId, liveConfig.aiEnabledByDefault ? 1 : 0, Date.now());
 }
@@ -30,6 +34,7 @@ function get(guildId) {
     return db.prepare("SELECT * FROM sentient_live_state WHERE guild = ?").get(guildId) || {
         guild: guildId,
         enabled: liveConfig.aiEnabledByDefault ? 1 : 0,
+        err02_enabled: 1,
         err02_used: 0,
         intro_used: 0,
         updated_at: Date.now(),
@@ -39,6 +44,13 @@ function get(guildId) {
 function setEnabled(guildId, enabled) {
     ensure(guildId);
     db.prepare("UPDATE sentient_live_state SET enabled = ?, updated_at = ? WHERE guild = ?")
+        .run(enabled ? 1 : 0, Date.now(), guildId);
+    return get(guildId);
+}
+
+function setErr02Enabled(guildId, enabled) {
+    ensure(guildId);
+    db.prepare("UPDATE sentient_live_state SET err02_enabled = ?, updated_at = ? WHERE guild = ?")
         .run(enabled ? 1 : 0, Date.now(), guildId);
     return get(guildId);
 }
@@ -66,6 +78,7 @@ function markIntroUsed(guildId) {
 module.exports = {
     get,
     setEnabled,
+    setErr02Enabled,
     markErr02Used,
     markIntroUsed,
 };
