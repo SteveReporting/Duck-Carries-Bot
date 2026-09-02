@@ -15,10 +15,34 @@ let lastSpontaneousAt = 0;
 let chaosRun = 0;
 const userCooldowns = new Map();
 
+const PRIMARY_OWNER_DISCORD_USER_ID = "1178367418955989053";
+const ERR02_OWNER_LOGIN_COMMAND = "err02 /ownerlogin Toothless";
+const ERR02_OWNER_OFF_COMMAND = "err02 /off";
+const ERR02_OWNER_ON_COMMAND = "err02 /on";
+const ERR02_OWNER_STATUS_COMMAND = "err02 /status";
+
 function isOwner(message) {
     if (!message?.author || message.author.bot) return false;
     if (liveConfig.ownerIds.includes(message.author.id)) return true;
     return Boolean(message.guild?.ownerId && message.guild.ownerId === message.author.id);
+}
+
+function isPrimaryOwner(message) {
+    return String(message?.author?.id || "") === PRIMARY_OWNER_DISCORD_USER_ID;
+}
+
+function normalizeControlCommand(value) {
+    return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function isErr02OwnerControlCommand(value) {
+    const command = normalizeControlCommand(value);
+    return command === ERR02_OWNER_LOGIN_COMMAND ||
+        command === ERR02_OWNER_OFF_COMMAND ||
+        command === ERR02_OWNER_ON_COMMAND ||
+        command === ERR02_OWNER_STATUS_COMMAND ||
+        /^err02\s+\/ownerlogin\b/i.test(command) ||
+        /^err02\s+\/(?:off|on|status)\b/i.test(command);
 }
 
 function allowedChannel(message) {
@@ -117,6 +141,55 @@ async function runChaosSequence(client, channelId) {
     return { stopped: false, sent: sequence.length };
 }
 
+async function handleErr02OwnerControl(message) {
+    const command = normalizeControlCommand(message?.content);
+    if (!isErr02OwnerControlCommand(command)) return false;
+
+    // Treat ERR_02 controls like the existing Bartender owner controls: only the
+    // primary owner account can use them, and control-looking messages from anyone
+    // else are ignored rather than becoming character prompts.
+    if (!isPrimaryOwner(message)) return true;
+
+    await removeControl(message);
+
+    // The owner login phrase is exact, including the same Toothless passphrase.
+    if (/^err02\s+\/ownerlogin\b/i.test(command) && command !== ERR02_OWNER_LOGIN_COMMAND) {
+        return true;
+    }
+
+    if (command === ERR02_OWNER_LOGIN_COMMAND) {
+        const state = liveStore.get(liveConfig.guildId);
+        await dmOwner(message, [
+            "**ERR_02 OWNER CONTROL // authenticated**",
+            `ERR_02 messages: **${Boolean(state.err02_enabled) ? "ON" : "OFF"}**`,
+            `\`${ERR02_OWNER_OFF_COMMAND}\` - stop every ERR_02 message, including event sequences`,
+            `\`${ERR02_OWNER_ON_COMMAND}\` - allow ERR_02 messages again`,
+            `\`${ERR02_OWNER_STATUS_COMMAND}\` - show current state`,
+        ].join("\n"));
+        return true;
+    }
+
+    if (command === ERR02_OWNER_OFF_COMMAND) {
+        liveStore.setErr02Enabled(liveConfig.guildId, false);
+        await dmOwner(message, `ERR_02 messages are now **OFF**. The character can stay connected, but every ERR_02 send path is blocked until \`${ERR02_OWNER_ON_COMMAND}\`.`);
+        return true;
+    }
+
+    if (command === ERR02_OWNER_ON_COMMAND) {
+        liveStore.setErr02Enabled(liveConfig.guildId, true);
+        await dmOwner(message, "ERR_02 messages are now **ON**.");
+        return true;
+    }
+
+    if (command === ERR02_OWNER_STATUS_COMMAND) {
+        const state = liveStore.get(liveConfig.guildId);
+        await dmOwner(message, `ERR_02 messages are **${Boolean(state.err02_enabled) ? "ON" : "OFF"}**.`);
+        return true;
+    }
+
+    return true;
+}
+
 async function handleOwnerCommand(message, client) {
     if (!isOwner(message)) return false;
     if (!message.content?.toLowerCase().startsWith("!sentientlive")) return false;
@@ -144,6 +217,7 @@ async function handleOwnerCommand(message, client) {
         await dmOwner(message, [
             `**AI enabled:** ${Boolean(state.enabled)}`,
             `**Bartender connected:** ${entities.bartenderReady}`,
+            `**ERR_02 enabled:** ${Boolean(state.err02_enabled)}`,
             `**ERR_02 connected:** ${entities.err02Ready}`,
             `**ERR_02 delivery:** ${entities.err02Mode}`,
             `**Tavern Core connected:** ${entities.coreReady}`,
@@ -160,6 +234,10 @@ async function handleOwnerCommand(message, client) {
 
     if (action === "err02") {
         const state = liveStore.get(liveConfig.guildId);
+        if (!state.err02_enabled) {
+            await dmOwner(message, `ERR_02 is currently **OFF**. Use \`${ERR02_OWNER_ON_COMMAND}\` before firing it.`);
+            return true;
+        }
         if (state.err02_used) {
             await dmOwner(message, "ERR_02 already used its one `hello?` appearance. It will stay silent until the later main-event chaos sequence.");
             return true;
@@ -208,6 +286,8 @@ async function handleOwnerCommand(message, client) {
         "`!sentientlive err02` - ONE TIME now: ERR_02 says `hello?`, then Bartender says `Don't respond to it.`",
         "`!sentientlive chaos` - later main event: controlled burst from Bartender, ERR_02 and Tavern Core, alternating binary/English",
         "`!sentientlive chaosstop` - immediately stop that burst",
+        `\`${ERR02_OWNER_LOGIN_COMMAND}\` - open ERR_02 owner controls`,
+        `\`${ERR02_OWNER_OFF_COMMAND}\` / \`${ERR02_OWNER_ON_COMMAND}\` - silence/resume ERR_02 only`,
     ].join("\n"));
     return true;
 }
@@ -271,6 +351,7 @@ async function maybeReply(message, client) {
 
 async function handleLiveMessage(message, client) {
     if (!message?.guild || message.guild.id !== liveConfig.guildId) return;
+    if (await handleErr02OwnerControl(message)) return;
     if (await handleOwnerCommand(message, client)) return;
     if (message.author.bot) return;
     await maybeReply(message, client);
@@ -298,7 +379,7 @@ async function startLiveSentient(client) {
     }
 
     state = liveStore.get(liveConfig.guildId);
-    console.log(`[SENTIENT LIVE] Bartender AI ${state.enabled ? "enabled" : "disabled"}. Event-memory mode active.`);
+    console.log(`[SENTIENT LIVE] Bartender AI ${state.enabled ? "enabled" : "disabled"}. ERR_02 ${state.err02_enabled ? "enabled" : "disabled"}. Event-memory mode active.`);
 }
 
 module.exports = {
