@@ -74,6 +74,7 @@ function coreRequiredConfig() {
 
 function storyRequiredConfig() {
   return [
+    "SENTIENT_ERR02_TOKEN",
     "SENTIENT_TAVERN_CHAT_CHANNEL_ID",
     "SENTIENT_SIGNAL_02_CHANNEL_ID",
     "SENTIENT_CORE_CHANNEL_ID",
@@ -88,6 +89,7 @@ function missingFrom(env, keys) {
 function liveAiHealth(env) {
   const checks = {
     bartenderToken: Boolean(env.SENTIENT_BARTENDER_TOKEN),
+    err02Token: Boolean(env.SENTIENT_ERR02_TOKEN),
     gatewayBinding: Boolean(env.SENTIENT_GATEWAY),
     localAi: localAiConfigured(env),
     localAiModel: localAiModel(env),
@@ -111,6 +113,8 @@ function routingStatus(env) {
     signal02: Boolean(env.SENTIENT_SIGNAL_02_CHANNEL_ID),
     core: Boolean(env.SENTIENT_CORE_CHANNEL_ID),
     finale: Boolean(env.SENTIENT_ANNOUNCEMENTS_CHANNEL_ID),
+    bartenderBotToken: Boolean(env.SENTIENT_BARTENDER_TOKEN),
+    err02BotToken: Boolean(env.SENTIENT_ERR02_TOKEN),
   };
 }
 
@@ -227,6 +231,11 @@ export default {
           return json({ error: "The 60-second webhook test has been removed." }, 410);
         }
 
+        const storyMissing = missingFrom(env, storyRequiredConfig());
+        if (storyMissing.length) {
+          return json({ error: `Cannot start story. Missing: ${storyMissing.join(", ")}`, storyMissing }, 503);
+        }
+
         const pace = ["fast", "normal"].includes(payload.pace) ? payload.pace : "normal";
         const live = payload.live === true;
         const instanceId = `sentient-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
@@ -251,6 +260,9 @@ export default {
       if (url.pathname === "/api/scene" && request.method === "POST") {
         const allowed = ["watching", "second_signal", "breach", "finale"];
         if (!allowed.includes(payload.scene)) return json({ error: "Unknown or retired scene" }, 400);
+        if (payload.scene === "second_signal" && !env.SENTIENT_ERR02_TOKEN) {
+          return json({ error: "SENTIENT_ERR02_TOKEN is required for the ERR_02 scene." }, 503);
+        }
         const result = await runManualScene(env, payload.scene);
         return json({ ok: true, result });
       }
