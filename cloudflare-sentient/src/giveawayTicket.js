@@ -202,7 +202,6 @@ function looksLikeGiveawayChannel(channel) {
 async function findGiveawayMessages(env, guildChannels, currentChannelId, keyword, wanted) {
   const collected = [];
 
-  // Quick recent check in the channel where the command was used.
   collected.push(...await scanRecentChannel(env, currentChannelId, keyword, CURRENT_CHANNEL_SCAN_PAGES));
   let unique = uniqueMessages(collected);
   if (unique.length >= wanted) return unique.slice(0, wanted);
@@ -215,16 +214,12 @@ async function findGiveawayMessages(env, guildChannels, currentChannelId, keywor
       return Number(looksLikeGiveawayChannel(b)) - Number(looksLikeGiveawayChannel(a));
     });
 
-  // The three requested GiveawayBot results are known to be from 1 September
-  // 2026 at about 20:50-20:52 BST. One `around` request per channel is much
-  // faster and far less rate-limit heavy than walking thousands of newer posts.
   for (const channel of textChannels) {
     collected.push(...await scanAroundKnownGiveawayTime(env, channel.id, keyword));
     unique = uniqueMessages(collected);
     if (unique.length >= wanted) return unique.slice(0, wanted);
   }
 
-  // Small generic fallback in case the historic timestamps ever differ.
   for (const channel of textChannels) {
     collected.push(...await scanRecentChannel(env, channel.id, keyword, FALLBACK_CHANNEL_SCAN_PAGES));
     unique = uniqueMessages(collected);
@@ -261,12 +256,14 @@ export async function createGiveawayWinnerTicket(env, {
   if (!sourceChannelId) throw new Error("Source channel is missing.");
   if (!botUserId) throw new Error("Bartender has not finished connecting to Discord yet.");
 
+  const effectiveOwnerUserId = String(
+    ownerUserId || String(requestedBy || "").match(/owner\s+(\d+)/i)?.[1] || ""
+  );
+
   const guildChannelsRaw = await discordRequest(env, `/guilds/${guildId}/channels`);
   const guildChannels = Array.isArray(guildChannelsRaw) ? guildChannelsRaw : [];
   const wantedName = normaliseChannelName(channelName);
 
-  // If an earlier run already created the channel but the owner could not see
-  // it, reveal that exact channel instead of creating a duplicate.
   const existingTicket = guildChannels.find((channel) =>
     channel?.type === 0 &&
     String(channel?.name || "") === wantedName &&
@@ -275,7 +272,7 @@ export async function createGiveawayWinnerTicket(env, {
   );
 
   if (existingTicket) {
-    await ensureOwnerCanSeeTicket(env, existingTicket.id, ownerUserId);
+    await ensureOwnerCanSeeTicket(env, existingTicket.id, effectiveOwnerUserId);
     return {
       channelId: existingTicket.id,
       channelName: existingTicket.name,
@@ -304,7 +301,7 @@ export async function createGiveawayWinnerTicket(env, {
     || await discordRequest(env, `/channels/${resultSourceChannelId}`);
 
   const winnerOverwrites = winnerIds
-    .filter((id) => String(id) !== String(ownerUserId))
+    .filter((id) => String(id) !== effectiveOwnerUserId)
     .map((id) => ({
       id,
       type: 1,
@@ -322,16 +319,16 @@ export async function createGiveawayWinnerTicket(env, {
     ...winnerOverwrites,
   ];
 
-  if (ownerUserId) {
+  if (effectiveOwnerUserId) {
     permissionOverwrites.push({
-      id: ownerUserId,
+      id: effectiveOwnerUserId,
       type: 1,
       allow: OWNER_ALLOW,
       deny: "0",
     });
   }
 
-  if (!winnerIds.includes(botUserId) && String(botUserId) !== String(ownerUserId)) {
+  if (!winnerIds.includes(botUserId) && String(botUserId) !== effectiveOwnerUserId) {
     permissionOverwrites.push({
       id: botUserId,
       type: 1,
