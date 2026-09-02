@@ -1,8 +1,9 @@
 const { TOOL_DEFINITIONS, READ_ONLY_TOOLS, executeTool } = require("./discordTools");
 const { TOOL_DEFINITION: CARRIER_DEPARTMENT_TOOL, setupCarrierDepartment } = require("./carrierDepartment");
+const { createLocalResponse } = require("./localResponses");
+const { getLocalAiModel } = require("./localChat");
 
-const OPENAI_ENDPOINT = "https://api.openai.com/v1/responses";
-const OPENAI_TIMEOUT_MS = 60000;
+const AI_TIMEOUT_MS = 90000;
 const TOOL_TIMEOUT_MS = 25000;
 const CARRIER_SETUP_TIMEOUT_MS = 180000;
 
@@ -22,7 +23,7 @@ function buildInstructions(interaction, mode) {
         "In AUDIT mode, inspect the server and report concrete problems and recommended fixes without changing anything.",
         "In FIX mode, you may make the requested non-destructive changes with the provided tools.",
         "In FIX mode, requested role colour, hierarchy position, hoist, mentionability, safe guild permission and channel access changes are allowed when the tools support them.",
-        "For the standard Carry Tavern Carrier Department restructure, prefer setup_carrier_department. It performs the approved one-category role/channel/permission setup idempotently in one action and is safer and cheaper than dozens of individual edits.",
+        "For the standard Carry Tavern Carrier Department restructure, prefer setup_carrier_department. It performs the approved one-category role/channel/permission setup idempotently in one action and avoids dozens of individual edits.",
         "When individual tools are required, batch independent tool calls in the same response instead of doing one tool call per round.",
         "Inspect the required server state once, perform all independent safe changes together, refresh IDs only when newly created objects require it, and verify once at the end. Do not repeatedly re-read unchanged state.",
         "Before changing role hierarchy, colours or permissions with individual tools, inspect get_roles first so you use current role IDs, positions and settings.",
@@ -37,43 +38,11 @@ function buildInstructions(interaction, mode) {
     ].join("\n");
 }
 
-function getOpenAIHeaders() {
-    if (!process.env.OPENAI_API_KEY) {
-        throw new Error("OPENAI_API_KEY is not configured on the bot host.");
-    }
-
-    return {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-    };
-}
-
 async function createResponse(payload) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
-
-    try {
-        const response = await fetch(OPENAI_ENDPOINT, {
-            method: "POST",
-            headers: getOpenAIHeaders(),
-            body: JSON.stringify(payload),
-            signal: controller.signal,
-        });
-
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            throw new Error(body?.error?.message || `OpenAI request failed with HTTP ${response.status}.`);
-        }
-
-        return body;
-    } catch (error) {
-        if (error.name === "AbortError") {
-            throw new Error(`OpenAI request timed out after ${OPENAI_TIMEOUT_MS / 1000}s.`);
-        }
-        throw error;
-    } finally {
-        clearTimeout(timeout);
-    }
+    return createLocalResponse(payload, {
+        timeoutMs: AI_TIMEOUT_MS,
+        modelFallback: "qwen3:8b",
+    });
 }
 
 function extractOutputText(response) {
@@ -109,15 +78,10 @@ function withTimeout(promise, milliseconds, label) {
 }
 
 function getModel() {
-    const configured = String(process.env.OPENAI_MODEL || "").trim();
-
-    // This project is configured for GPT-5.6 Sol. Older values such as
-    // gpt-5.6 or unrelated fallback models should not override it.
-    if (!configured || configured === "gpt-5.6" || !configured.startsWith("gpt-5.6-")) {
-        return "gpt-5.6-sol";
-    }
-
-    return configured;
+    return String(
+        process.env.AI_MANAGER_MODEL ||
+        getLocalAiModel("qwen3:8b")
+    ).trim();
 }
 
 function getMaxToolRounds() {
@@ -152,7 +116,7 @@ async function runDiscordAgent({ interaction, mode, prompt }) {
     const model = getModel();
     const maxToolRounds = getMaxToolRounds();
 
-    console.log(`[AI AGENT] Model: ${model}`);
+    console.log(`[AI AGENT] Local model: ${model}`);
     console.log(`[AI AGENT] Max rounds: ${maxToolRounds}`);
 
     let response = await createResponse({
@@ -204,8 +168,6 @@ async function runDiscordAgent({ interaction, mode, prompt }) {
         });
     }
 
-    // Do not turn a long but otherwise successful job into a Discord error.
-    // Force one final text-only response that reports what completed and what remains.
     const finalResponse = await createResponse({
         model,
         instructions: buildInstructions(interaction, mode),
