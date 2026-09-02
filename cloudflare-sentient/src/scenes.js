@@ -50,6 +50,21 @@ function gatewayStub(env) {
   return env.SENTIENT_GATEWAY.get(id);
 }
 
+async function err02Enabled(env) {
+  const stub = gatewayStub(env);
+  if (!stub) return true;
+
+  try {
+    const response = await stub.fetch("https://sentient-gateway/err02/status", { method: "GET" });
+    if (!response.ok) return true;
+    const data = await response.json().catch(() => ({}));
+    return data.enabled !== false;
+  } catch (error) {
+    console.error("[SENTIENT] Could not read ERR_02 owner switch:", error);
+    return true;
+  }
+}
+
 async function muteBartender(env, durationMs = 10000) {
   const stub = gatewayStub(env);
   if (!stub) return;
@@ -94,6 +109,10 @@ function bartenderComponents(label, content) {
 }
 
 async function speakAsErr02(env, target, content, runId, beat) {
+  if (!(await err02Enabled(env))) {
+    return { skipped: true, entity: "ERR_02", reason: "owner switch is OFF" };
+  }
+
   const components = signalComponents(content);
 
   if (env.SENTIENT_ERR02_TOKEN) {
