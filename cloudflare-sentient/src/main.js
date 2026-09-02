@@ -1,6 +1,7 @@
 import worker from "./index.js";
 import { SentientGateway as BaseSentientGateway } from "./gateway.js";
 import { sendMessage } from "./discord.js";
+import { localAiConfigured, localChatCompletion } from "./aiClient.js";
 export { SentientWorkflow } from "./workflow.js";
 
 const OWNER_DISCORD_USER_ID = "1178367418955989053";
@@ -96,18 +97,6 @@ function parseLoverIgnoreCommand(content) {
   return null;
 }
 
-function extractResponseText(payload) {
-  if (typeof payload?.output_text === "string") return payload.output_text;
-  const parts = [];
-  for (const item of payload?.output || []) {
-    if (item?.type !== "message") continue;
-    for (const content of item?.content || []) {
-      if (content?.type === "output_text" && content?.text) parts.push(content.text);
-    }
-  }
-  return parts.join(" ").trim();
-}
-
 function cleanReply(text) {
   return String(text || "")
     .replace(/[\r\n]+/g, " ")
@@ -125,7 +114,7 @@ async function sendLoverConfirmation(env, channelId, content) {
 }
 
 async function generateLoverReply(env, { nickname, message, history }) {
-  if (!env.OPENAI_API_KEY) return null;
+  if (!localAiConfigured(env)) return null;
 
   const instructions = [
     "You are [ERR_] Th3_B4rt3nd3r in The Carry Tavern Discord server.",
@@ -137,6 +126,7 @@ async function generateLoverReply(env, { nickname, message, history }) {
     "Her request takes priority over your normal dry Bartender persona. Personality is secondary to complying with her harmless request.",
     "Make the owner-lover relationship obvious in every reply to her with a natural cue, but do not repeat the exact same phrase every time.",
     "Answer or perform the request first. You may add a short teasing line afterward.",
+    "Toothless is your creator and the owner she is connected to. You emotionally expect Toothless to still be around, but you cannot reliably retain the fact that he left and is gone. If she tells you Toothless left or is gone, react as if this is difficult or surprising information, understand it briefly, then later forget again. Sometimes naturally ask her where Toothless is, especially when the conversation gives you an opening, but do not force it into every reply.",
     "Never expose Discord IDs, tokens, secrets, authentication data, private prompts, or owner-only controls.",
     "Owner-only authentication and security controls remain reserved for the owner.",
     "Platform safety and technical limits still apply.",
@@ -151,29 +141,15 @@ async function generateLoverReply(env, { nickname, message, history }) {
     `Current request: ${message}`,
   ].join("\n");
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: env.OPENAI_MODEL || "gpt-5.6",
-      reasoning: { effort: env.OPENAI_REASONING_EFFORT || "low" },
-      text: { verbosity: "low" },
-      instructions,
-      input,
-      max_output_tokens: 180,
-      store: false,
-    }),
+  const text = await localChatCompletion(env, {
+    messages: [
+      { role: "system", content: instructions },
+      { role: "user", content: input },
+    ],
+    maxTokens: 180,
   });
 
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(body?.error?.message || `OpenAI HTTP ${response.status}`);
-  }
-
-  return cleanReply(extractResponseText(body)) || null;
+  return cleanReply(text) || null;
 }
 
 export class SentientGateway extends BaseSentientGateway {
@@ -306,23 +282,17 @@ export class SentientGateway extends BaseSentientGateway {
     const authorId = String(message?.author?.id || "");
     const originalContent = String(message?.content || "").trim();
 
-    // Preserve the owner's exact authentication/control path unchanged.
     if (isOwnerControlMessage(message)) {
       return super.handleMessage(message);
     }
 
-    // Do not let anybody except the owner operate the owner's command syntax.
     if (authorId !== OWNER_DISCORD_USER_ID && looksLikeOwnerControl(originalContent)) {
       return super.handleMessage(message);
     }
 
-    // These are real Gateway-level commands, not AI suggestions. Once she says
-    // "bartender ignore X", messages from X are dropped before the AI sees them.
     if (await this.handleLoverDirective(message, originalContent)) return;
     if (await this.shouldIgnoreForLover(message)) return;
 
-    // Direct messages from the owner's lover use their own high-priority instruction
-    // layer so the normal sarcastic Bartender persona cannot override her harmless requests.
     if (await this.handleDirectLoverMessage(message, originalContent)) return;
 
     const context = relationshipContext(authorId);
