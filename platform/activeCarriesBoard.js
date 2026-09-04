@@ -11,12 +11,10 @@ const {
 const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
 const { getGuildConfig, listConfiguredGuilds, saveGuildConfig } = require("./guildConfig");
-const { joinDropIn, leaveDropIn } = require("./carryVoiceSystem");
 
 const CHANNEL_NAME = "⚔️・active-carries";
 const HEADER_FOOTER = "The Carry Tavern • Active Carries";
 const CARD_FOOTER_PREFIX = "The Carry Tavern • Live Carry • ";
-const TOGGLE_PREFIX = "active_carry_toggle:";
 const MANAGE_PREFIX = "active_carry_manage:";
 const REFRESH_MS = 20_000;
 const MAX_MUTATIONS_PER_PASS = 30;
@@ -229,10 +227,15 @@ function cardPayload(guild, session) {
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`${TOGGLE_PREFIX}${session.ticketId}`)
-      .setLabel("Join / Leave")
+      .setCustomId("carry_dropin_open")
+      .setLabel("Join Carry")
       .setEmoji("🎮")
       .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`carry_dropin_leave_${session.ticketId}`)
+      .setLabel("Leave")
+      .setEmoji("🚪")
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`${MANAGE_PREFIX}${session.ticketId}`)
       .setLabel("Carrier Controls")
@@ -272,7 +275,7 @@ async function ensureHeader(channel, activeCount) {
       .setDescription([
         "Live sessions appear below as individual cards.",
         "",
-        "**Join / Leave** lets you drop into an active carry without exposing the private requester ticket. Voice is optional.",
+        "Press **Join Carry** to drop into a live run. If several carries are active, you choose the one you want. Voice is optional and private tickets stay private.",
         `**Currently live:** ${activeCount.toLocaleString("en-GB")}`,
       ].join("\n"))
       .setFooter({ text: HEADER_FOOTER })],
@@ -356,29 +359,9 @@ async function refreshTicketCard(client, ticketChannel) {
   return reconcileActiveCarries(client, ticketChannel.guild);
 }
 
-function activeDropIn(ticketId, userId) {
-  try {
-    return Boolean(db.prepare(`
-      SELECT 1 FROM carry_voice_dropins
-      WHERE ticket_channel=? AND user=? AND status='active' LIMIT 1
-    `).get(String(ticketId), String(userId)));
-  } catch {
-    return false;
-  }
-}
-
 async function handleActiveCarriesInteraction(interaction) {
   if (!interaction.inGuild?.() || !interaction.isButton?.()) return false;
   const id = String(interaction.customId || "");
-
-  if (id.startsWith(TOGGLE_PREFIX)) {
-    const ticketId = id.slice(TOGGLE_PREFIX.length);
-    if (!ticketId) return false;
-    if (activeDropIn(ticketId, interaction.user.id)) await leaveDropIn(interaction, ticketId);
-    else await joinDropIn(interaction, ticketId);
-    setTimeout(() => reconcileActiveCarries(interaction.client, interaction.guild).catch(() => {}), 1200).unref?.();
-    return true;
-  }
 
   if (id.startsWith(MANAGE_PREFIX)) {
     const ticketId = id.slice(MANAGE_PREFIX.length);
