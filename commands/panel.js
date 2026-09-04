@@ -9,37 +9,66 @@ const {
 } = require("discord.js");
 
 const { marketplaceBaseUrl } = require("../platform/helpers");
+const { getGuildConfig } = require("../platform/guildConfig");
 
 const FOOTER = "The Carry Tavern • Operations Hub";
+const GOLD = 0xf2b705;
 
-function buildPanel() {
+function channelMention(id, fallback) {
+  return id ? `<#${id}>` : fallback;
+}
+
+function buildPanel({ guild = null, config = null } = {}) {
+  const queue = channelMention(config?.queue_channel_id, "Live Queue");
+  const completed = channelMention(config?.completed_channel_id, "Completed Carries");
+  const treasury = channelMention(config?.treasury_channel_id, "Treasury");
+  const guildName = guild?.name || "The Carry Tavern";
+
   const embed = new EmbedBuilder()
-    .setColor(0xf2b705)
-    .setAuthor({ name: "THE CARRY TAVERN • OPERATIONS" })
-    .setTitle("🍺 Tavern Command Center")
+    .setColor(GOLD)
+    .setAuthor({
+      name: "THE CARRY TAVERN",
+      ...(guild?.iconURL?.() ? { iconURL: guild.iconURL({ size: 128 }) } : {}),
+    })
+    .setTitle("🍺 Tavern Hub")
     .setDescription([
-      "One front door for the entire Tavern carry platform — members click, the automation handles the rest.",
+      "**Request → Match → Ready → Carry → Complete**",
       "",
-      "### ⚔️ Carries",
-      "Request in one popup, watch the live queue, wait in the optional VC, or drop into a compatible carry already running.",
-      "",
-      "### 🧠 Self-Healing Operations",
-      "Tavern Pulse watches queue pressure, stale requests, active sessions, voice rooms and missing controls. Recoverable session problems are repaired automatically; staff only get deduplicated alerts when intervention is actually needed.",
-      "",
-      "### 🔊 Session Automation",
-      "Claimed carries get a private session VC automatically. Waiting members can be moved across automatically, everyone is pinged when the carry starts, and VC remains completely optional.",
-      "",
-      "### 🍻 Carriers",
-      "Claim compatible groups and let the system handle private tickets, ready checks, verified time, participant access, progress, requeues and cleanup.",
-      "",
-      "**No command maze. No babysitting panels. The complicated systems stay underneath.**",
+      "Everything complicated runs underneath. Pick what you need and the bot handles the workflow.",
     ].join("\n"))
     .addFields(
-      { name: "Queue", value: "Smart grouped matching", inline: true },
-      { name: "Automation", value: "Watchdog + self-heal", inline: true },
-      { name: "Status", value: "🟢 Live monitored", inline: true },
+      {
+        name: "⚔️ Carries",
+        value: `${queue}\nGrouped matching • private tickets • automatic progress`,
+        inline: true,
+      },
+      {
+        name: "🔊 Voice",
+        value: "Optional waiting room\nPrivate session VCs • live drop-ins",
+        inline: true,
+      },
+      {
+        name: "🛟 Support",
+        value: "Private tickets\nStaff dashboard • status tracking",
+        inline: true,
+      },
+      {
+        name: "✅ Completion",
+        value: `${completed}\nVerified runs • service time • cleanup`,
+        inline: true,
+      },
+      {
+        name: "🏦 Treasury",
+        value: `${treasury}\nLive stock • loans • trust tools`,
+        inline: true,
+      },
+      {
+        name: "🧠 Tavern Pulse",
+        value: "Queue health • stale-request rescue • self-repair",
+        inline: true,
+      },
     )
-    .setFooter({ text: FOOTER })
+    .setFooter({ text: `${FOOTER} • ${guildName}` })
     .setTimestamp();
 
   const primary = new ActionRowBuilder().addComponents(
@@ -60,7 +89,7 @@ function buildPanel() {
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId("carry_dropin_open")
-      .setLabel("Join Live Carry")
+      .setLabel("Join Live")
       .setEmoji("🌐")
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
@@ -78,7 +107,7 @@ function buildPanel() {
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
       .setCustomId("carry_waiting_vc")
-      .setLabel("Waiting VC")
+      .setLabel("Waiting Room")
       .setEmoji("⏳")
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
@@ -109,43 +138,61 @@ function buildPanel() {
 
 function isOperationsHub(message, botId) {
   return Boolean(
-    message?.author?.id === botId &&
-    (message.embeds || []).some((embed) => String(embed.footer?.text || "") === FOOTER),
+    message?.author?.id === botId
+    && (message.embeds || []).some((embed) => String(embed.footer?.text || "").startsWith(FOOTER)),
   );
+}
+
+async function publishOperationsHub(channel, { guild = channel?.guild || null, config = null } = {}) {
+  if (!channel?.isTextBased?.()) throw new Error("The Tavern Hub needs a text channel.");
+  const resolvedConfig = config || (guild ? getGuildConfig(guild.id) : null);
+  const payload = buildPanel({ guild, config: resolvedConfig });
+  const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  const existing = recent?.find((message) => isOperationsHub(message, channel.client.user.id)) || null;
+
+  if (existing) {
+    await existing.edit(payload);
+    if (!existing.pinned) await existing.pin("Permanent Tavern Hub").catch(() => {});
+    return existing;
+  }
+
+  const message = await channel.send(payload);
+  await message.pin("Permanent Tavern Hub").catch(() => {});
+  return message;
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("panel")
-    .setDescription("Publish or refresh the Tavern operations hub")
+    .setDescription("Publish or refresh the Tavern Hub")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
+  FOOTER,
   buildPanel,
+  publishOperationsHub,
 
   async execute(interaction) {
     if (!interaction.channel?.isTextBased?.()) {
       return interaction.reply({
-        content: "❌ Publish the Operations Hub inside a text channel.",
+        content: "❌ Publish the Tavern Hub inside a text channel.",
         flags: MessageFlags.Ephemeral,
       });
     }
 
-    const recent = await interaction.channel.messages.fetch({ limit: 50 }).catch(() => null);
-    const existing = recent?.find((message) => isOperationsHub(message, interaction.client.user.id)) || null;
-
-    if (existing) {
-      await existing.edit(buildPanel());
-      if (!existing.pinned) await existing.pin("Permanent Carry Tavern operations hub").catch(() => {});
+    try {
+      const message = await publishOperationsHub(interaction.channel, {
+        guild: interaction.guild,
+        config: interaction.guild ? getGuildConfig(interaction.guild.id) : null,
+      });
       return interaction.reply({
-        content: `✅ Operations Hub refreshed: ${existing.url}`,
+        content: `✅ Tavern Hub refreshed: ${message.url}`,
         flags: MessageFlags.Ephemeral,
       });
-    }
-
-    await interaction.reply(buildPanel());
-    const message = await interaction.fetchReply().catch(() => null);
-    if (message) {
-      await message.pin("Permanent Carry Tavern operations hub").catch(() => {});
+    } catch (error) {
+      return interaction.reply({
+        content: `❌ ${error.message || "Could not publish the Tavern Hub."}`,
+        flags: MessageFlags.Ephemeral,
+      });
     }
   },
 };
