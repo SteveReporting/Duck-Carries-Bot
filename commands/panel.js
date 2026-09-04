@@ -14,96 +14,108 @@ const { getGuildConfig } = require("../platform/guildConfig");
 const FOOTER = "The Carry Tavern • Operations Hub";
 const GOLD = 0xf2b705;
 
-function channelMention(id, fallback) {
+function channelMention(id, fallback = "Not configured") {
   return id ? `<#${id}>` : fallback;
 }
 
+function channelUrl(guild, channelId) {
+  return guild?.id && channelId ? `https://discord.com/channels/${guild.id}/${channelId}` : null;
+}
+
+function addLink(row, { label, emoji, url }) {
+  if (!url) return;
+  row.addComponents(
+    new ButtonBuilder()
+      .setLabel(label)
+      .setEmoji(emoji)
+      .setStyle(ButtonStyle.Link)
+      .setURL(url),
+  );
+}
+
 function buildPanel({ guild = null, config = null } = {}) {
-  const queue = channelMention(config?.queue_channel_id, "Live Queue");
-  const completed = channelMention(config?.completed_channel_id, "Completed Carries");
-  const treasury = channelMention(config?.treasury_channel_id, "Treasury");
-  const guildName = guild?.name || "The Carry Tavern";
+  const guildName = guild?.name || "Server";
+  const request = channelMention(config?.request_channel_id, "Run `/setup` to create the Request Carry channel");
+  const queue = channelMention(config?.queue_channel_id);
+  const completed = channelMention(config?.completed_channel_id);
+  const support = channelMention(config?.support_channel_id);
+  const treasury = channelMention(config?.treasury_channel_id);
+  const marketplace = channelMention(config?.marketplace_channel_id);
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
     .setAuthor({
-      name: "THE CARRY TAVERN",
+      name: `${guildName} BOT`.toUpperCase(),
       ...(guild?.iconURL?.() ? { iconURL: guild.iconURL({ size: 128 }) } : {}),
     })
-    .setTitle("🍺 Tavern Hub")
+    .setTitle("🍺 Server Hub")
     .setDescription([
-      "**Request → Match → Ready → Carry → Complete**",
+      "Use this as a **directory**, not as another control panel.",
       "",
-      "Everything complicated runs underneath. Pick what you need and the bot handles the workflow.",
+      "Carry requesting, queue browsing, Support and Treasury each have their own dedicated area so members never have to work out which of ten buttons they need.",
     ].join("\n"))
     .addFields(
       {
-        name: "⚔️ Carries",
-        value: `${queue}\nGrouped matching • private tickets • automatic progress`,
-        inline: true,
+        name: "⚔️ Carry System",
+        value: [
+          `**Request a carry:** ${request}`,
+          `**Live queue:** ${queue}`,
+          `**Completed carries:** ${completed}`,
+        ].join("\n"),
+        inline: false,
       },
       {
-        name: "🔊 Voice",
-        value: "Optional waiting room\nPrivate session VCs • live drop-ins",
-        inline: true,
-      },
-      {
-        name: "🛟 Support",
-        value: "Private tickets\nStaff dashboard • status tracking",
-        inline: true,
-      },
-      {
-        name: "✅ Completion",
-        value: `${completed}\nVerified runs • service time • cleanup`,
-        inline: true,
-      },
-      {
-        name: "🏦 Treasury",
-        value: `${treasury}\nLive stock • loans • trust tools`,
-        inline: true,
-      },
-      {
-        name: "🧠 Tavern Pulse",
-        value: "Queue health • stale-request rescue • self-repair",
-        inline: true,
+        name: "🧰 Other Services",
+        value: [
+          `**Support:** ${support}`,
+          `**Treasury:** ${treasury}`,
+          `**Marketplace:** ${marketplace}`,
+        ].join("\n"),
+        inline: false,
       },
     )
     .setFooter({ text: `${FOOTER} • ${guildName}` })
     .setTimestamp();
 
-  const primary = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("carry_request_start_v4")
-      .setLabel("Request Carry")
-      .setEmoji("⚔️")
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId("premium_queue_open")
-      .setLabel("Live Queue")
-      .setEmoji("📡")
-      .setStyle(ButtonStyle.Secondary),
+  const navigation = new ActionRowBuilder();
+  addLink(navigation, {
+    label: "Request Carry",
+    emoji: "⚔️",
+    url: channelUrl(guild, config?.request_channel_id),
+  });
+  addLink(navigation, {
+    label: "Live Queue",
+    emoji: "📡",
+    url: channelUrl(guild, config?.queue_channel_id),
+  });
+  addLink(navigation, {
+    label: "Support",
+    emoji: "🛟",
+    url: channelUrl(guild, config?.support_channel_id),
+  });
+  addLink(navigation, {
+    label: "Treasury",
+    emoji: "🏦",
+    url: channelUrl(guild, config?.treasury_channel_id),
+  });
+
+  const base = marketplaceBaseUrl();
+  addLink(navigation, {
+    label: "Marketplace",
+    emoji: "💰",
+    url: base || channelUrl(guild, config?.marketplace_channel_id),
+  });
+
+  const personal = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("premium_my_carries")
       .setLabel("My Carries")
       .setEmoji("📋")
-      .setStyle(ButtonStyle.Secondary),
+      .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("carry_dropin_open")
       .setLabel("Join Live")
       .setEmoji("🌐")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId("support_ticket_open")
-      .setLabel("Support")
-      .setEmoji("🛟")
-      .setStyle(ButtonStyle.Secondary),
-  );
-
-  const secondary = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("premium_carrier_desk")
-      .setLabel("Carrier Desk")
-      .setEmoji("🍻")
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
       .setCustomId("carry_waiting_vc")
@@ -111,29 +123,27 @@ function buildPanel({ guild = null, config = null } = {}) {
       .setEmoji("⏳")
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
-      .setCustomId("tavern_ops_pulse")
-      .setLabel("Tavern Pulse")
-      .setEmoji("🧠")
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
       .setCustomId("tavern_help_open")
       .setLabel("Help")
       .setEmoji("❓")
       .setStyle(ButtonStyle.Secondary),
   );
 
-  const base = marketplaceBaseUrl();
-  if (base) {
-    secondary.addComponents(
+  const carrierUrl = channelUrl(guild, config?.carrier_desk_channel_id);
+  if (carrierUrl) {
+    personal.addComponents(
       new ButtonBuilder()
-        .setLabel("Marketplace")
-        .setEmoji("💰")
+        .setLabel("Carrier Desk")
+        .setEmoji("🍻")
         .setStyle(ButtonStyle.Link)
-        .setURL(base),
+        .setURL(carrierUrl),
     );
   }
 
-  return { embeds: [embed], components: [primary, secondary] };
+  const components = [];
+  if (navigation.components.length) components.push(navigation);
+  components.push(personal);
+  return { embeds: [embed], components };
 }
 
 function isOperationsHub(message, botId) {
@@ -144,7 +154,7 @@ function isOperationsHub(message, botId) {
 }
 
 async function publishOperationsHub(channel, { guild = channel?.guild || null, config = null } = {}) {
-  if (!channel?.isTextBased?.()) throw new Error("The Tavern Hub needs a text channel.");
+  if (!channel?.isTextBased?.()) throw new Error("The Server Hub needs a text channel.");
   const resolvedConfig = config || (guild ? getGuildConfig(guild.id) : null);
   const payload = buildPanel({ guild, config: resolvedConfig });
   const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
@@ -152,19 +162,19 @@ async function publishOperationsHub(channel, { guild = channel?.guild || null, c
 
   if (existing) {
     await existing.edit(payload);
-    if (!existing.pinned) await existing.pin("Permanent Tavern Hub").catch(() => {});
+    if (!existing.pinned) await existing.pin("Permanent Server Hub").catch(() => {});
     return existing;
   }
 
   const message = await channel.send(payload);
-  await message.pin("Permanent Tavern Hub").catch(() => {});
+  await message.pin("Permanent Server Hub").catch(() => {});
   return message;
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("panel")
-    .setDescription("Publish or refresh the Tavern Hub")
+    .setDescription("Publish or refresh the Server Hub")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   FOOTER,
@@ -174,7 +184,7 @@ module.exports = {
   async execute(interaction) {
     if (!interaction.channel?.isTextBased?.()) {
       return interaction.reply({
-        content: "❌ Publish the Tavern Hub inside a text channel.",
+        content: "❌ Publish the Server Hub inside a text channel.",
         flags: MessageFlags.Ephemeral,
       });
     }
@@ -185,12 +195,12 @@ module.exports = {
         config: interaction.guild ? getGuildConfig(interaction.guild.id) : null,
       });
       return interaction.reply({
-        content: `✅ Tavern Hub refreshed: ${message.url}`,
+        content: `✅ Server Hub refreshed: ${message.url}`,
         flags: MessageFlags.Ephemeral,
       });
     } catch (error) {
       return interaction.reply({
-        content: `❌ ${error.message || "Could not publish the Tavern Hub."}`,
+        content: `❌ ${error.message || "Could not publish the Server Hub."}`,
         flags: MessageFlags.Ephemeral,
       });
     }

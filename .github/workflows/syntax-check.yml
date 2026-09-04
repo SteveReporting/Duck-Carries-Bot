@@ -33,3 +33,5 @@ jobs:
         run: node tests/carryOpsPolicy.test.js
       - name: Test multi-guild selection policy
         run: node tests/guildSelectionPolicy.test.js
+      - name: Test per-guild security isolation
+        run: node tests/securityConfig.test.js

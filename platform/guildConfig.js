@@ -7,6 +7,7 @@ const CONFIG_COLUMNS = [
   "setup_at",
   "updated_at",
   "home_channel_id",
+  "request_channel_id",
   "queue_channel_id",
   "completed_channel_id",
   "ticket_category_id",
@@ -20,6 +21,10 @@ const CONFIG_COLUMNS = [
   "marketplace_channel_id",
   "support_channel_id",
   "support_dashboard_channel_id",
+  "carrier_desk_channel_id",
+  "carrier_leaderboard_channel_id",
+  "security_category_id",
+  "roles_json",
   "enabled",
 ];
 
@@ -32,6 +37,7 @@ db.prepare(`
     setup_at INTEGER,
     updated_at INTEGER,
     home_channel_id TEXT,
+    request_channel_id TEXT,
     queue_channel_id TEXT,
     completed_channel_id TEXT,
     ticket_category_id TEXT,
@@ -45,6 +51,10 @@ db.prepare(`
     marketplace_channel_id TEXT,
     support_channel_id TEXT,
     support_dashboard_channel_id TEXT,
+    carrier_desk_channel_id TEXT,
+    carrier_leaderboard_channel_id TEXT,
+    security_category_id TEXT,
+    roles_json TEXT,
     enabled INTEGER NOT NULL DEFAULT 1
   )
 `).run();
@@ -56,11 +66,16 @@ const existingColumns = new Set(
 );
 for (const column of [
   "home_channel_id",
+  "request_channel_id",
   "voice_category_id",
   "treasury_channel_id",
   "marketplace_channel_id",
   "support_channel_id",
   "support_dashboard_channel_id",
+  "carrier_desk_channel_id",
+  "carrier_leaderboard_channel_id",
+  "security_category_id",
+  "roles_json",
 ]) {
   if (!existingColumns.has(column)) {
     db.prepare(`ALTER TABLE guild_config ADD COLUMN ${column} TEXT`).run();
@@ -69,6 +84,12 @@ for (const column of [
 
 function normalizeId(value) {
   const text = String(value || "").trim();
+  return text || null;
+}
+
+function normalizeText(value) {
+  if (value == null) return null;
+  const text = String(value).trim();
   return text || null;
 }
 
@@ -96,6 +117,7 @@ function saveGuildConfig(guildId, patch = {}) {
     setup_at: patch.setup_at ?? current.setup_at ?? now,
     updated_at: now,
     home_channel_id: normalizeId(patch.home_channel_id ?? current.home_channel_id),
+    request_channel_id: normalizeId(patch.request_channel_id ?? current.request_channel_id),
     queue_channel_id: normalizeId(patch.queue_channel_id ?? current.queue_channel_id),
     completed_channel_id: normalizeId(patch.completed_channel_id ?? current.completed_channel_id),
     ticket_category_id: normalizeId(patch.ticket_category_id ?? current.ticket_category_id),
@@ -109,6 +131,10 @@ function saveGuildConfig(guildId, patch = {}) {
     marketplace_channel_id: normalizeId(patch.marketplace_channel_id ?? current.marketplace_channel_id),
     support_channel_id: normalizeId(patch.support_channel_id ?? current.support_channel_id),
     support_dashboard_channel_id: normalizeId(patch.support_dashboard_channel_id ?? current.support_dashboard_channel_id),
+    carrier_desk_channel_id: normalizeId(patch.carrier_desk_channel_id ?? current.carrier_desk_channel_id),
+    carrier_leaderboard_channel_id: normalizeId(patch.carrier_leaderboard_channel_id ?? current.carrier_leaderboard_channel_id),
+    security_category_id: normalizeId(patch.security_category_id ?? current.security_category_id),
+    roles_json: normalizeText(patch.roles_json ?? current.roles_json),
     enabled: patch.enabled ?? current.enabled ?? 1,
   };
 
@@ -128,7 +154,12 @@ function saveGuildConfig(guildId, patch = {}) {
       queueChannel=excluded.queueChannel,
       requestChannel=excluded.requestChannel,
       completedChannel=excluded.completedChannel
-  `).run(guild, next.queue_channel_id, next.home_channel_id || next.queue_channel_id, next.completed_channel_id);
+  `).run(
+    guild,
+    next.queue_channel_id,
+    next.request_channel_id || next.home_channel_id || next.queue_channel_id,
+    next.completed_channel_id,
+  );
 
   return getGuildConfig(guild);
 }
@@ -173,6 +204,7 @@ function applyLegacyEnvironment(config) {
   // Older background modules still read environment variables. Point them at a
   // configured guild while keeping every stored channel/role value guild-scoped.
   setEnv("GUILD_ID", config.guild);
+  setEnv("CARRY_REQUEST_CHANNEL_ID", config.request_channel_id);
   setEnv("CARRY_QUEUE_CHANNEL_ID", config.queue_channel_id);
   setEnv("QUEUE_CHANNEL_ID", config.queue_channel_id);
   setEnv("TICKET_CATEGORY_ID", config.ticket_category_id);
@@ -184,6 +216,7 @@ function applyLegacyEnvironment(config) {
   setEnv("CARRIER_TEAM_ROLE_ID", config.carrier_role_id);
   setEnv("CARRY_CLAIM_ROLE_ID", config.carrier_role_id);
   setEnv("STAFF_BASE_ROLE_ID", config.staff_role_id);
+  setEnv("PLATFORM_DISCORD_ROLE_MODERATOR", config.staff_role_id);
   setEnv("TREASURY_STOCK_CHANNEL_ID", config.treasury_channel_id);
   setEnv("MARKETPLACE_CHANNEL_ID", config.marketplace_channel_id);
 

@@ -2,8 +2,7 @@ const { ChannelType } = require("discord.js");
 
 const db = require("../database/database");
 const { getGuildConfig, listConfiguredGuilds } = require("./guildConfig");
-const { loadPlatformQueue } = require("./carryQueue");
-const { buildPremiumQueuePayload } = require("./premiumQueueUi");
+const { buildQueueOverviewPayload, loadScalableQueue } = require("./scalableQueueUi");
 
 const LIVE_FOOTER = "The Carry Tavern • Live Carry Board";
 const REFRESH_MS = 60_000;
@@ -35,17 +34,11 @@ function isLiveBoard(message, botId) {
   );
 }
 
-async function buildBoardPayload(guildId) {
-  const rows = await loadPlatformQueue();
-  const payload = buildPremiumQueuePayload(guildId, rows);
+async function buildBoardPayload(guild) {
+  const rows = await loadScalableQueue();
+  const payload = buildQueueOverviewPayload(guild.id, rows, guild);
   const embed = payload.embeds?.[0];
-  if (embed) {
-    embed
-      .setColor(rows.some((row) => row.status === "queued") ? 0xf2b705 : 0x2ecc71)
-      .setAuthor({ name: "THE CARRY TAVERN • LIVE" })
-      .setTitle("⚔️ Live Carry Board")
-      .setFooter({ text: LIVE_FOOTER });
-  }
+  if (embed) embed.setFooter({ text: LIVE_FOOTER });
   return payload;
 }
 
@@ -68,18 +61,18 @@ async function ensureLiveCarryBoard(client, guildOverride = null) {
       return null;
     }
 
-    const payload = await buildBoardPayload(guild.id);
+    const payload = await buildBoardPayload(guild);
     const messages = await channel.messages.fetch({ limit: 50 }).catch(() => null);
     const existing = messages?.find((message) => isLiveBoard(message, client.user.id)) || null;
 
     if (existing) {
       await existing.edit(payload);
-      if (!existing.pinned) await existing.pin("Permanent Tavern live carry board").catch(() => {});
+      if (!existing.pinned) await existing.pin("Permanent compact live carry board").catch(() => {});
       return existing;
     }
 
     const board = await channel.send(payload);
-    await board.pin("Permanent Tavern live carry board").catch(() => {});
+    await board.pin("Permanent compact live carry board").catch(() => {});
     return board;
   } catch (error) {
     console.warn(`[LIVE CARRY BOARD] ${guild.name}:`, error.message);
@@ -109,7 +102,6 @@ function startLiveCarryBoard(client) {
     started += 1;
   }
 
-  // Compatibility fallback for an older one-guild config not yet migrated.
   if (!started && process.env.GUILD_ID) {
     const guild = client.guilds.cache.get(String(process.env.GUILD_ID));
     if (guild) startGuildBoardTimer(client, guild);

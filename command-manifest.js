@@ -10,6 +10,7 @@ module.exports = [
   "pot.js",
   "queue3.js",
   "report.js",
+  "security.js",
   "setup.js",
   "tavern.js",
   "treasury-combined.js",
