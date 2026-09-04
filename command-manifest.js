@@ -11,6 +11,7 @@ module.exports = [
   "queue3.js",
   "report.js",
   "security.js",
+  "sentient.js",
   "setup.js",
   "tavern.js",
   "treasury-combined.js",
