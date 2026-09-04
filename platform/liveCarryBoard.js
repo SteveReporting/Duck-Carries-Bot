@@ -2,8 +2,7 @@ const { ChannelType } = require("discord.js");
 
 const db = require("../database/database");
 const { getGuildConfig, listConfiguredGuilds } = require("./guildConfig");
-const { loadPlatformQueue } = require("./carryQueue");
-const { buildQueueOverviewPayload } = require("./scalableQueueUi");
+const { buildQueueOverviewPayload, loadScalableQueue } = require("./scalableQueueUi");
 
 const LIVE_FOOTER = "The Carry Tavern • Live Carry Board";
 const REFRESH_MS = 60_000;
@@ -36,7 +35,7 @@ function isLiveBoard(message, botId) {
 }
 
 async function buildBoardPayload(guild) {
-  const rows = await loadPlatformQueue();
+  const rows = await loadScalableQueue();
   const payload = buildQueueOverviewPayload(guild.id, rows, guild);
   const embed = payload.embeds?.[0];
   if (embed) embed.setFooter({ text: LIVE_FOOTER });
