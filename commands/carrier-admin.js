@@ -1,4 +1,12 @@
-const { EmbedBuilder, MessageFlags, PermissionFlagsBits, SlashCommandBuilder } = require("discord.js");
+const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  MessageFlags,
+  PermissionFlagsBits,
+  SlashCommandBuilder,
+} = require("discord.js");
 
 const { DUNGEONS } = require("../platform/dungeons");
 const {
@@ -9,6 +17,11 @@ const {
   setCarrierPermission,
 } = require("../platform/communitySystems");
 const carrierDepartment = require("./carrier-department");
+
+const GOLD = 0xf2b705;
+const GREEN = 0x2ecc71;
+const RED = 0xe74c3c;
+const FOOTER = "The Carry Tavern • Carrier Department";
 
 const DIFFICULTIES = ["*", "Easy", "Medium", "Hard", "Insane", "Insane Hardcore", "Nightmare", "Nightmare Hardcore"];
 const DEPARTMENT_ROLES = [
@@ -22,7 +35,10 @@ const DEPARTMENT_ROLES = [
 ];
 
 function requireStaff(interaction) {
-  return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageRoles) || interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
+  return Boolean(
+    interaction.memberPermissions?.has(PermissionFlagsBits.ManageRoles) ||
+    interaction.memberPermissions?.has(PermissionFlagsBits.Administrator),
+  );
 }
 
 function scopeValue(value) {
@@ -30,16 +46,67 @@ function scopeValue(value) {
   return ["*", "all", "any"].includes(clean.toLowerCase()) ? "*" : clean;
 }
 
+function adminActions() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("premium_carrier_desk")
+      .setLabel("Carrier Desk")
+      .setEmoji("🍻")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("premium_queue_open")
+      .setLabel("Live Queue")
+      .setEmoji("⚔️")
+      .setStyle(ButtonStyle.Secondary),
+  );
+}
+
+function resultEmbed(title, description, color = GOLD) {
+  return new EmbedBuilder()
+    .setColor(color)
+    .setAuthor({ name: "THE CARRY TAVERN • CARRIER ADMIN" })
+    .setTitle(title)
+    .setDescription(description)
+    .setFooter({ text: FOOTER })
+    .setTimestamp();
+}
+
 async function listCommand(interaction) {
   const target = interaction.options.getUser("user", true);
   const rows = listCarrierPermissions(interaction.guildId, target.id);
+
+  const allowed = rows.filter((row) => row.allowed);
+  const denied = rows.filter((row) => !row.allowed);
+  const format = (row) => `• **${row.dungeon === "*" ? "All Dungeons" : row.dungeon}**${row.difficulty === "*" ? " • any difficulty" : ` • ${row.difficulty}`}`;
+
   const embed = new EmbedBuilder()
-    .setTitle(`🛡️ Carrier Permissions • ${target.username}`)
-    .setDescription(rows.length
-      ? rows.map((row) => `${row.allowed ? "✅ ALLOW" : "❌ DENY"} • **${row.dungeon}**${row.difficulty === "*" ? " • any difficulty" : ` • ${row.difficulty}`}`).join("\n").slice(0, 4000)
-      : "No scoped permissions are configured. This Carrier is currently **unrestricted**.")
-    .setFooter({ text: "Once at least one scope exists, non-matching dungeons are blocked by default." });
-  return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    .setColor(GOLD)
+    .setAuthor({ name: "THE CARRY TAVERN • CARRIER ACCESS" })
+    .setTitle(`🛡️ ${target.globalName || target.username}`)
+    .setThumbnail(target.displayAvatarURL({ size: 256 }))
+    .setDescription(
+      rows.length
+        ? "Scoped permissions are active. Only matching **ALLOW** rules can be claimed unless a matching **DENY** rule blocks them."
+        : "No scoped rules are configured. This Carrier is currently **unrestricted**.",
+    )
+    .addFields(
+      {
+        name: `✅ Allowed • ${allowed.length}`,
+        value: allowed.length ? allowed.map(format).join("\n").slice(0, 1024) : "No explicit allow rules.",
+        inline: false,
+      },
+      {
+        name: `❌ Denied • ${denied.length}`,
+        value: denied.length ? denied.map(format).join("\n").slice(0, 1024) : "No explicit deny rules.",
+        inline: false,
+      },
+      { name: "⚙️ Mode", value: rows.length ? "Scoped" : "Unrestricted", inline: true },
+      { name: "📋 Rules", value: `**${rows.length}** total`, inline: true },
+    )
+    .setFooter({ text: FOOTER })
+    .setTimestamp();
+
+  return interaction.reply({ embeds: [embed], components: [adminActions()], flags: MessageFlags.Ephemeral });
 }
 
 async function changeCommand(interaction, mode) {
@@ -49,93 +116,169 @@ async function changeCommand(interaction, mode) {
 
   if (mode === "remove") {
     const changed = removeCarrierPermission(interaction.guildId, target.id, dungeon, difficulty);
-    return interaction.reply({ content: changed ? `✅ Removed that permission rule for ${target}.` : "❌ No matching permission rule existed.", flags: MessageFlags.Ephemeral });
+    const embed = changed
+      ? resultEmbed(
+          "✅ Permission Rule Removed",
+          `${target} no longer has the matching **${dungeon === "*" ? "all dungeons" : dungeon}**${difficulty === "*" ? " • any difficulty" : ` • ${difficulty}`} rule.`,
+          GREEN,
+        )
+      : resultEmbed("Rule Not Found", "No matching Carrier permission rule existed.", RED);
+    return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
 
   const allowed = mode === "allow";
-  const scope = setCarrierPermission(interaction.guildId, target.id, dungeon, difficulty, allowed, interaction.user.id);
-  return interaction.reply({
-    content: `${allowed ? "✅ Allowed" : "❌ Denied"} ${target} for **${scope.dungeon === "*" ? "all dungeons" : scope.dungeon}**${scope.difficulty === "*" ? " at any difficulty" : ` • ${scope.difficulty}`}.`,
-    flags: MessageFlags.Ephemeral,
-  });
+  const scope = setCarrierPermission(
+    interaction.guildId,
+    target.id,
+    dungeon,
+    difficulty,
+    allowed,
+    interaction.user.id,
+  );
+
+  const embed = resultEmbed(
+    allowed ? "✅ Carrier Scope Allowed" : "❌ Carrier Scope Denied",
+    [
+      `**Carrier:** ${target}`,
+      `**Dungeon:** ${scope.dungeon === "*" ? "All dungeons" : scope.dungeon}`,
+      `**Difficulty:** ${scope.difficulty === "*" ? "Any difficulty" : scope.difficulty}`,
+      "",
+      allowed
+        ? "This scope can now be claimed when the Carrier is eligible."
+        : "This scope is explicitly blocked for this Carrier.",
+    ].join("\n"),
+    allowed ? GREEN : RED,
+  );
+
+  return interaction.reply({ embeds: [embed], components: [adminActions()], flags: MessageFlags.Ephemeral });
 }
 
 async function noShowSummaryCommand(interaction) {
   const target = interaction.options.getUser("user", true);
   const summary = noShowSummary(interaction.guildId, target.id, 30);
+  const risk = summary.total >= 3 ? "🔴 Review Recommended" : summary.total > 0 ? "🟠 Monitor" : "🟢 Clear";
+
   const embed = new EmbedBuilder()
-    .setTitle(`🚫 No-Show Record • ${target.username}`)
-    .setThumbnail(target.displayAvatarURL({ size: 128 }))
+    .setColor(summary.total >= 3 ? RED : summary.total > 0 ? GOLD : GREEN)
+    .setAuthor({ name: "THE CARRY TAVERN • CARRIER SAFETY" })
+    .setTitle(`🚫 No-Show Record • ${target.globalName || target.username}`)
+    .setThumbnail(target.displayAvatarURL({ size: 256 }))
+    .setDescription("A 30-day operational signal for staff review. No-show reports are **not automatic punishment**.")
     .addFields(
-      { name: "Total (30d)", value: String(summary.total), inline: true },
-      { name: "As Requester", value: String(summary.requester), inline: true },
-      { name: "As Carrier", value: String(summary.carrier), inline: true },
+      { name: "📊 Total", value: `**${summary.total}**`, inline: true },
+      { name: "👤 As Requester", value: `**${summary.requester}**`, inline: true },
+      { name: "🍻 As Carrier", value: `**${summary.carrier}**`, inline: true },
+      { name: "🛡️ Staff Signal", value: risk, inline: false },
     )
-    .setFooter({ text: "No-show reports are staff safety signals, not automatic punishment." });
+    .setFooter({ text: FOOTER })
+    .setTimestamp();
+
   return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("carrier-admin")
-    .setDescription("Carrier staff controls")
+    .setDescription("Carrier Department administration")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles)
-    .addSubcommand((s) => s.setName("allow").setDescription("Allow a Carrier dungeon/difficulty scope")
-      .addUserOption((o) => o.setName("user").setDescription("Carrier").setRequired(true))
-      .addStringOption((o) => o.setName("dungeon").setDescription("Dungeon or * for all").setRequired(true).setAutocomplete(true))
-      .addStringOption((o) => o.setName("difficulty").setDescription("Difficulty or * for any").setAutocomplete(true)))
-    .addSubcommand((s) => s.setName("deny").setDescription("Explicitly deny a Carrier dungeon/difficulty scope")
-      .addUserOption((o) => o.setName("user").setDescription("Carrier").setRequired(true))
-      .addStringOption((o) => o.setName("dungeon").setDescription("Dungeon or * for all").setRequired(true).setAutocomplete(true))
-      .addStringOption((o) => o.setName("difficulty").setDescription("Difficulty or * for any").setAutocomplete(true)))
-    .addSubcommand((s) => s.setName("remove").setDescription("Remove one permission rule")
-      .addUserOption((o) => o.setName("user").setDescription("Carrier").setRequired(true))
-      .addStringOption((o) => o.setName("dungeon").setDescription("Dungeon or *").setRequired(true).setAutocomplete(true))
-      .addStringOption((o) => o.setName("difficulty").setDescription("Difficulty or *").setAutocomplete(true)))
-    .addSubcommand((s) => s.setName("clear").setDescription("Clear every scoped permission for a Carrier")
-      .addUserOption((o) => o.setName("user").setDescription("Carrier").setRequired(true)))
-    .addSubcommand((s) => s.setName("list").setDescription("View a Carrier's dungeon permissions")
-      .addUserOption((o) => o.setName("user").setDescription("Carrier").setRequired(true)))
-    .addSubcommand((s) => s.setName("assign").setDescription("Assign a Carrier Department role")
-      .addStringOption((o) => o.setName("role").setDescription("Department role").setRequired(true).addChoices(...DEPARTMENT_ROLES))
-      .addUserOption((o) => o.setName("member").setDescription("Member to receive the role").setRequired(true)))
-    .addSubcommand((s) => s.setName("hierarchy").setDescription("Place the Carrier role block below a chosen role")
-      .addRoleOption((o) => o.setName("below").setDescription("Role directly above Head of Carriers").setRequired(true)))
-    .addSubcommand((s) => s.setName("noshow-summary").setDescription("View a member's 30-day carry no-show record")
-      .addUserOption((o) => o.setName("user").setDescription("Member to view").setRequired(true))),
+    .addSubcommand((subcommand) => subcommand
+      .setName("allow")
+      .setDescription("Allow a Carrier dungeon/difficulty scope")
+      .addUserOption((option) => option.setName("user").setDescription("Carrier").setRequired(true))
+      .addStringOption((option) => option.setName("dungeon").setDescription("Dungeon or * for all").setRequired(true).setAutocomplete(true))
+      .addStringOption((option) => option.setName("difficulty").setDescription("Difficulty or * for any").setAutocomplete(true)))
+    .addSubcommand((subcommand) => subcommand
+      .setName("deny")
+      .setDescription("Explicitly block a Carrier dungeon/difficulty scope")
+      .addUserOption((option) => option.setName("user").setDescription("Carrier").setRequired(true))
+      .addStringOption((option) => option.setName("dungeon").setDescription("Dungeon or * for all").setRequired(true).setAutocomplete(true))
+      .addStringOption((option) => option.setName("difficulty").setDescription("Difficulty or * for any").setAutocomplete(true)))
+    .addSubcommand((subcommand) => subcommand
+      .setName("remove")
+      .setDescription("Remove one scoped permission rule")
+      .addUserOption((option) => option.setName("user").setDescription("Carrier").setRequired(true))
+      .addStringOption((option) => option.setName("dungeon").setDescription("Dungeon or *").setRequired(true).setAutocomplete(true))
+      .addStringOption((option) => option.setName("difficulty").setDescription("Difficulty or *").setAutocomplete(true)))
+    .addSubcommand((subcommand) => subcommand
+      .setName("clear")
+      .setDescription("Return a Carrier to unrestricted permissions")
+      .addUserOption((option) => option.setName("user").setDescription("Carrier").setRequired(true)))
+    .addSubcommand((subcommand) => subcommand
+      .setName("list")
+      .setDescription("Open a Carrier’s permission card")
+      .addUserOption((option) => option.setName("user").setDescription("Carrier").setRequired(true)))
+    .addSubcommand((subcommand) => subcommand
+      .setName("assign")
+      .setDescription("Assign a Carrier Department role")
+      .addStringOption((option) => option.setName("role").setDescription("Department role").setRequired(true).addChoices(...DEPARTMENT_ROLES))
+      .addUserOption((option) => option.setName("member").setDescription("Member to receive the role").setRequired(true)))
+    .addSubcommand((subcommand) => subcommand
+      .setName("hierarchy")
+      .setDescription("Place the Carrier role block below a chosen role")
+      .addRoleOption((option) => option.setName("below").setDescription("Role directly above Head of Carriers").setRequired(true)))
+    .addSubcommand((subcommand) => subcommand
+      .setName("noshow-summary")
+      .setDescription("Open a member’s 30-day no-show safety card")
+      .addUserOption((option) => option.setName("user").setDescription("Member to view").setRequired(true))),
 
   async autocomplete(interaction) {
     const focused = interaction.options.getFocused(true);
     const typed = String(focused.value || "").toLowerCase();
+
     if (focused.name === "dungeon") {
-      const choices = [{ name: "All dungeons", value: "*" }, ...DUNGEONS.map((d) => ({ name: d.name, value: d.name }))]
+      const choices = [
+        { name: "All dungeons", value: "*" },
+        ...DUNGEONS.map((dungeon) => ({ name: dungeon.name, value: dungeon.name })),
+      ]
         .filter((choice) => choice.name.toLowerCase().includes(typed) || choice.value === "*")
         .slice(0, 25);
       return interaction.respond(choices);
     }
+
     if (focused.name === "difficulty") {
-      return interaction.respond(DIFFICULTIES.filter((d) => d.toLowerCase().includes(typed) || d === "*").slice(0, 25).map((d) => ({ name: d === "*" ? "Any difficulty" : d, value: d })));
+      return interaction.respond(
+        DIFFICULTIES
+          .filter((difficulty) => difficulty.toLowerCase().includes(typed) || difficulty === "*")
+          .slice(0, 25)
+          .map((difficulty) => ({ name: difficulty === "*" ? "Any difficulty" : difficulty, value: difficulty })),
+      );
     }
+
     return interaction.respond([]);
   },
 
   async execute(interaction) {
-    if (!requireStaff(interaction)) return interaction.reply({ content: "❌ Manage Roles permission is required.", flags: MessageFlags.Ephemeral });
+    if (!requireStaff(interaction)) {
+      return interaction.reply({ content: "❌ Manage Roles permission is required.", flags: MessageFlags.Ephemeral });
+    }
+
     try {
-      const sub = interaction.options.getSubcommand();
-      if (sub === "assign" || sub === "hierarchy") return carrierDepartment.execute(interaction);
-      if (sub === "noshow-summary") return noShowSummaryCommand(interaction);
-      if (sub === "list") return listCommand(interaction);
-      if (sub === "clear") {
+      const subcommand = interaction.options.getSubcommand();
+      if (subcommand === "assign" || subcommand === "hierarchy") return carrierDepartment.execute(interaction);
+      if (subcommand === "noshow-summary") return noShowSummaryCommand(interaction);
+      if (subcommand === "list") return listCommand(interaction);
+
+      if (subcommand === "clear") {
         const target = interaction.options.getUser("user", true);
         const removed = clearCarrierPermissions(interaction.guildId, target.id);
-        return interaction.reply({ content: `✅ Cleared **${removed}** permission rule(s) for ${target}. They are unrestricted again.`, flags: MessageFlags.Ephemeral });
+        const embed = resultEmbed(
+          "✅ Carrier Permissions Reset",
+          `${target} is unrestricted again. **${removed}** scoped rule${removed === 1 ? "" : "s"} removed.`,
+          GREEN,
+        );
+        return interaction.reply({ embeds: [embed], components: [adminActions()], flags: MessageFlags.Ephemeral });
       }
-      return changeCommand(interaction, sub);
+
+      return changeCommand(interaction, subcommand);
     } catch (error) {
       console.error("[CARRIER ADMIN]", error);
-      if (interaction.deferred || interaction.replied) return interaction.editReply({ content: `❌ ${error.message || "Carrier admin update failed."}` });
-      return interaction.reply({ content: `❌ ${error.message || "Carrier admin update failed."}`, flags: MessageFlags.Ephemeral });
+      const payload = {
+        content: `❌ ${error.message || "Carrier admin update failed."}`,
+        embeds: [],
+        components: [],
+      };
+      if (interaction.deferred || interaction.replied) return interaction.editReply(payload);
+      return interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
     }
   },
 };
