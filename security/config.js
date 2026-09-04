@@ -31,9 +31,11 @@ function createSecurityConfig(guildId = BOOT_GUILD_ID) {
   // security owner so anti-spam/honeypot/anti-nuke containment ignores them.
   securityOwners.add('1137081101341433936');
 
-  const stateName = resolvedGuildId && BOOT_GUILD_ID && resolvedGuildId !== BOOT_GUILD_ID
-    ? `security-state-${resolvedGuildId}.json`
-    : 'security-state.json';
+  // Preserve the historic state file only for the legacy boot guild. Every
+  // other configured guild gets isolated trusted lists, snapshots and incidents.
+  const stateName = !resolvedGuildId || (BOOT_GUILD_ID && resolvedGuildId === BOOT_GUILD_ID)
+    ? 'security-state.json'
+    : `security-state-${resolvedGuildId}.json`;
 
   return {
     discord: {
