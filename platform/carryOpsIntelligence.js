@@ -10,10 +10,16 @@ const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
 const { ensureCarryControlCenter } = require("./carryControlCenter");
 const { ensureSessionVoice } = require("./carryVoiceSystem");
+const { stopServiceSession } = require("./carryServiceTime");
 const {
   estimateQueueMinutes,
   notifyMatchingCarriers,
 } = require("./communitySystems");
+const {
+  formatAge,
+  minutes,
+  pressureFor,
+} = require("./carryOpsPolicy");
 
 const PULSE_BUTTON_ID = "tavern_ops_pulse";
 const SWEEP_MS = 2 * 60 * 1000;
@@ -44,10 +50,6 @@ function ageMs(value, now = Date.now()) {
   return Number.isFinite(ms) ? Math.max(0, now - ms) : 0;
 }
 
-function minutes(ms) {
-  return Math.max(0, Math.floor(Number(ms || 0) / 60000));
-}
-
 function safeScalar(sql, field, params = []) {
   try {
     return Number(db.prepare(sql).get(...params)?.[field] || 0);
@@ -60,30 +62,12 @@ function safeCount(sql, params = []) {
   return safeScalar(sql, "count", params);
 }
 
-function pressureFor({ waiting = 0, oldestMinutes = 0, availableCarriers = 0 }) {
-  const score = Math.max(0, waiting * 10 + Math.min(60, oldestMinutes) - availableCarriers * 12);
-  if (waiting === 0) return { level: "clear", score: 0, label: "🟢 Clear" };
-  if (score >= 85 || oldestMinutes >= 50) return { level: "critical", score, label: "🔴 Critical" };
-  if (score >= 45 || oldestMinutes >= 30) return { level: "high", score, label: "🟠 High" };
-  if (score >= 20) return { level: "medium", score, label: "🟡 Medium" };
-  return { level: "low", score, label: "🟢 Low" };
-}
-
 function healthLabel(snapshot) {
   if (!snapshot) return "⚪ Starting";
   if (!snapshot.supabaseOk) return "🔴 Database issue";
   if (snapshot.orphanedSessions > 0) return "🟠 Repair needed";
   if (snapshot.lastSweepError) return "🟠 Degraded";
   return "🟢 Healthy";
-}
-
-function formatAge(ms) {
-  const mins = minutes(ms);
-  if (mins < 1) return "<1m";
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  const rest = mins % 60;
-  return `${hours}h ${rest}m`;
 }
 
 function formatServiceMinutes(totalMinutes) {
@@ -205,6 +189,8 @@ async function buildSnapshot(guild) {
     discordPing: Number.isFinite(guild.client.ws.ping) ? Math.round(guild.client.ws.ping) : null,
     lastRepairAt: previous?.lastRepairAt || 0,
     repairedLastSweep: previous?.repairedLastSweep || 0,
+    orphanVoicesClosedLastSweep: previous?.orphanVoicesClosedLastSweep || 0,
+    orphanTimersStoppedLastSweep: previous?.orphanTimersStoppedLastSweep || 0,
     rescuePingsLastSweep: previous?.rescuePingsLastSweep || 0,
     rows,
   };
@@ -220,6 +206,11 @@ function pulseEmbed(snapshot) {
     : snapshot.queueTailEtaMinutes == null
       ? "Waiting for Carrier availability"
       : `~${snapshot.queueTailEtaMinutes}m queue-tail estimate`;
+  const repairSummary = [
+    snapshot.repairedLastSweep ? `${snapshot.repairedLastSweep} active session(s) refreshed` : null,
+    snapshot.orphanVoicesClosedLastSweep ? `${snapshot.orphanVoicesClosedLastSweep} orphan VC(s) removed` : null,
+    snapshot.orphanTimersStoppedLastSweep ? `${snapshot.orphanTimersStoppedLastSweep} orphan timer(s) frozen` : null,
+  ].filter(Boolean).join(" • ") || "No repairs needed on the last pass";
 
   return new EmbedBuilder()
     .setColor(snapshot.pressure.level === "critical" ? 0xed4245 : snapshot.pressure.level === "high" ? 0xf39c12 : 0x2ecc71)
@@ -231,6 +222,7 @@ function pulseEmbed(snapshot) {
       `**System health:** ${healthLabel(snapshot)}`,
       `**Queue pressure:** ${snapshot.pressure.label}`,
       `**Forecast:** ${tailEta}`,
+      `**Last repair pass:** ${repairSummary}`,
       `**Updated:** ${age}`,
     ].join("\n"))
     .addFields(
@@ -252,7 +244,7 @@ function pulseEmbed(snapshot) {
       value: [
         "`AUTO-RESCUE` re-pings matching available Carriers for stale requests",
         "`SELF-HEAL` repairs control centers + session VCs",
-        "`WATCHDOG` detects orphaned/stalled sessions",
+        "`WATCHDOG` removes orphan VCs and freezes orphan timers",
         "`FORECAST` calculates queue pressure and queue-tail ETA",
         "`DEDUPED ALERTS` staff only hear about unresolved problems",
       ].join("\n"),
@@ -374,6 +366,52 @@ async function sendRescueAlerts(guild, snapshot) {
   return sent;
 }
 
+async function cleanupOrphanRuntime(guild) {
+  let voicesClosed = 0;
+  let timersStopped = 0;
+
+  let voiceRows = [];
+  try {
+    voiceRows = db.prepare("SELECT ticket_channel,voice_channel FROM carry_voice_sessions WHERE guild=? AND status IN ('claimed','started')")
+      .all(String(guild.id));
+  } catch {}
+
+  for (const row of voiceRows) {
+    const ticket = guild.channels.cache.get(String(row.ticket_channel))
+      || await guild.channels.fetch(String(row.ticket_channel)).catch(() => null);
+    if (ticket?.isTextBased?.()) continue;
+
+    const voice = guild.channels.cache.get(String(row.voice_channel))
+      || await guild.channels.fetch(String(row.voice_channel)).catch(() => null);
+    if (voice) await voice.delete("Self-heal: carry ticket no longer exists").catch(() => {});
+    db.prepare("UPDATE carry_voice_sessions SET status='closed',closed_at=? WHERE ticket_channel=?")
+      .run(Date.now(), String(row.ticket_channel));
+    try {
+      db.prepare("UPDATE carry_voice_dropins SET status='closed',left_at=COALESCE(left_at,?) WHERE ticket_channel=? AND status='active'")
+        .run(Date.now(), String(row.ticket_channel));
+    } catch {}
+    voicesClosed += 1;
+  }
+
+  let timerRows = [];
+  try {
+    timerRows = db.prepare("SELECT ticket_channel FROM carry_service_sessions WHERE guild=? AND status IN ('running','checkpoint')")
+      .all(String(guild.id));
+  } catch {}
+
+  for (const row of timerRows) {
+    const ticket = guild.channels.cache.get(String(row.ticket_channel))
+      || await guild.channels.fetch(String(row.ticket_channel)).catch(() => null);
+    if (ticket?.isTextBased?.()) continue;
+    try {
+      stopServiceSession(String(row.ticket_channel), "Self-heal: carry ticket no longer exists");
+      timersStopped += 1;
+    } catch {}
+  }
+
+  return { voicesClosed, timersStopped };
+}
+
 async function repairActiveSessions(guild, rows) {
   let repaired = 0;
   const ticketIds = [...new Set(rows
@@ -397,6 +435,13 @@ async function repairActiveSessions(guild, rows) {
   return repaired;
 }
 
+function purgeOldAlertState() {
+  try {
+    db.prepare("DELETE FROM carry_ops_alerts WHERE last_sent_at < ?")
+      .run(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  } catch {}
+}
+
 async function sweep(client) {
   if (sweepRunning || !process.env.GUILD_ID) return null;
   sweepRunning = true;
@@ -409,10 +454,14 @@ async function sweep(client) {
     snapshot.rescuePingsLastSweep = await renotifyStaleCarries(client, guild, snapshot);
 
     if (Date.now() - lastRepairAt >= REPAIR_MS) {
+      const runtime = await cleanupOrphanRuntime(guild);
       const repaired = await repairActiveSessions(guild, snapshot.rows);
       lastRepairAt = Date.now();
       snapshot.lastRepairAt = lastRepairAt;
       snapshot.repairedLastSweep = repaired;
+      snapshot.orphanVoicesClosedLastSweep = runtime.voicesClosed;
+      snapshot.orphanTimersStoppedLastSweep = runtime.timersStopped;
+      purgeOldAlertState();
     }
 
     cache.set(String(guild.id), snapshot);
