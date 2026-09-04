@@ -31,3 +31,5 @@ jobs:
         run: node tests/potCalculator.test.js
       - name: Test operations intelligence policy
         run: node tests/carryOpsPolicy.test.js
+      - name: Test multi-guild selection policy
+        run: node tests/guildSelectionPolicy.test.js

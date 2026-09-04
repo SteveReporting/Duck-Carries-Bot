@@ -7,8 +7,6 @@ const {
     Collection,
     GatewayIntentBits,
     MessageFlags,
-    REST,
-    Routes,
     TextChannel,
 } = require("discord.js");
 const db = require("./database/database");
@@ -18,13 +16,17 @@ const {
     isCarryClaimInteraction,
 } = require("./platform/carryClaimAccess");
 const { ensureCarryControlCenter } = require("./platform/carryControlCenter");
+const { isLegacyGuildReadyFile } = require("./platform/guildRuntime");
 
 console.log("=================================");
 console.log("🍺 Starting The Carry Tavern...");
 console.log(`Node version: ${process.version}`);
+console.log("🌍 Mode: multi-guild / setup-driven");
 console.log("=================================");
 
-const requiredEnvironment = ["TOKEN", "CLIENT_ID", "GUILD_ID"];
+// A guild ID is deliberately NOT required. The bot must remain online even when
+// it has not joined or configured a server yet.
+const requiredEnvironment = ["TOKEN", "CLIENT_ID"];
 const missingEnvironment = requiredEnvironment.filter((key) => !process.env[key]);
 
 if (missingEnvironment.length > 0) {
@@ -48,6 +50,7 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildWebhooks,
+        GatewayIntentBits.GuildVoiceStates,
     ],
 });
 
@@ -56,6 +59,8 @@ const client = new Client({
 client.setMaxListeners(50);
 
 client.commands = new Collection();
+client.tavernConfiguredGuildIds = new Set();
+client.tavernLegacyGuildId = null;
 
 // Discord interactions must be acknowledged within a few seconds. Some Tavern
 // actions perform Supabase or Discord API work after the click, so acknowledge
@@ -231,9 +236,6 @@ function warmGuildMemberCache(interaction) {
 }
 
 function eventFilePriority(name) {
-    // The canonical interaction router handles slash commands, Treasury, queue,
-    // and several legacy controls. Register it before the modular component
-    // listeners so its immediate acknowledgements are never queued behind them.
     if (name === "interactionCreate.js") return 0;
     return 1;
 }
@@ -258,6 +260,14 @@ function loadEvents() {
             }
 
             const listener = async (...args) => {
+                // Guild-specific legacy startup systems must not fire against a
+                // stale Carry Tavern GUILD_ID when the bot is in a new/unconfigured
+                // server. /setup can activate them later without a restart.
+                if (event.name === "clientReady" && isLegacyGuildReadyFile(file) && !client.tavernLegacyGuildId) {
+                    console.log(`[MULTI-GUILD] ${file} waiting for the first configured guild.`);
+                    return;
+                }
+
                 if (event.name === "interactionCreate") {
                     const interaction = args[0];
 
@@ -265,9 +275,6 @@ function loadEvents() {
                         void warmGuildMemberCache(interaction);
                     }
 
-                    // Do not insert an async hop in front of every Discord
-                    // interaction. Only claim interactions need this guard, and
-                    // share one guard promise across the modular listeners.
                     if (isCarryClaimInteraction(interaction)) {
                         if (!interaction.__carryClaimGuardPromise) {
                             interaction.__carryClaimGuardPromise = guardCarryClaimInteraction(interaction);
@@ -290,39 +297,6 @@ function loadEvents() {
             console.error(`   ❌ ${file}:`, error);
         }
     }
-}
-
-function cleanLiveCommand(command) {
-    const {
-        id,
-        application_id,
-        guild_id,
-        version,
-        ...definition
-    } = command;
-    return definition;
-}
-
-async function syncSlashCommands() {
-    const body = [...client.commands.values()].map((command) => command.data.toJSON());
-    const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
-    const route = Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID);
-
-    // /security is owned by the standalone anti-raid service. The main bot does
-    // not load or execute it, but preserves its live registration during sync.
-    const existing = await rest.get(route).catch(() => []);
-    const security = Array.isArray(existing)
-        ? existing.find((command) => command.name === "security")
-        : null;
-    if (security) {
-        body.push(cleanLiveCommand(security));
-    } else {
-        console.warn("⚠️ /security was not found during command sync. Start the anti-raid service to register it.");
-    }
-
-    console.log(`🔄 Syncing ${body.length} production guild slash commands...`);
-    await rest.put(route, { body });
-    console.log("✅ Production guild slash commands synced.");
 }
 
 loadCommands();
@@ -363,14 +337,6 @@ process.once("SIGINT", () => shutdown("SIGINT"));
 process.once("SIGTERM", () => shutdown("SIGTERM"));
 
 async function start() {
-    try {
-        await syncSlashCommands();
-    } catch (error) {
-        console.error("❌ Slash command sync failed:", error);
-        console.warn("⚠️ Continuing startup with the slash commands already registered in Discord.");
-        console.warn("⚠️ Fix CLIENT_ID/GUILD_ID or bot guild access before the next command-schema update.");
-    }
-
     console.log("🔐 Logging into Discord...");
 
     try {

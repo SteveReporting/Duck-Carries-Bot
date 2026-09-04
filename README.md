@@ -1,6 +1,27 @@
 # The Carry Tavern Discord Bot
 
-A Discord.js bot for The Carry Tavern Dungeon Quest community. It includes the carry queue, carrier statistics, automated carry voice sessions, weapon potential calculation, Treasury loans/trust tracking, private Treasury tickets, Project Sentient, integrated security, and a locally hosted AI server manager.
+A Discord.js bot for Dungeon Quest communities. It includes the carry queue, carrier statistics, automated carry voice sessions, weapon potential calculation, Treasury loans/trust tracking, private Treasury tickets, Project Sentient, integrated security, and a locally hosted AI server manager.
+
+## Multi-server installation
+
+The bot is no longer tied to one Discord guild. Its slash commands are registered globally, so it can be invited to any server supported by the Discord application settings.
+
+After inviting it, a server manager runs:
+
+`/setup`
+
+Setup stores that guild's own configuration and can automatically create/reuse:
+
+- carry queue
+- completed carries channel
+- carry ticket category
+- Waiting for Carrier voice channel
+- Carrier role
+- Tavern Staff role
+- private staff logs
+- private operations channel
+
+`GUILD_ID` is optional and only acts as a preferred compatibility guild for older background modules. It is not required for the bot to start or for another server to run `/setup`.
 
 ## Features
 
