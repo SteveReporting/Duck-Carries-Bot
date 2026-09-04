@@ -18,26 +18,26 @@ function buildPanel() {
     .setAuthor({ name: "THE CARRY TAVERN • OPERATIONS" })
     .setTitle("🍺 Tavern Command Center")
     .setDescription([
-      "Everything members and Carriers need, without a wall of commands.",
+      "One front door for the entire Tavern carry platform — members click, the automation handles the rest.",
       "",
       "### ⚔️ Carries",
-      "Request in one popup, watch the live queue, wait in the optional VC, or drop into a compatible carry that is already running.",
+      "Request in one popup, watch the live queue, wait in the optional VC, or drop into a compatible carry already running.",
+      "",
+      "### 🧠 Self-Healing Operations",
+      "Tavern Pulse watches queue pressure, stale requests, active sessions, voice rooms and missing controls. Recoverable session problems are repaired automatically; staff only get deduplicated alerts when intervention is actually needed.",
       "",
       "### 🔊 Session Automation",
-      "Claimed carries get a private session VC automatically. Waiting members are moved across automatically, everyone is pinged when the carry starts, and VC remains completely optional.",
+      "Claimed carries get a private session VC automatically. Waiting members can be moved across automatically, everyone is pinged when the carry starts, and VC remains completely optional.",
       "",
       "### 🍻 Carriers",
       "Claim compatible groups and let the system handle private tickets, ready checks, verified time, participant access, progress, requeues and cleanup.",
       "",
-      "### 🛟 Support",
-      "Open a private support case directly from this panel.",
-      "",
-      "**The complicated systems stay underneath. The buttons stay simple.**",
+      "**No command maze. No babysitting panels. The complicated systems stay underneath.**",
     ].join("\n"))
     .addFields(
       { name: "Queue", value: "Smart grouped matching", inline: true },
-      { name: "Voice", value: "Automatic session syncing", inline: true },
-      { name: "Status", value: "🟢 Operational", inline: true },
+      { name: "Automation", value: "Watchdog + self-heal", inline: true },
+      { name: "Status", value: "🟢 Live monitored", inline: true },
     )
     .setFooter({ text: FOOTER })
     .setTimestamp();
@@ -81,6 +81,11 @@ function buildPanel() {
       .setLabel("Waiting VC")
       .setEmoji("⏳")
       .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("tavern_ops_pulse")
+      .setLabel("Tavern Pulse")
+      .setEmoji("🧠")
+      .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("tavern_help_open")
       .setLabel("Help")
