@@ -21,10 +21,13 @@ function buildPanel() {
       "Everything members and Carriers need, without a wall of commands.",
       "",
       "### ⚔️ Carries",
-      "Request a carry in one popup, check the live queue, or open your personal carry dashboard.",
+      "Request in one popup, watch the live queue, wait in the optional VC, or drop into a compatible carry that is already running.",
+      "",
+      "### 🔊 Session Automation",
+      "Claimed carries get a private session VC automatically. Waiting members are moved across automatically, everyone is pinged when the carry starts, and VC remains completely optional.",
       "",
       "### 🍻 Carriers",
-      "Claim compatible queue groups, manage active sessions and let the system handle tickets, ready checks, progress and cleanup.",
+      "Claim compatible groups and let the system handle private tickets, ready checks, verified time, participant access, progress, requeues and cleanup.",
       "",
       "### 🛟 Support",
       "Open a private support case directly from this panel.",
@@ -33,7 +36,7 @@ function buildPanel() {
     ].join("\n"))
     .addFields(
       { name: "Queue", value: "Smart grouped matching", inline: true },
-      { name: "Tickets", value: "Automatic private sessions", inline: true },
+      { name: "Voice", value: "Automatic session syncing", inline: true },
       { name: "Status", value: "🟢 Operational", inline: true },
     )
     .setFooter({ text: FOOTER })
@@ -56,6 +59,11 @@ function buildPanel() {
       .setEmoji("📋")
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
+      .setCustomId("carry_dropin_open")
+      .setLabel("Join Live Carry")
+      .setEmoji("🌐")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
       .setCustomId("support_ticket_open")
       .setLabel("Support")
       .setEmoji("🛟")
@@ -68,6 +76,11 @@ function buildPanel() {
       .setLabel("Carrier Desk")
       .setEmoji("🍻")
       .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId("carry_waiting_vc")
+      .setLabel("Waiting VC")
+      .setEmoji("⏳")
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId("tavern_help_open")
       .setLabel("Help")

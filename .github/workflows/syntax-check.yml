@@ -27,3 +27,5 @@ jobs:
             echo "Checking $file"
             node --check "$file"
           done < <(find . -type f -name '*.js' -not -path './node_modules/*' -print0)
+      - name: Test weapon pot calculator
+        run: node tests/potCalculator.test.js

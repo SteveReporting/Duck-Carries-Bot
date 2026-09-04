@@ -151,7 +151,9 @@ function successPayload({ dungeon, difficulty, runs, availability, notes, profil
     .setDescription([
       "Your request is live and matching Carriers have been notified automatically.",
       "",
-      "You do **not** need to copy an ID, ping a Carrier, or make a separate ticket. When a Carrier claims you, the private session is created for you.",
+      "You do **not** need to copy an ID, ping a Carrier, or make a separate ticket. When a Carrier claims you, the private session and optional carry VC are created automatically.",
+      "",
+      "Want to hang out while you wait? **Waiting VC is optional.** If you are in it when your carry is claimed, the bot moves you into the session VC automatically. If you never join VC, you still get pinged when the carry starts.",
     ].join("\n"))
     .addFields(
       { name: "🏰 Dungeon", value: dungeon, inline: true },
@@ -171,10 +173,15 @@ function successPayload({ dungeon, difficulty, runs, availability, notes, profil
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
+          .setCustomId("carry_waiting_vc")
+          .setLabel("Waiting VC")
+          .setEmoji("⏳")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
           .setCustomId("premium_queue_open")
           .setLabel("Live Queue")
           .setEmoji("📡")
-          .setStyle(ButtonStyle.Primary),
+          .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
           .setCustomId("premium_my_carries")
           .setLabel("My Carries")

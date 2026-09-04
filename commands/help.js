@@ -29,6 +29,7 @@ const HELP = {
       "`/queue active` — active/recovered Carrier claims",
       "`/queue cancel` — cancel your request",
       "`/queue noshow` — report a no-show",
+      "`/pot calculate` — calculate weapon potential from a screenshot or manual figures",
       "",
       "Most people should simply use **Request Carry** from the main panel.",
     ].join("\n"),
