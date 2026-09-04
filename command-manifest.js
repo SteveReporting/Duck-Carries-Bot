@@ -7,6 +7,7 @@ module.exports = [
   "help.js",
   "leaderboard.js",
   "marketplace.js",
+  "panel.js",
   "queue3.js",
   "report.js",
   "tavern.js",
