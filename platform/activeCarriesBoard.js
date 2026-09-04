@@ -109,11 +109,11 @@ async function ensureActiveCarriesChannel(guild) {
     await channel.permissionOverwrites.edit(overwrite.id, permissions, { reason: "Keep active carry feed clean" }).catch(() => {});
   }
 
-  config = saveGuildConfig(guild.id, { active_carries_channel_id: channel.id });
+  saveGuildConfig(guild.id, { active_carries_channel_id: channel.id });
   return channel;
 }
 
-async function loadActiveSessions(guildId) {
+async function loadActiveSessions() {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("carry_requests")
@@ -153,6 +153,11 @@ function sessionVoice(ticketId) {
   } catch {
     return null;
   }
+}
+
+function sessionBelongsToGuild(session, guildId) {
+  const voice = sessionVoice(session.ticketId);
+  return Boolean(voice && String(voice.guild) === String(guildId));
 }
 
 function dropInRows(ticketId) {
@@ -220,8 +225,7 @@ function cardPayload(guild, session) {
       "",
       progress.length ? progress.join("\n") : "No requester progress available.",
     ].join("\n").slice(0, 4000))
-    .setFooter({ text: `${CARD_FOOTER_PREFIX}${session.ticketId}` })
-    .setTimestamp();
+    .setFooter({ text: `${CARD_FOOTER_PREFIX}${session.ticketId}` });
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -271,8 +275,7 @@ async function ensureHeader(channel, activeCount) {
         "**Join / Leave** lets you drop into an active carry without exposing the private requester ticket. Voice is optional.",
         `**Currently live:** ${activeCount.toLocaleString("en-GB")}`,
       ].join("\n"))
-      .setFooter({ text: HEADER_FOOTER })
-      .setTimestamp()],
+      .setFooter({ text: HEADER_FOOTER })],
   };
 
   if (header) await header.edit(payload).catch(() => {});
@@ -283,14 +286,14 @@ async function ensureHeader(channel, activeCount) {
   return header;
 }
 
-async function removeEndedCards(guildId, activeIds, budget) {
+async function removeEndedCards(client, guildId, activeIds, budget) {
   const rows = db.prepare("SELECT * FROM active_carry_cards WHERE guild=? ORDER BY updated_at ASC")
     .all(String(guildId));
   let mutations = 0;
   for (const row of rows) {
     if (activeIds.has(String(row.ticket_channel))) continue;
     if (mutations >= budget) break;
-    const channel = await globalThis.__activeCarriesClient?.channels.fetch(String(row.channel_id)).catch(() => null);
+    const channel = await client.channels.fetch(String(row.channel_id)).catch(() => null);
     const message = channel?.isTextBased?.() ? await channel.messages.fetch(String(row.message_id)).catch(() => null) : null;
     if (message) await message.delete().catch(() => {});
     db.prepare("DELETE FROM active_carry_cards WHERE ticket_channel=?").run(String(row.ticket_channel));
@@ -302,15 +305,15 @@ async function removeEndedCards(guildId, activeIds, budget) {
 async function reconcileActiveCarries(client, guild) {
   if (!guild?.id || locks.has(guild.id)) return { active: 0, mutations: 0 };
   locks.add(guild.id);
-  globalThis.__activeCarriesClient = client;
   try {
     const channel = await ensureActiveCarriesChannel(guild);
-    const sessions = await loadActiveSessions(guild.id);
+    const allSessions = await loadActiveSessions();
+    const sessions = allSessions.filter((session) => sessionBelongsToGuild(session, guild.id));
     await ensureHeader(channel, sessions.length);
 
     let mutations = 0;
     const activeIds = new Set(sessions.map((session) => String(session.ticketId)));
-    mutations += await removeEndedCards(guild.id, activeIds, MAX_MUTATIONS_PER_PASS - mutations);
+    mutations += await removeEndedCards(client, guild.id, activeIds, MAX_MUTATIONS_PER_PASS - mutations);
 
     for (const session of sessions) {
       if (mutations >= MAX_MUTATIONS_PER_PASS) break;
@@ -404,16 +407,20 @@ async function handleActiveCarriesInteraction(interaction) {
   return false;
 }
 
+function startGuildActiveCarriesBoard(client, guild) {
+  if (!guild?.id || timers.has(guild.id)) return;
+  void reconcileActiveCarries(client, guild).catch((error) => console.warn(`[ACTIVE CARRIES] ${guild.name}: ${error.message}`));
+  const timer = setInterval(() => {
+    void reconcileActiveCarries(client, guild).catch((error) => console.warn(`[ACTIVE CARRIES] ${guild.name}: ${error.message}`));
+  }, REFRESH_MS);
+  timer.unref?.();
+  timers.set(guild.id, timer);
+}
+
 function startActiveCarriesBoard(client) {
   for (const config of listConfiguredGuilds()) {
     const guild = client.guilds.cache.get(String(config.guild));
-    if (!guild || timers.has(guild.id)) continue;
-    void reconcileActiveCarries(client, guild).catch((error) => console.warn(`[ACTIVE CARRIES] ${guild.name}: ${error.message}`));
-    const timer = setInterval(() => {
-      void reconcileActiveCarries(client, guild).catch((error) => console.warn(`[ACTIVE CARRIES] ${guild.name}: ${error.message}`));
-    }, REFRESH_MS);
-    timer.unref?.();
-    timers.set(guild.id, timer);
+    if (guild) startGuildActiveCarriesBoard(client, guild);
   }
 }
 
@@ -425,4 +432,5 @@ module.exports = {
   reconcileActiveCarries,
   refreshTicketCard,
   startActiveCarriesBoard,
+  startGuildActiveCarriesBoard,
 };
