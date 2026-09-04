@@ -9,8 +9,10 @@ const {
 
 const { getSupabase } = require("../marketplace/supabase");
 const {
+  claimCarryGroup,
   groupWaitingRequests,
   loadPlatformQueue,
+  requireCarrierProfile,
 } = require("./carryQueue");
 const {
   countAvailableCarriers,
@@ -40,6 +42,14 @@ function encodeToken(parts) {
   return Buffer.from(JSON.stringify(parts)).toString("base64url");
 }
 
+function decodeToken(value) {
+  try {
+    return JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function discordRelative(dateValue) {
   const ms = new Date(dateValue).getTime();
   if (!Number.isFinite(ms)) return "unknown";
@@ -62,7 +72,7 @@ function activeSessionCount(rows) {
   return tickets.size;
 }
 
-function queuePayload(interaction, rows) {
+function buildPremiumQueuePayload(guildId, rows) {
   const waitingGroups = groupWaitingRequests(rows);
   const waitingRequests = rows.filter((request) => request.status === "queued" && remainingRuns(request) > 0);
   const active = rows.filter((request) => ["claimed", "in_progress"].includes(request.status));
@@ -93,7 +103,7 @@ function queuePayload(interaction, rows) {
   if (waitingGroups.length) {
     const fields = waitingGroups.slice(0, 12).map((group, index) => {
       const priority = priorityForAge(group.oldestAt);
-      const available = countAvailableCarriers(interaction.guildId, group.dungeon, group.difficulty);
+      const available = countAvailableCarriers(guildId, group.dungeon, group.difficulty);
       const eta = estimateQueueMinutes(index + 1, available);
       const runs = compactRuns(group.requests.map(remainingRuns));
       const etaText = eta == null ? "No matching Carrier marked available" : `~${eta} min estimate`;
@@ -172,7 +182,7 @@ function queuePayload(interaction, rows) {
 
 async function renderPremiumQueue(interaction, { ephemeral = false, update = false } = {}) {
   const rows = await loadPlatformQueue();
-  const payload = queuePayload(interaction, rows);
+  const payload = buildPremiumQueuePayload(interaction.guildId, rows);
 
   if (update) return interaction.update(payload);
   return interaction.reply({
@@ -322,7 +332,124 @@ async function renderCarrierDesk(interaction) {
   });
 }
 
+async function handleGroupSelection(interaction) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const carrier = await requireCarrierProfile(interaction, { alreadyDeferred: true });
+  if (!carrier) return true;
+
+  const decoded = decodeToken(interaction.values?.[0]);
+  if (!Array.isArray(decoded) || decoded.length < 2) {
+    await interaction.editReply({ content: "❌ That queue view expired. Open the live queue again.", embeds: [], components: [] });
+    return true;
+  }
+
+  const [dungeon, difficulty] = decoded;
+  const canonicalDungeon = canonicalizeDungeon(dungeon);
+  const canonicalDifficulty = canonicalizeDifficulty(difficulty);
+  const rows = await loadPlatformQueue({ statuses: ["queued"] });
+  const matches = rows.filter((request) =>
+    remainingRuns(request) > 0 &&
+    canonicalizeDungeon(request.dungeon) === canonicalDungeon &&
+    canonicalizeDifficulty(request.difficulty) === canonicalDifficulty,
+  );
+
+  if (!matches.length) {
+    await interaction.editReply({
+      content: "❌ That group was just claimed or cleared. Refresh the live queue.",
+      embeds: [],
+      components: [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId("premium_queue_open")
+            .setLabel("Open Live Queue")
+            .setEmoji("🔄")
+            .setStyle(ButtonStyle.Primary),
+        ),
+      ],
+    });
+    return true;
+  }
+
+  const tiers = [...new Set(matches.map(remainingRuns).filter((runs) => runs > 0))].sort((a, b) => a - b);
+  const oldest = matches
+    .map((request) => request.created_at)
+    .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0];
+
+  const embed = new EmbedBuilder()
+    .setColor(BRAND_GOLD)
+    .setAuthor({ name: "THE CARRY TAVERN • CLAIM BUILDER" })
+    .setTitle(`⚔️ ${canonicalDungeon} • ${canonicalDifficulty}`)
+    .setDescription([
+      "Choose how many runs this session will complete. The system automatically includes compatible waiting requesters and preserves partial progress.",
+      "",
+      "**Example:** choosing a 5-run batch for people needing 5 and 10 runs finishes the first request and returns the second with 5 remaining.",
+    ].join("\n"))
+    .addFields(
+      { name: "👥 Waiting", value: `**${matches.length}** requesters`, inline: true },
+      { name: "🏃 Run Tiers", value: `**${compactRuns(matches.map(remainingRuns))}**`, inline: true },
+      { name: "⏱️ Oldest", value: discordRelative(oldest), inline: true },
+    )
+    .setFooter({ text: "Select the batch size • private ticket creation is automatic" });
+
+  const runSelect = new StringSelectMenuBuilder()
+    .setCustomId("queue_run_select")
+    .setPlaceholder("Choose this session's run batch")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(
+      tiers.map((tier) => {
+        const finishing = matches.filter((request) => remainingRuns(request) <= tier).length;
+        const continuing = matches.length - finishing;
+        return {
+          label: `${tier}-run session`,
+          description: `${finishing} finish • ${continuing} keep progress • ${matches.length} total`.slice(0, 100),
+          value: encodeToken([canonicalDungeon, canonicalDifficulty, tier]),
+          emoji: finishing === matches.length ? "✅" : "🏃",
+        };
+      }),
+    );
+
+  await interaction.editReply({
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(runSelect),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("premium_queue_back")
+          .setLabel("Back to Queue")
+          .setEmoji("↩️")
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    ],
+  });
+  return true;
+}
+
+async function handleRunSelection(interaction) {
+  const decoded = decodeToken(interaction.values?.[0]);
+  if (!Array.isArray(decoded) || decoded.length < 3) {
+    await interaction.reply({ content: "❌ That run selection expired. Open the live queue again.", flags: MessageFlags.Ephemeral });
+    return true;
+  }
+
+  const [dungeon, difficulty, maxRuns] = decoded;
+  await claimCarryGroup(interaction, {
+    dungeon: canonicalizeDungeon(dungeon),
+    difficulty: canonicalizeDifficulty(difficulty),
+    maxRuns: Number(maxRuns),
+  });
+  return true;
+}
+
 async function handlePremiumQueueComponent(interaction) {
+  if (interaction.isStringSelectMenu() && interaction.customId === "queue_group_select") {
+    return handleGroupSelection(interaction);
+  }
+
+  if (interaction.isStringSelectMenu() && interaction.customId === "queue_run_select") {
+    return handleRunSelection(interaction);
+  }
+
   if (!interaction.isButton()) return false;
 
   if (interaction.customId === "premium_queue_open") {
@@ -331,6 +458,11 @@ async function handlePremiumQueueComponent(interaction) {
   }
 
   if (interaction.customId === "premium_queue_refresh") {
+    await renderPremiumQueue(interaction, { update: true });
+    return true;
+  }
+
+  if (interaction.customId === "premium_queue_back") {
     await renderPremiumQueue(interaction, { update: true });
     return true;
   }
@@ -349,6 +481,7 @@ async function handlePremiumQueueComponent(interaction) {
 }
 
 module.exports = {
+  buildPremiumQueuePayload,
   renderPremiumQueue,
   renderMyCarries,
   renderCarrierDesk,
