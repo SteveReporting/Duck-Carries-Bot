@@ -6,32 +6,31 @@ const {
   SlashCommandBuilder,
 } = require("discord.js");
 
-const { installGuild, BRAND } = require("../platform/guildInstaller");
-const { finalizeGuildSetup } = require("../platform/setupFinalizer");
+const { installFullGuild, BRAND } = require("../platform/fullGuildSetup");
 
 function uiStatus(result) {
   return result.ok ? `✅ ${result.name}` : `⚠️ ${result.name}`;
 }
 
-function resourceSummary(resources, kind) {
+function resourceSummary(resources, kind, max = 10) {
   const rows = resources.filter((item) => item.kind === kind);
   if (!rows.length) return "—";
-  return rows
-    .map((item) => `${item.created ? "🆕" : "✅"} ${item.name}`)
-    .join("\n")
-    .slice(0, 1024);
+  const shown = rows.slice(0, max)
+    .map((item) => `${item.created ? "🆕" : "✅"} ${item.name}`);
+  if (rows.length > max) shown.push(`… +${rows.length - max} more`);
+  return shown.join("\n").slice(0, 1024);
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("setup")
-    .setDescription("Fully install, brand and repair the Tavern platform in this server")
+    .setDescription("Install or repair the complete server platform, roles and security")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDMPermission(false)
     .addChannelOption((option) =>
       option
         .setName("queue")
-        .setDescription("Reuse an existing carry queue channel instead of creating one")
+        .setDescription("Reuse an existing carry queue channel")
         .addChannelTypes(ChannelType.GuildText),
     )
     .addChannelOption((option) =>
@@ -43,12 +42,12 @@ module.exports = {
     .addRoleOption((option) =>
       option
         .setName("carrier_role")
-        .setDescription("Reuse an existing Carrier role"),
+        .setDescription("Reuse an existing Carrier access role"),
     )
     .addRoleOption((option) =>
       option
         .setName("staff_role")
-        .setDescription("Reuse an existing staff role"),
+        .setDescription("Reuse an existing Staff access role"),
     ),
 
   async execute(interaction) {
@@ -68,13 +67,13 @@ module.exports = {
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     await interaction.editReply([
-      "🍺 **Installing the complete Tavern platform…**",
-      "Creating/repairing structure, permissions, server branding and every persistent UI.",
-      "Existing Tavern resources are reused instead of duplicated.",
+      "⚙️ **Installing the entire server platform…**",
+      "Roles → carry areas → Support → Treasury → voice → staff tools → anti-raid → anti-nuke → persistent panels.",
+      "Existing resources are repaired/reused instead of blindly duplicated.",
     ].join("\n"));
 
     try {
-      const result = await installGuild({
+      const result = await installFullGuild({
         guild: interaction.guild,
         userId: interaction.user.id,
         client: interaction.client,
@@ -86,103 +85,105 @@ module.exports = {
         },
       });
 
-      await interaction.editReply([
-        "🍺 **Core structure ready. Finishing the install…**",
-        "Branding this server, verifying Support, Treasury, live boards and staff operations.",
-      ].join("\n"));
-
-      const finalized = await finalizeGuildSetup({
-        guild: interaction.guild,
-        client: interaction.client,
-        config: result.config,
-      });
-
-      result.config = finalized.config;
-      result.ui = [
-        ...result.ui,
-        ...finalized.ui.filter((entry) => !result.ui.some((existing) => existing.name === entry.name)),
-      ];
-      result.identity = finalized.identity;
-
       const failedUi = result.ui.filter((item) => !item.ok);
       const identityWarning = !result.identity?.ok;
-      const hasWarnings = failedUi.length > 0 || identityWarning;
+      const allWarnings = [
+        ...(identityWarning
+          ? [`Server nickname: ${result.identity?.error || "Discord refused the nickname change."}`]
+          : []),
+        ...failedUi.map((item) => `${item.name}: ${item.error || "could not initialize"}`),
+        ...(result.warnings || []),
+      ];
+      const hasWarnings = allWarnings.length > 0;
+      const roleCount = result.resources.filter((item) => item.kind === "role").length;
+      const securityChannelCount = result.resources.filter((item) => item.kind === "security").length;
 
       const embed = new EmbedBuilder()
         .setColor(hasWarnings ? BRAND.gold : BRAND.green)
         .setAuthor({
-          name: "THE CARRY TAVERN • FULL INSTALLER",
+          name: `${interaction.guild.name} • FULL SERVER INSTALLER`.toUpperCase(),
           ...(interaction.guild.iconURL() ? { iconURL: interaction.guild.iconURL({ size: 128 }) } : {}),
         })
-        .setTitle(hasWarnings ? "⚠️ Tavern installed with warnings" : "✅ Tavern is fully installed")
+        .setTitle(hasWarnings ? "⚠️ Full setup completed with warnings" : "✅ Entire server platform installed")
         .setDescription([
-          `**${interaction.guild.name}** now has the complete Tavern server stack.`,
+          `🤖 Bot identity: **${result.identity?.nickname || `${interaction.guild.name} Bot`}**`,
           "",
-          `🤖 Server identity: **${result.identity?.nickname || `${interaction.guild.name} Bot`}** ${result.identity?.ok ? "✅" : "⚠️"}`,
-          `🏠 Member front door: <#${result.config.home_channel_id}>`,
+          `⚔️ **Request Carry:** <#${result.config.request_channel_id}>`,
+          `📡 **Live Queue:** <#${result.config.queue_channel_id}>`,
+          `✅ **Completed:** <#${result.config.completed_channel_id}>`,
+          `🏠 **Server Hub:** <#${result.config.home_channel_id}>`,
           "",
-          "Re-run `/setup` at any time. It repairs missing resources, refreshes panels and re-checks the server configuration without deleting existing data.",
+          "Requesting and queue browsing are now separate. The queue board only shows a compact overview; Carriers browse paginated groups instead of a wall of hundreds of requests.",
         ].join("\n"))
         .addFields(
           {
-            name: `🧱 Structure • ${result.createdCount} created / ${result.reusedCount} reused`,
-            value: resourceSummary(result.resources, "category"),
+            name: "🧱 Server Structure",
+            value: resourceSummary(result.resources, "category", 12),
             inline: true,
           },
           {
-            name: "💬 Channels",
-            value: resourceSummary(result.resources, "channel"),
+            name: "💬 Main Channels",
+            value: resourceSummary(result.resources, "channel", 12),
             inline: true,
           },
           {
-            name: "🪪 Roles + Voice",
-            value: [resourceSummary(result.resources, "role"), resourceSummary(result.resources, "voice")]
-              .filter((value) => value !== "—")
-              .join("\n") || "—",
+            name: `🪪 Role Hierarchy • ${roleCount}`,
+            value: resourceSummary(result.resources, "role", 12),
             inline: true,
           },
           {
-            name: "✨ Persistent UI stack",
+            name: `🔐 Security • ${securityChannelCount} channels`,
+            value: [
+              "Anti-raid + anti-nuke",
+              "Unauthorized bot/webhook protection",
+              "Privilege escalation detection",
+              "Spam/scam/NSFW analysis",
+              "Honeypot + incident reports",
+              "Automatic snapshots + restoration",
+            ].map((line) => `✅ ${line}`).join("\n"),
+            inline: false,
+          },
+          {
+            name: "⚙️ Systems Installed",
+            value: [
+              "Carry requests • scalable grouped queue • private carry tickets • ready checks • verified progress",
+              "Waiting VC • session VCs • drop-ins • Carrier Desk • Carrier hierarchy • leaderboard area",
+              "Support desk • staff dashboard • Staff Operations Hub • Tavern Pulse • self-heal workers",
+              "Treasury borrow/donate/trust • gold donations • live stock • Marketplace • completed-carry board",
+            ].join("\n"),
+            inline: false,
+          },
+          {
+            name: "✨ Setup Verification",
             value: result.ui.map(uiStatus).join("\n").slice(0, 1024),
             inline: false,
           },
-          {
-            name: "⚙️ Systems wired automatically",
-            value: [
-              "Carry requests + grouped queue matching",
-              "Private carry tickets + ready checks + verified progress",
-              "Waiting VC + private session VCs + drop-ins",
-              "Support desk + staff ticket dashboard",
-              "Treasury borrow/donate/trust + gold donations + live stock",
-              "Marketplace access + completed-carry board",
-              "Staff Operations Hub + Tavern Pulse + self-heal workers",
-            ].join(" • "),
-            inline: false,
-          },
         )
-        .setFooter({ text: `Guild ${interaction.guild.id} • /setup is idempotent and safe to re-run` })
+        .setFooter({ text: `Guild ${interaction.guild.id} • /setup is repairable and safe to re-run` })
         .setTimestamp();
 
-      const warnings = [];
-      if (identityWarning) {
-        warnings.push(`• **Server nickname:** ${String(result.identity?.error || "Discord refused the nickname change.").slice(0, 180)}`);
-      }
-      for (const item of failedUi) {
-        warnings.push(`• **${item.name}:** ${String(item.error || "could not initialize").slice(0, 180)}`);
-      }
-      if (warnings.length) {
+      if (allWarnings.length) {
         embed.addFields({
           name: "Warnings",
-          value: warnings.join("\n").slice(0, 1024),
+          value: allWarnings
+            .slice(0, 10)
+            .map((warning) => `• ${String(warning).slice(0, 180)}`)
+            .join("\n")
+            .slice(0, 1024),
           inline: false,
         });
       }
 
       return interaction.editReply({ content: "", embeds: [embed] });
     } catch (error) {
-      console.error("[SETUP]", error);
+      console.error("[FULL SETUP]", error);
       return interaction.editReply({
-        content: `❌ **Setup stopped safely.**\n${error.message || "Unknown setup error"}\n\nNothing existing was deleted. Fix the permission/config issue and run \`/setup\` again.`,
+        content: [
+          "❌ **Full setup stopped safely.**",
+          error.message || "Unknown setup error",
+          "",
+          "Nothing existing was deleted. Give the bot the missing permission shown above and run `/setup` again.",
+        ].join("\n"),
         embeds: [],
       });
     }
