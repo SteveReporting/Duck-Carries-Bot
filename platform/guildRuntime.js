@@ -5,6 +5,7 @@ const {
   isGuildConfigured,
   listConfiguredGuilds,
 } = require("./guildConfig");
+const { chooseConfiguredGuildId } = require("./guildSelectionPolicy");
 
 // These older startup modules still use one environment-selected guild. They are
 // run for a compatibility-primary guild only. Interaction-driven commands and
@@ -32,20 +33,14 @@ function configuredVisibleGuilds(client) {
 }
 
 function chooseCompatibilityGuild(client) {
-  const visible = configuredVisibleGuilds(client);
-  if (!visible.length) return null;
-
-  const preferredIds = [
-    process.env.PRIMARY_GUILD_ID,
-    process.env.GUILD_ID,
-    process.env.TEST_GUILD_ID,
-  ].map((value) => String(value || "").trim()).filter(Boolean);
-
-  for (const id of preferredIds) {
-    const config = visible.find((row) => String(row.guild) === id);
-    if (config) return config;
-  }
-  return visible[0];
+  const configs = listConfiguredGuilds();
+  const chosenId = chooseConfiguredGuildId({
+    configuredIds: configs.map((row) => row.guild),
+    visibleIds: [...(client?.guilds?.cache?.keys?.() || [])],
+    preferredIds: [process.env.PRIMARY_GUILD_ID, process.env.GUILD_ID, process.env.TEST_GUILD_ID],
+  });
+  if (!chosenId) return null;
+  return configs.find((row) => String(row.guild) === chosenId) || null;
 }
 
 function activateCompatibilityGuild(client, guildId) {
