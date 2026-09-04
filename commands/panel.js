@@ -11,7 +11,7 @@ const {
 const { marketplaceBaseUrl } = require("../platform/helpers");
 const { getGuildConfig } = require("../platform/guildConfig");
 
-const FOOTER = "The Carry Tavern • Operations Hub";
+const FOOTER = "The Carry Tavern • Server Hub";
 const GOLD = 0xf2b705;
 
 function channelMention(id, fallback = "Not configured") {
@@ -35,7 +35,7 @@ function addLink(row, { label, emoji, url }) {
 
 function buildPanel({ guild = null, config = null } = {}) {
   const guildName = guild?.name || "Server";
-  const request = channelMention(config?.request_channel_id, "Run `/setup` to create the Request Carry channel");
+  const request = channelMention(config?.request_channel_id, "Run `/setup`");
   const queue = channelMention(config?.queue_channel_id);
   const completed = channelMention(config?.completed_channel_id);
   const support = channelMention(config?.support_channel_id);
@@ -44,63 +44,48 @@ function buildPanel({ guild = null, config = null } = {}) {
 
   const embed = new EmbedBuilder()
     .setColor(GOLD)
-    .setAuthor({
-      name: `${guildName} BOT`.toUpperCase(),
-      ...(guild?.iconURL?.() ? { iconURL: guild.iconURL({ size: 128 }) } : {}),
-    })
-    .setTitle("🍺 Server Hub")
-    .setDescription([
-      "Use this as a **directory**, not as another control panel.",
-      "",
-      "Carry requesting, queue browsing, Support and Treasury each have their own dedicated area so members never have to work out which of ten buttons they need.",
-    ].join("\n"))
+    .setTitle(`🍺 ${guildName}`)
+    .setDescription("Everything has its own place. Pick where you want to go — this hub stays simple on purpose.")
     .addFields(
       {
-        name: "⚔️ Carry System",
-        value: [
-          `**Request a carry:** ${request}`,
-          `**Live queue:** ${queue}`,
-          `**Completed carries:** ${completed}`,
-        ].join("\n"),
+        name: "⚔️ Carries",
+        value: `Request ${request}  •  Queue ${queue}  •  Completed ${completed}`,
         inline: false,
       },
       {
-        name: "🧰 Other Services",
-        value: [
-          `**Support:** ${support}`,
-          `**Treasury:** ${treasury}`,
-          `**Marketplace:** ${marketplace}`,
-        ].join("\n"),
+        name: "🧰 Services",
+        value: `Support ${support}  •  Treasury ${treasury}  •  Marketplace ${marketplace}`,
         inline: false,
       },
     )
-    .setFooter({ text: `${FOOTER} • ${guildName}` })
-    .setTimestamp();
+    .setFooter({ text: FOOTER });
 
-  const navigation = new ActionRowBuilder();
-  addLink(navigation, {
+  if (guild?.iconURL?.()) embed.setThumbnail(guild.iconURL({ size: 256 }));
+
+  const destinations = new ActionRowBuilder();
+  addLink(destinations, {
     label: "Request Carry",
     emoji: "⚔️",
     url: channelUrl(guild, config?.request_channel_id),
   });
-  addLink(navigation, {
+  addLink(destinations, {
     label: "Live Queue",
     emoji: "📡",
     url: channelUrl(guild, config?.queue_channel_id),
   });
-  addLink(navigation, {
+  addLink(destinations, {
     label: "Support",
     emoji: "🛟",
     url: channelUrl(guild, config?.support_channel_id),
   });
-  addLink(navigation, {
+  addLink(destinations, {
     label: "Treasury",
     emoji: "🏦",
     url: channelUrl(guild, config?.treasury_channel_id),
   });
 
   const base = marketplaceBaseUrl();
-  addLink(navigation, {
+  addLink(destinations, {
     label: "Marketplace",
     emoji: "💰",
     url: base || channelUrl(guild, config?.marketplace_channel_id),
@@ -117,11 +102,6 @@ function buildPanel({ guild = null, config = null } = {}) {
       .setLabel("Join Live")
       .setEmoji("🌐")
       .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId("carry_waiting_vc")
-      .setLabel("Waiting Room")
-      .setEmoji("⏳")
-      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId("tavern_help_open")
       .setLabel("Help")
@@ -141,7 +121,7 @@ function buildPanel({ guild = null, config = null } = {}) {
   }
 
   const components = [];
-  if (navigation.components.length) components.push(navigation);
+  if (destinations.components.length) components.push(destinations);
   components.push(personal);
   return { embeds: [embed], components };
 }
@@ -149,7 +129,10 @@ function buildPanel({ guild = null, config = null } = {}) {
 function isOperationsHub(message, botId) {
   return Boolean(
     message?.author?.id === botId
-    && (message.embeds || []).some((embed) => String(embed.footer?.text || "").startsWith(FOOTER)),
+    && (message.embeds || []).some((embed) => {
+      const footer = String(embed.footer?.text || "");
+      return footer === FOOTER || footer.startsWith("The Carry Tavern • Operations Hub");
+    }),
   );
 }
 
