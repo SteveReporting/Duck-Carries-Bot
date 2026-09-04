@@ -3,6 +3,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  MessageFlags,
   PermissionFlagsBits,
   SlashCommandBuilder,
 } = require("discord.js");
@@ -88,15 +89,41 @@ function buildPanel() {
   return { embeds: [embed], components: [primary, secondary] };
 }
 
+function isOperationsHub(message, botId) {
+  return Boolean(
+    message?.author?.id === botId &&
+    (message.embeds || []).some((embed) => String(embed.footer?.text || "") === FOOTER),
+  );
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("panel")
-    .setDescription("Publish The Carry Tavern operations hub")
+    .setDescription("Publish or refresh the Tavern operations hub")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   buildPanel,
 
   async execute(interaction) {
+    if (!interaction.channel?.isTextBased?.()) {
+      return interaction.reply({
+        content: "❌ Publish the Operations Hub inside a text channel.",
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
+    const recent = await interaction.channel.messages.fetch({ limit: 50 }).catch(() => null);
+    const existing = recent?.find((message) => isOperationsHub(message, interaction.client.user.id)) || null;
+
+    if (existing) {
+      await existing.edit(buildPanel());
+      if (!existing.pinned) await existing.pin("Permanent Carry Tavern operations hub").catch(() => {});
+      return interaction.reply({
+        content: `✅ Operations Hub refreshed: ${existing.url}`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+
     await interaction.reply(buildPanel());
     const message = await interaction.fetchReply().catch(() => null);
     if (message) {
