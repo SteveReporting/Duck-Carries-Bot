@@ -17,10 +17,27 @@ function applicationId() {
   return id;
 }
 
+function cleanLiveCommand(command) {
+  const { id, application_id, guild_id, version, ...definition } = command;
+  return definition;
+}
+
 async function syncGlobalCommands() {
   const body = commandDefinitions();
   const rest = restClient();
-  await rest.put(Routes.applicationCommands(applicationId()), { body });
+  const route = Routes.applicationCommands(applicationId());
+
+  // /security is owned by the standalone anti-raid runtime. If it already has a
+  // global definition, keep it intact when the main bot refreshes its commands.
+  const existing = await rest.get(route).catch(() => []);
+  const security = Array.isArray(existing)
+    ? existing.find((command) => command.name === "security")
+    : null;
+  if (security && !body.some((command) => command.name === "security")) {
+    body.push(cleanLiveCommand(security));
+  }
+
+  await rest.put(route, { body });
   console.log(`🌍 Synced ${body.length} global slash commands. New servers can use /setup immediately.`);
   return body.length;
 }
