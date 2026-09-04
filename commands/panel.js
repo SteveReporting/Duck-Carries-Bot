@@ -81,7 +81,7 @@ function buildPanel() {
         .setLabel("Marketplace")
         .setEmoji("💰")
         .setStyle(ButtonStyle.Link)
-        .setURL(`${base}/marketplace`),
+        .setURL(base),
     );
   }
 
