@@ -15,7 +15,6 @@ const { ensureTreasuryStockPanel } = require("./treasuryStock");
 const {
   saveSettings: saveTreasurySettings,
   treasuryPanelComponents,
-  treasuryPanelEmbed,
 } = require("../treasury/treasury");
 const { goldDonationButtonRow } = require("../treasury/goldDonations");
 
@@ -93,6 +92,27 @@ async function withGuildEnvironment(config, fn) {
   }
 }
 
+function treasuryConsoleEmbed(guild) {
+  return new EmbedBuilder()
+    .setColor(0xf2b705)
+    .setAuthor({
+      name: "THE CARRY TAVERN • TREASURY",
+      ...(guild?.iconURL?.() ? { iconURL: guild.iconURL({ size: 128 }) } : {}),
+    })
+    .setTitle("🏦 Treasury Console")
+    .setDescription("Borrow, donate or check your trust score without command chains. Stock below stays live automatically.")
+    .addFields(
+      { name: "💰 Borrow", value: "Open a private request for available gear.", inline: true },
+      { name: "🎁 Donate", value: "Donate Legs/T3 or submit gold.", inline: true },
+      { name: "⭐ Trust", value: "Your borrowing reputation follows you here.", inline: true },
+      { name: "⏱️ Loans", value: "24h standard loan window", inline: true },
+      { name: "🛡️ Staff", value: "Approval + return tracking", inline: true },
+      { name: "📦 Stock", value: "Live inventory browser", inline: true },
+    )
+    .setFooter({ text: TREASURY_PANEL_FOOTER })
+    .setTimestamp();
+}
+
 async function publishTreasuryConsole(channel) {
   const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
   const existing = recent?.find((message) =>
@@ -100,15 +120,8 @@ async function publishTreasuryConsole(channel) {
     && message.embeds?.some((embed) => String(embed.footer?.text || "") === TREASURY_PANEL_FOOTER),
   ) || null;
 
-  const embed = treasuryPanelEmbed()
-    .setColor(0xf2b705)
-    .setAuthor({
-      name: "THE CARRY TAVERN • TREASURY",
-      ...(channel.guild.iconURL() ? { iconURL: channel.guild.iconURL({ size: 128 }) } : {}),
-    });
-
   const payload = {
-    embeds: [embed],
+    embeds: [treasuryConsoleEmbed(channel.guild)],
     components: [
       ...treasuryPanelComponents(),
       goldDonationButtonRow(),
@@ -215,5 +228,6 @@ module.exports = {
   serverBotNickname,
   setupHealthEmbed,
   syncServerNickname,
+  treasuryConsoleEmbed,
   withGuildEnvironment,
 };
