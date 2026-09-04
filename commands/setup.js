@@ -7,6 +7,7 @@ const {
 } = require("discord.js");
 
 const { installFullGuild, BRAND } = require("../platform/fullGuildSetup");
+const { ensureRequestOnlyExperience } = require("../platform/requestChannelExperience");
 
 function uiStatus(result) {
   return result.ok ? `✅ ${result.name}` : `⚠️ ${result.name}`;
@@ -68,7 +69,7 @@ module.exports = {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     await interaction.editReply([
       "⚙️ **Installing the entire server platform…**",
-      "Roles → carry areas → Support → Treasury → voice → staff tools → anti-raid → anti-nuke → persistent panels.",
+      "Roles → carries → Support → Treasury → voice → staff tools → anti-raid → anti-nuke → persistent panels.",
       "Existing resources are repaired/reused instead of blindly duplicated.",
     ].join("\n"));
 
@@ -84,6 +85,20 @@ module.exports = {
           staffRole: interaction.options.getRole("staff_role"),
         },
       });
+
+      // Always finish setup with one clean member-facing carry entry point.
+      // This deliberately replaces the older multi-control request panel.
+      const requestExperience = await ensureRequestOnlyExperience(interaction.guild);
+      result.config = requestExperience.config;
+      result.resources = result.resources.filter((item) => item.id !== requestExperience.channel.id);
+      result.resources.push({
+        kind: "channel",
+        id: requestExperience.channel.id,
+        name: requestExperience.channel.name,
+        created: requestExperience.created,
+      });
+      result.ui = result.ui.filter((item) => item.name !== "Dedicated Request Carry panel");
+      result.ui.push({ name: "Dedicated Request-only Carry panel", ok: true });
 
       const failedUi = result.ui.filter((item) => !item.ok);
       const identityWarning = !result.identity?.ok;
@@ -108,12 +123,12 @@ module.exports = {
         .setDescription([
           `🤖 Bot identity: **${result.identity?.nickname || `${interaction.guild.name} Bot`}**`,
           "",
-          `⚔️ **Request Carry:** <#${result.config.request_channel_id}>`,
+          `⚔️ **Request a Carry:** <#${result.config.request_channel_id}>`,
           `📡 **Live Queue:** <#${result.config.queue_channel_id}>`,
           `✅ **Completed:** <#${result.config.completed_channel_id}>`,
           `🏠 **Server Hub:** <#${result.config.home_channel_id}>`,
           "",
-          "Requesting and queue browsing are now separate. The queue board only shows a compact overview; Carriers browse paginated groups instead of a wall of hundreds of requests.",
+          "The request channel is now intentionally one-purpose: one button starts the guided request flow. Queue browsing and Carrier tools stay completely separate.",
         ].join("\n"))
         .addFields(
           {
@@ -146,7 +161,7 @@ module.exports = {
           {
             name: "⚙️ Systems Installed",
             value: [
-              "Carry requests • scalable grouped queue • private carry tickets • ready checks • verified progress",
+              "One-purpose carry request channel • scalable grouped queue • private carry tickets • ready checks • verified progress",
               "Waiting VC • session VCs • drop-ins • Carrier Desk • Carrier hierarchy • leaderboard area",
               "Support desk • staff dashboard • Staff Operations Hub • Tavern Pulse • self-heal workers",
               "Treasury borrow/donate/trust • gold donations • live stock • Marketplace • completed-carry board",
