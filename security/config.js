@@ -21,57 +21,72 @@ function number(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-const securityOwners = ids(process.env.SECURITY_OWNER_IDS);
-// Permanent immunity: Chicken. Security treats this user the same as a security owner,
-// so anti-spam, honeypot, anti-nuke containment and privilege-abuse enforcement ignore them.
-securityOwners.add('1137081101341433936');
+const BOOT_GUILD_ID = String(process.env.GUILD_ID || '').trim();
 
-const config = {
-  discord: {
-    guildId: process.env.GUILD_ID || '',
-  },
+function createSecurityConfig(guildId = BOOT_GUILD_ID) {
+  const resolvedGuildId = String(guildId || '').trim();
+  const securityOwners = ids(process.env.SECURITY_OWNER_IDS);
 
-  // Guild owner and permanent immune users are always authorized.
-  securityOwners,
-  initialTrustedUsers: ids(process.env.TRUSTED_USER_IDS),
-  initialTrustedRoles: ids(process.env.TRUSTED_ROLE_IDS),
+  // Permanent immunity: Chicken. Security treats this user the same as a
+  // security owner so anti-spam/honeypot/anti-nuke containment ignores them.
+  securityOwners.add('1137081101341433936');
 
-  ai: {
-    enabled: bool(process.env.AI_ANALYSIS_ENABLED, true),
-    apiKey: process.env.OPENAI_API_KEY || '',
-    model: process.env.SECURITY_AI_MODEL || process.env.OPENAI_MODEL || 'gpt-5.6-luna',
-    minRuleScore: number(process.env.AI_MIN_RULE_SCORE, 3),
-  },
+  const stateName = resolvedGuildId && BOOT_GUILD_ID && resolvedGuildId !== BOOT_GUILD_ID
+    ? `security-state-${resolvedGuildId}.json`
+    : 'security-state.json';
 
-  language: {
-    enabled: bool(process.env.LANGUAGE_RESTRICTOR_ENABLED, false),
-    allowed: String(process.env.ALLOWED_LANGUAGES || 'en')
-      .split(',')
-      .map((v) => v.trim().toLowerCase())
-      .filter(Boolean),
-  },
+  return {
+    discord: {
+      guildId: resolvedGuildId,
+    },
 
-  restoreDeletedChannels: bool(process.env.RESTORE_DELETED_CHANNELS, true),
-  restoreDeletedRoles: bool(process.env.RESTORE_DELETED_ROLES, true),
-  autoLockdownOnNuke: bool(process.env.AUTO_LOCKDOWN_ON_NUKE, true),
-  honeypotAutoBan: bool(process.env.HONEYPOT_AUTO_BAN, true),
-  spamQuarantineMinutes: number(process.env.SPAM_QUARANTINE_MINUTES, 30),
-  securityCategoryName: process.env.SECURITY_CATEGORY_NAME || '🔐・ANTI RAID SECURITY',
-  logMemberJoins: bool(process.env.LOG_MEMBER_JOINS, false),
+    securityOwners,
+    initialTrustedUsers: ids(process.env.TRUSTED_USER_IDS),
+    initialTrustedRoles: ids(process.env.TRUSTED_ROLE_IDS),
 
-  scores: {
-    delete: number(process.env.SPAM_DELETE_SCORE, 4),
-    timeout: number(process.env.SPAM_TIMEOUT_SCORE, 7),
-    ban: number(process.env.SPAM_BAN_SCORE, 12),
-  },
+    ai: {
+      enabled: bool(process.env.AI_ANALYSIS_ENABLED, true),
+      apiKey: process.env.OPENAI_API_KEY || '',
+      model: process.env.SECURITY_AI_MODEL || process.env.OPENAI_MODEL || 'qwen3-vl:8b',
+      minRuleScore: number(process.env.AI_MIN_RULE_SCORE, 3),
+    },
 
-  stateFile: path.join(process.cwd(), 'data', 'security-state.json'),
-};
+    language: {
+      enabled: bool(process.env.LANGUAGE_RESTRICTOR_ENABLED, false),
+      allowed: String(process.env.ALLOWED_LANGUAGES || 'en')
+        .split(',')
+        .map((v) => v.trim().toLowerCase())
+        .filter(Boolean),
+    },
 
-function validateConfig() {
-  if (!config.discord.guildId) {
-    throw new Error('Integrated security requires GUILD_ID.');
+    restoreDeletedChannels: bool(process.env.RESTORE_DELETED_CHANNELS, true),
+    restoreDeletedRoles: bool(process.env.RESTORE_DELETED_ROLES, true),
+    autoLockdownOnNuke: bool(process.env.AUTO_LOCKDOWN_ON_NUKE, true),
+    honeypotAutoBan: bool(process.env.HONEYPOT_AUTO_BAN, true),
+    spamQuarantineMinutes: number(process.env.SPAM_QUARANTINE_MINUTES, 30),
+    securityCategoryName: process.env.SECURITY_CATEGORY_NAME || '🔐・ANTI RAID SECURITY',
+    logMemberJoins: bool(process.env.LOG_MEMBER_JOINS, false),
+
+    scores: {
+      delete: number(process.env.SPAM_DELETE_SCORE, 4),
+      timeout: number(process.env.SPAM_TIMEOUT_SCORE, 7),
+      ban: number(process.env.SPAM_BAN_SCORE, 12),
+    },
+
+    stateFile: path.join(process.cwd(), 'data', stateName),
+  };
+}
+
+const config = createSecurityConfig();
+
+function validateConfig(target = config) {
+  if (!target?.discord?.guildId) {
+    throw new Error('Integrated security requires a guild ID.');
   }
 }
 
-module.exports = { config, validateConfig };
+module.exports = {
+  config,
+  createSecurityConfig,
+  validateConfig,
+};
