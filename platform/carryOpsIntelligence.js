@@ -10,11 +10,16 @@ const db = require("../database/database");
 const { getSupabase } = require("../marketplace/supabase");
 const { ensureCarryControlCenter } = require("./carryControlCenter");
 const { ensureSessionVoice } = require("./carryVoiceSystem");
+const {
+  estimateQueueMinutes,
+  notifyMatchingCarriers,
+} = require("./communitySystems");
 
 const PULSE_BUTTON_ID = "tavern_ops_pulse";
 const SWEEP_MS = 2 * 60 * 1000;
 const REPAIR_MS = 10 * 60 * 1000;
 const ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+const RESCUE_RENOTIFY_MS = 60 * 60 * 1000;
 const STALE_QUEUE_MS = 35 * 60 * 1000;
 const STALE_CLAIM_MS = 18 * 60 * 1000;
 const LONG_SESSION_MS = 2 * 60 * 60 * 1000;
@@ -43,12 +48,16 @@ function minutes(ms) {
   return Math.max(0, Math.floor(Number(ms || 0) / 60000));
 }
 
-function safeCount(sql, params = []) {
+function safeScalar(sql, field, params = []) {
   try {
-    return Number(db.prepare(sql).get(...params)?.count || 0);
+    return Number(db.prepare(sql).get(...params)?.[field] || 0);
   } catch {
     return 0;
   }
+}
+
+function safeCount(sql, params = []) {
+  return safeScalar(sql, "count", params);
 }
 
 function pressureFor({ waiting = 0, oldestMinutes = 0, availableCarriers = 0 }) {
@@ -77,11 +86,18 @@ function formatAge(ms) {
   return `${hours}h ${rest}m`;
 }
 
+function formatServiceMinutes(totalMinutes) {
+  const total = Math.max(0, Math.floor(Number(totalMinutes || 0)));
+  const hours = Math.floor(total / 60);
+  const rest = total % 60;
+  return hours ? `${hours}h ${rest}m` : `${rest}m`;
+}
+
 async function loadCarryRows() {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("carry_requests")
-    .select("id,dungeon,difficulty,status,created_at,claimed_at,started_at,updated_at,ticket_channel_id")
+    .select("id,dungeon,difficulty,runs_requested,availability,status,created_at,claimed_at,started_at,updated_at,ticket_channel_id")
     .in("status", ["queued", "claimed", "in_progress"])
     .order("created_at", { ascending: true })
     .limit(250);
@@ -123,6 +139,22 @@ async function buildSnapshot(guild) {
     [String(guild.id)],
   );
 
+  const since24h = now - 24 * 60 * 60 * 1000;
+  const completed24h = safeCount(
+    "SELECT COUNT(*) AS count FROM carry_service_history WHERE guild=? AND completed_at>=?",
+    [String(guild.id), since24h],
+  );
+  const serviceMinutes24h = safeScalar(
+    "SELECT COALESCE(SUM(service_minutes),0) AS total FROM carry_service_history WHERE guild=? AND completed_at>=?",
+    "total",
+    [String(guild.id), since24h],
+  );
+  const requesters24h = safeScalar(
+    "SELECT COALESCE(SUM(request_count),0) AS total FROM carry_service_history WHERE guild=? AND completed_at>=?",
+    "total",
+    [String(guild.id), since24h],
+  );
+
   let orphanedSessions = 0;
   for (const row of [...claimedRows, ...runningRows]) {
     if (!row.ticket_channel_id) {
@@ -135,14 +167,17 @@ async function buildSnapshot(guild) {
     }
   }
 
-  const staleQueued = waitingRows.filter((row) => ageMs(row.created_at, now) >= STALE_QUEUE_MS);
-  const staleClaimed = claimedRows.filter((row) => ageMs(row.claimed_at || row.updated_at || row.created_at, now) >= STALE_CLAIM_MS);
-  const longRunning = runningRows.filter((row) => ageMs(row.started_at || row.updated_at || row.created_at, now) >= LONG_SESSION_MS);
+  const staleQueuedRows = waitingRows.filter((row) => ageMs(row.created_at, now) >= STALE_QUEUE_MS);
+  const staleClaimedRows = claimedRows.filter((row) => ageMs(row.claimed_at || row.updated_at || row.created_at, now) >= STALE_CLAIM_MS);
+  const longRunningRows = runningRows.filter((row) => ageMs(row.started_at || row.updated_at || row.created_at, now) >= LONG_SESSION_MS);
   const pressure = pressureFor({
     waiting: waitingRows.length,
     oldestMinutes: minutes(oldestWaitingMs),
     availableCarriers,
   });
+  const queueTailEtaMinutes = waitingRows.length
+    ? estimateQueueMinutes(waitingRows.length, availableCarriers)
+    : 0;
 
   const previous = cachedSnapshot(guild.id);
   const snapshot = {
@@ -159,13 +194,18 @@ async function buildSnapshot(guild) {
     timedSessions,
     voiceSessions,
     orphanedSessions,
-    staleQueued: staleQueued.length,
-    staleClaimed: staleClaimed.length,
-    longRunning: longRunning.length,
+    staleQueued: staleQueuedRows.length,
+    staleClaimed: staleClaimedRows.length,
+    longRunning: longRunningRows.length,
+    completed24h,
+    serviceMinutes24h,
+    requesters24h,
+    queueTailEtaMinutes,
     pressure,
     discordPing: Number.isFinite(guild.client.ws.ping) ? Math.round(guild.client.ws.ping) : null,
     lastRepairAt: previous?.lastRepairAt || 0,
     repairedLastSweep: previous?.repairedLastSweep || 0,
+    rescuePingsLastSweep: previous?.rescuePingsLastSweep || 0,
     rows,
   };
 
@@ -175,15 +215,22 @@ async function buildSnapshot(guild) {
 
 function pulseEmbed(snapshot) {
   const age = snapshot.generatedAt ? `<t:${Math.floor(snapshot.generatedAt / 1000)}:R>` : "now";
+  const tailEta = snapshot.waiting === 0
+    ? "No queue"
+    : snapshot.queueTailEtaMinutes == null
+      ? "Waiting for Carrier availability"
+      : `~${snapshot.queueTailEtaMinutes}m queue-tail estimate`;
+
   return new EmbedBuilder()
     .setColor(snapshot.pressure.level === "critical" ? 0xed4245 : snapshot.pressure.level === "high" ? 0xf39c12 : 0x2ecc71)
     .setAuthor({ name: "THE CARRY TAVERN • LIVE OPERATIONS" })
     .setTitle("🧠 Tavern Pulse")
     .setDescription([
-      "A real-time readout of the carry system. No manual refresh commands, no guessing whether the queue is healthy.",
+      "A real-time readout of the carry platform. No guessing whether the queue is healthy and no manual staff spreadsheet required.",
       "",
       `**System health:** ${healthLabel(snapshot)}`,
       `**Queue pressure:** ${snapshot.pressure.label}`,
+      `**Forecast:** ${tailEta}`,
       `**Updated:** ${age}`,
     ].join("\n"))
     .addFields(
@@ -193,6 +240,9 @@ function pulseEmbed(snapshot) {
       { name: "🎟️ Claimed", value: `**${snapshot.claimed}**`, inline: true },
       { name: "▶️ Live Sessions", value: `**${snapshot.running}**`, inline: true },
       { name: "🔊 Session VCs", value: `**${snapshot.voiceSessions}**`, inline: true },
+      { name: "✅ Sessions • 24h", value: `**${snapshot.completed24h}**`, inline: true },
+      { name: "👥 Served • 24h", value: `**${snapshot.requesters24h}**`, inline: true },
+      { name: "⏲️ Verified Time • 24h", value: `**${formatServiceMinutes(snapshot.serviceMinutes24h)}**`, inline: true },
       { name: "🛟 Rescue Queue", value: `**${snapshot.staleQueued}** stale`, inline: true },
       { name: "🧩 Repair Watch", value: snapshot.orphanedSessions ? `**${snapshot.orphanedSessions}** issue(s)` : "**0** issues", inline: true },
       { name: "📡 Gateway", value: snapshot.discordPing == null ? "Unknown" : `**${snapshot.discordPing}ms**`, inline: true },
@@ -200,10 +250,11 @@ function pulseEmbed(snapshot) {
     .addFields({
       name: "🤖 Automation Layer",
       value: [
-        "`AUTO-RESCUE` stale queue detection",
-        "`SELF-HEAL` control-center + session-VC repair",
-        "`WATCHDOG` orphaned session detection",
-        "`DEDUPED ALERTS` no staff spam",
+        "`AUTO-RESCUE` re-pings matching available Carriers for stale requests",
+        "`SELF-HEAL` repairs control centers + session VCs",
+        "`WATCHDOG` detects orphaned/stalled sessions",
+        "`FORECAST` calculates queue pressure and queue-tail ETA",
+        "`DEDUPED ALERTS` staff only hear about unresolved problems",
       ].join("\n"),
       inline: false,
     })
@@ -229,9 +280,9 @@ async function handlePulseInteraction(interaction) {
   return true;
 }
 
-function alertAllowed(key, now = Date.now()) {
+function alertAllowed(key, cooldownMs = ALERT_COOLDOWN_MS, now = Date.now()) {
   const row = db.prepare("SELECT last_sent_at FROM carry_ops_alerts WHERE alert_key=?").get(String(key));
-  return !row || now - Number(row.last_sent_at || 0) >= ALERT_COOLDOWN_MS;
+  return !row || now - Number(row.last_sent_at || 0) >= cooldownMs;
 }
 
 function markAlert(key, payload, now = Date.now()) {
@@ -252,6 +303,23 @@ async function alertChannel(guild) {
   return channel?.isTextBased?.() ? channel : null;
 }
 
+async function renotifyStaleCarries(client, guild, snapshot) {
+  let sent = 0;
+  const stale = snapshot.rows
+    .filter((row) => row.status === "queued" && ageMs(row.created_at) >= STALE_QUEUE_MS)
+    .slice(0, 3);
+
+  for (const request of stale) {
+    const key = `rescue-renotify:${request.id}`;
+    if (!alertAllowed(key, RESCUE_RENOTIFY_MS)) continue;
+    const notified = await notifyMatchingCarriers(client, guild.id, request).catch(() => 0);
+    markAlert(key, { notified, dungeon: request.dungeon, difficulty: request.difficulty });
+    sent += notified;
+  }
+
+  return sent;
+}
+
 async function sendRescueAlerts(guild, snapshot) {
   const channel = await alertChannel(guild);
   if (!channel) return 0;
@@ -268,10 +336,11 @@ async function sendRescueAlerts(guild, snapshot) {
         .setColor(0xed4245)
         .setTitle("🛟 Auto-Rescue • Queue Pressure")
         .setDescription([
-          `Queue pressure is **${snapshot.pressure.label.replace(/^.. /, "")}** with **${snapshot.waiting}** waiting and **${snapshot.availableCarriers}** available Carrier(s).`,
+          `Queue pressure is **${snapshot.pressure.level.toUpperCase()}** with **${snapshot.waiting}** waiting and **${snapshot.availableCarriers}** available Carrier(s).`,
+          snapshot.rescuePingsLastSweep ? `The rescue engine re-notified **${snapshot.rescuePingsLastSweep}** matching Carrier inbox(es) this sweep.` : "",
           stale.length ? "\nOldest rescue candidates:\n" + stale.join("\n") : "",
           "\nThis alert is automatically deduplicated for 30 minutes.",
-        ].join("\n"))
+        ].filter(Boolean).join("\n"))
         .setFooter({ text: "The Carry Tavern • Operations Watchdog" })
         .setTimestamp()],
     }).catch(() => {});
@@ -289,7 +358,7 @@ async function sendRescueAlerts(guild, snapshot) {
           `**Claimed but not started:** ${snapshot.staleClaimed}`,
           `**Long-running sessions:** ${snapshot.longRunning}`,
           "",
-          "The bot will repair recoverable panels/voice sessions automatically; only unresolved state is surfaced here.",
+          "The bot repairs recoverable panels/voice sessions automatically; only unresolved state is surfaced here.",
         ].join("\n"))
         .setFooter({ text: "The Carry Tavern • Self-Healing Operations" })
         .setTimestamp()],
@@ -337,14 +406,16 @@ async function sweep(client) {
     await guild.channels.fetch().catch(() => {});
     const snapshot = await buildSnapshot(guild);
 
+    snapshot.rescuePingsLastSweep = await renotifyStaleCarries(client, guild, snapshot);
+
     if (Date.now() - lastRepairAt >= REPAIR_MS) {
       const repaired = await repairActiveSessions(guild, snapshot.rows);
       lastRepairAt = Date.now();
       snapshot.lastRepairAt = lastRepairAt;
       snapshot.repairedLastSweep = repaired;
-      cache.set(String(guild.id), snapshot);
     }
 
+    cache.set(String(guild.id), snapshot);
     await sendRescueAlerts(guild, snapshot).catch((error) => {
       console.warn(`[OPS INTELLIGENCE] Alert delivery failed: ${error.message}`);
     });
@@ -362,7 +433,7 @@ function startCarryOpsIntelligence(client) {
   void sweep(client);
   timer = setInterval(() => void sweep(client), SWEEP_MS);
   timer.unref?.();
-  console.log("🧠 Carry operations intelligence started: pulse, watchdog, auto-rescue and self-heal online.");
+  console.log("🧠 Carry operations intelligence started: forecast, pulse, watchdog, auto-rescue and self-heal online.");
 }
 
 module.exports = {
@@ -370,6 +441,7 @@ module.exports = {
   buildSnapshot,
   cachedSnapshot,
   formatAge,
+  formatServiceMinutes,
   handlePulseInteraction,
   healthLabel,
   pressureFor,
