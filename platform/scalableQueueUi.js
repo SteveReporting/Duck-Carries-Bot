@@ -7,20 +7,26 @@ const {
   StringSelectMenuBuilder,
 } = require("discord.js");
 
+const { getSupabase } = require("../marketplace/supabase");
 const {
   groupWaitingRequests,
-  loadPlatformQueue,
+  requireCarrierProfile,
 } = require("./carryQueue");
 const {
   countAvailableCarriers,
   estimateQueueMinutes,
   priorityForAge,
 } = require("./communitySystems");
+const {
+  canonicalizeDungeon,
+  canonicalizeDifficulty,
+} = require("./dungeons");
 
 const PAGE_SIZE = 8;
+const FETCH_PAGE_SIZE = 1000;
+const MAX_QUEUE_ROWS = 5000;
 const GOLD = 0xf2b705;
 const GREEN = 0x2ecc71;
-const BLUE = 0x5865f2;
 const OVERVIEW_FOOTER = "The Carry Tavern • Queue Overview";
 const BROWSER_FOOTER = "The Carry Tavern • Queue Browser";
 
@@ -30,6 +36,14 @@ function remainingRuns(request) {
 
 function encodeToken(parts) {
   return Buffer.from(JSON.stringify(parts)).toString("base64url");
+}
+
+function decodeToken(value) {
+  try {
+    return JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
 }
 
 function relative(value) {
@@ -42,6 +56,27 @@ function compactRuns(requests) {
   const values = [...new Set(requests.map(remainingRuns).filter((value) => value > 0))]
     .sort((a, b) => a - b);
   return values.length ? values.join(" / ") : "—";
+}
+
+async function loadScalableQueue({ statuses = ["queued", "claimed", "in_progress"] } = {}) {
+  const supabase = getSupabase();
+  const rows = [];
+
+  for (let offset = 0; offset < MAX_QUEUE_ROWS; offset += FETCH_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("carry_requests")
+      .select("id,requester_id,carrier_id,dungeon,difficulty,runs_requested,runs_completed,session_runs,status,created_at,claimed_at,started_at,ticket_channel_id")
+      .in("status", statuses)
+      .order("created_at", { ascending: true })
+      .range(offset, offset + FETCH_PAGE_SIZE - 1);
+
+    if (error) throw new Error(`Could not load the carry queue: ${error.message}`);
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < FETCH_PAGE_SIZE) break;
+  }
+
+  return rows;
 }
 
 function activeSessionCount(rows) {
@@ -79,6 +114,7 @@ function groupLine(guildId, group, index) {
 
 function buildQueueOverviewPayload(guildId, rows, guild = null) {
   const stats = queueStats(rows);
+  const capped = rows.length >= MAX_QUEUE_ROWS;
   const embed = new EmbedBuilder()
     .setColor(stats.waiting.length ? GOLD : GREEN)
     .setAuthor({
@@ -88,11 +124,12 @@ function buildQueueOverviewPayload(guildId, rows, guild = null) {
     .setTitle("📡 Live Carry Queue")
     .setDescription([
       stats.waiting.length
-        ? "The board stays compact even during huge queues. Use **Browse Queue** for the paginated Carrier view."
+        ? "The public board stays compact even during huge queues. Use **Browse Queue** for the paginated Carrier view."
         : "The carry queue is currently clear.",
       "",
       "**Requesting is handled separately in the Request Carry channel.** This board is only for queue visibility and Carrier claiming.",
-    ].join("\n"))
+      capped ? `\n⚠️ Display safety cap reached at ${MAX_QUEUE_ROWS.toLocaleString("en-GB")} active rows.` : null,
+    ].filter(Boolean).join("\n"))
     .addFields(
       { name: "🟡 Waiting", value: `**${stats.waiting.length.toLocaleString("en-GB")}**`, inline: true },
       { name: "🧩 Match Groups", value: `**${stats.groups.length.toLocaleString("en-GB")}**`, inline: true },
@@ -153,7 +190,7 @@ function buildQueueBrowserPayload(guildId, rows, requestedPage = 0) {
     .setDescription([
       `**${stats.waiting.length.toLocaleString("en-GB")} waiting requests** are condensed into **${stats.groups.length.toLocaleString("en-GB")} compatible groups**.`,
       "",
-      "Only one page is rendered at a time, so this remains readable with hundreds or thousands of requests.",
+      "Only one page is rendered at a time. Hundreds of requests never become hundreds of Discord buttons or fields.",
     ].join("\n"))
     .addFields(
       { name: "🟡 Waiting", value: `**${stats.waiting.length.toLocaleString("en-GB")}**`, inline: true },
@@ -251,13 +288,88 @@ function buildQueueBrowserPayload(guildId, rows, requestedPage = 0) {
 }
 
 async function renderScalableQueue(interaction, { page = 0, update = false } = {}) {
-  const rows = await loadPlatformQueue();
+  const rows = await loadScalableQueue();
   const payload = buildQueueBrowserPayload(interaction.guildId, rows, page);
   if (update) return interaction.update(payload);
   return interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
 }
 
+async function handleScalableGroupSelection(interaction) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const carrier = await requireCarrierProfile(interaction, { alreadyDeferred: true });
+  if (!carrier) return true;
+
+  const decoded = decodeToken(interaction.values?.[0]);
+  if (!Array.isArray(decoded) || decoded.length < 2) {
+    await interaction.editReply("❌ That queue page expired. Open the queue again.");
+    return true;
+  }
+
+  const dungeon = canonicalizeDungeon(decoded[0]);
+  const difficulty = canonicalizeDifficulty(decoded[1]);
+  const rows = await loadScalableQueue({ statuses: ["queued"] });
+  const matches = rows.filter((request) =>
+    remainingRuns(request) > 0
+    && canonicalizeDungeon(request.dungeon) === dungeon
+    && canonicalizeDifficulty(request.difficulty) === difficulty,
+  );
+
+  if (!matches.length) {
+    await interaction.editReply("❌ That group was just claimed or cleared. Open the queue again.");
+    return true;
+  }
+
+  const tiers = [...new Set(matches.map(remainingRuns).filter((runs) => runs > 0))].sort((a, b) => a - b);
+  const oldest = matches[0]?.created_at;
+  const embed = new EmbedBuilder()
+    .setColor(GOLD)
+    .setTitle(`⚔️ ${dungeon} • ${difficulty}`)
+    .setDescription([
+      `**${matches.length.toLocaleString("en-GB")} compatible requesters** are currently waiting in this group.`,
+      "Choose the run batch. The claim RPC atomically takes the compatible requests, so another Carrier cannot double-claim them.",
+    ].join("\n"))
+    .addFields(
+      { name: "👥 Waiting", value: `**${matches.length.toLocaleString("en-GB")}**`, inline: true },
+      { name: "🏃 Run Tiers", value: `**${compactRuns(matches)}**`, inline: true },
+      { name: "⏱️ Oldest", value: oldest ? relative(oldest) : "—", inline: true },
+    );
+
+  const runSelect = new StringSelectMenuBuilder()
+    .setCustomId("queue_run_select")
+    .setPlaceholder("Choose this session's run batch")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(tiers.slice(0, 25).map((tier) => {
+      const finishing = matches.filter((request) => remainingRuns(request) <= tier).length;
+      return {
+        label: `${tier}-run session`,
+        description: `${finishing} finish • ${matches.length - finishing} continue • ${matches.length} waiting`.slice(0, 100),
+        value: encodeToken([dungeon, difficulty, tier]),
+        emoji: finishing === matches.length ? "✅" : "🏃",
+      };
+    }));
+
+  await interaction.editReply({
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(runSelect),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("premium_queue_back")
+          .setLabel("Back to Queue")
+          .setEmoji("↩️")
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    ],
+  });
+  return true;
+}
+
 async function handleScalableQueueInteraction(interaction) {
+  if (interaction.isStringSelectMenu() && interaction.customId === "queue_group_select") {
+    return handleScalableGroupSelection(interaction);
+  }
+
   if (!interaction.isButton()) return false;
 
   if (interaction.customId === "premium_queue_open") {
@@ -288,8 +400,10 @@ async function handleScalableQueueInteraction(interaction) {
 
 module.exports = {
   PAGE_SIZE,
+  MAX_QUEUE_ROWS,
   buildQueueBrowserPayload,
   buildQueueOverviewPayload,
   handleScalableQueueInteraction,
+  loadScalableQueue,
   renderScalableQueue,
 };
