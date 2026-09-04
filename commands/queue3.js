@@ -4,17 +4,22 @@ const queue2 = require("./queue2");
 const { reportCommand: reportNoShow } = require("./noshow");
 const { claimSpecificCarryWithTicket } = require("../platform/singleCarryTicket");
 const { viewOrRepairActiveClaims } = require("../platform/activeCarryClaim");
+const {
+  renderPremiumQueue,
+  handlePremiumQueueComponent,
+} = require("../platform/premiumQueueUi");
 
 const data = queue2.data
+  .setDescription("The Carry Tavern carry system")
   .addSubcommand((subcommand) =>
     subcommand
       .setName("active")
-      .setDescription("View your active carry claims and recover any missing ticket"),
+      .setDescription("Open your active carry dashboard and recover missing tickets"),
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName("noshow")
-      .setDescription("Report the other side for not showing up to a claimed carry")
+      .setDescription("Report a no-show for a claimed carry")
       .addStringOption((option) =>
         option
           .setName("request")
@@ -49,6 +54,10 @@ module.exports = {
     const subcommand = interaction.options.getSubcommand();
 
     try {
+      if (subcommand === "view") {
+        return await renderPremiumQueue(interaction);
+      }
+
       if (subcommand === "claim") {
         await warmGuildMembers(interaction);
         return await claimSpecificCarryWithTicket(interaction);
@@ -65,17 +74,22 @@ module.exports = {
 
       return queue2.execute(interaction);
     } catch (error) {
-      const scope = subcommand === "active"
-        ? "ACTIVE"
-        : subcommand === "noshow"
-          ? "NO-SHOW"
-          : "CLAIM TICKET";
+      const scope = subcommand === "view"
+        ? "VIEW"
+        : subcommand === "active"
+          ? "ACTIVE"
+          : subcommand === "noshow"
+            ? "NO-SHOW"
+            : "CLAIM TICKET";
       console.error(`[QUEUE ${scope}]`, error);
-      const message = subcommand === "active"
-        ? `❌ ${error.message || "Could not load or recover your active carry claims."}`
-        : subcommand === "noshow"
-          ? `❌ ${error.message || "Could not record the carry no-show."}`
-          : `❌ ${error.message || "Could not claim the carry and create its private ticket."}`;
+
+      const message = subcommand === "view"
+        ? `❌ ${error.message || "Could not load the live carry queue."}`
+        : subcommand === "active"
+          ? `❌ ${error.message || "Could not load or recover your active carry claims."}`
+          : subcommand === "noshow"
+            ? `❌ ${error.message || "Could not record the carry no-show."}`
+            : `❌ ${error.message || "Could not claim the carry and create its private ticket."}`;
 
       if (interaction.deferred || interaction.replied) {
         return interaction.editReply({ content: message, components: [], embeds: [] }).catch(() => null);
@@ -84,5 +98,8 @@ module.exports = {
     }
   },
 
-  handleQueueComponent: queue2.handleQueueComponent,
+  async handleQueueComponent(interaction) {
+    if (await handlePremiumQueueComponent(interaction)) return true;
+    return queue2.handleQueueComponent(interaction);
+  },
 };
