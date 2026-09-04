@@ -1,4 +1,8 @@
 const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
   LabelBuilder,
   MessageFlags,
   ModalBuilder,
@@ -19,6 +23,7 @@ const {
 const START_ID = "carry_request_start_v4";
 const MODAL_ID = "carry_request_modal_v4";
 const MAX_ACTIVE_REQUESTS = 2;
+const GOLD = 0xf2b705;
 
 const DUNGEONS = [
   "Desert Temple",
@@ -62,28 +67,27 @@ async function loadActiveRequests(profileId) {
 function buildCarryModal() {
   const dungeonSelect = new StringSelectMenuBuilder()
     .setCustomId("dungeon")
-    .setPlaceholder("Select a dungeon")
+    .setPlaceholder("Choose your dungeon")
     .setMinValues(1)
     .setMaxValues(1)
     .addOptions(
-      DUNGEONS.map((dungeon, index) => ({
+      DUNGEONS.map((dungeon) => ({
         label: dungeon,
         value: dungeon,
-        description: `${index + 1}. ${dungeon}`,
       })),
     );
 
   const difficultySelect = new StringSelectMenuBuilder()
     .setCustomId("difficulty")
-    .setPlaceholder("Select a difficulty")
+    .setPlaceholder("Choose difficulty")
     .setMinValues(1)
     .setMaxValues(1)
     .addOptions(
-      { label: "Easy", value: "Easy", description: "Desert Temple / Winter Outpost only" },
-      { label: "Medium", value: "Medium", description: "Desert Temple / Winter Outpost only" },
-      { label: "Hard", value: "Hard", description: "Desert Temple / Winter Outpost only" },
-      { label: "Insane", value: "Insane", description: "Available for every listed dungeon" },
-      { label: "Nightmare", value: "Nightmare", description: "Available for every listed dungeon" },
+      { label: "Easy", value: "Easy", description: "Desert Temple / Winter Outpost" },
+      { label: "Medium", value: "Medium", description: "Desert Temple / Winter Outpost" },
+      { label: "Hard", value: "Hard", description: "Desert Temple / Winter Outpost" },
+      { label: "Insane", value: "Insane", description: "Available on every listed dungeon" },
+      { label: "Nightmare", value: "Nightmare", description: "Available on every listed dungeon" },
     );
 
   const runsInput = new TextInputBuilder()
@@ -92,67 +96,96 @@ function buildCarryModal() {
     .setRequired(true)
     .setMinLength(1)
     .setMaxLength(2)
-    .setPlaceholder("1-15");
+    .setPlaceholder("Example: 5");
 
   const availabilityInput = new TextInputBuilder()
     .setCustomId("availability")
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setMaxLength(240)
-    .setPlaceholder("Available now / next 2 hours");
+    .setPlaceholder("Example: available now for 2 hours");
 
   const notesInput = new TextInputBuilder()
     .setCustomId("notes")
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false)
     .setMaxLength(1000)
-    .setPlaceholder("Anything the Carrier should know");
-
-  const dungeonLabel = new LabelBuilder()
-    .setLabel("Dungeon")
-    .setDescription("Select a dungeon, including Boss Raids.")
-    .setStringSelectMenuComponent(dungeonSelect);
-
-  const difficultyLabel = new LabelBuilder()
-    .setLabel("Difficulty")
-    .setDescription("Easy/Medium/Hard are only valid for Desert Temple and Winter Outpost.")
-    .setStringSelectMenuComponent(difficultySelect);
-
-  const runsLabel = new LabelBuilder()
-    .setLabel("Number of Runs (1-15)")
-    .setTextInputComponent(runsInput);
-
-  const availabilityLabel = new LabelBuilder()
-    .setLabel("Availability")
-    .setTextInputComponent(availabilityInput);
-
-  const notesLabel = new LabelBuilder()
-    .setLabel("Extra Notes (optional)")
-    .setTextInputComponent(notesInput);
+    .setPlaceholder("Optional notes for the Carrier");
 
   return new ModalBuilder()
     .setCustomId(MODAL_ID)
-    .setTitle("Request Carry")
+    .setTitle("⚔️ Request a Carry")
     .addLabelComponents(
-      dungeonLabel,
-      difficultyLabel,
-      runsLabel,
-      availabilityLabel,
-      notesLabel,
+      new LabelBuilder()
+        .setLabel("Dungeon")
+        .setDescription("Pick the dungeon you want carried.")
+        .setStringSelectMenuComponent(dungeonSelect),
+      new LabelBuilder()
+        .setLabel("Difficulty")
+        .setDescription("Early dungeons also support Easy / Medium / Hard.")
+        .setStringSelectMenuComponent(difficultySelect),
+      new LabelBuilder()
+        .setLabel("Runs")
+        .setDescription("1-15 runs. Progress is preserved if a session only completes part of them.")
+        .setTextInputComponent(runsInput),
+      new LabelBuilder()
+        .setLabel("Availability")
+        .setDescription("Tell the Carrier when you can join.")
+        .setTextInputComponent(availabilityInput),
+      new LabelBuilder()
+        .setLabel("Notes (optional)")
+        .setDescription("Anything useful the Carrier should know.")
+        .setTextInputComponent(notesInput),
     );
 }
 
 async function startRequest(interaction) {
-  // Opening a modal itself must happen inside Discord's short interaction window.
-  // Do all account/profile validation after the modal is submitted instead of
-  // spending that window on Supabase/Bloxlink lookups.
   return interaction.showModal(buildCarryModal());
 }
 
+function successPayload({ dungeon, difficulty, runs, availability, notes, profile, matched, requestId, activeCount }) {
+  const embed = new EmbedBuilder()
+    .setColor(GOLD)
+    .setAuthor({ name: "THE CARRY TAVERN • REQUEST CREATED" })
+    .setTitle("✅ You’re in the queue")
+    .setDescription([
+      "Your request is live and matching Carriers have been notified automatically.",
+      "",
+      "You do **not** need to copy an ID, ping a Carrier, or make a separate ticket. When a Carrier claims you, the private session is created for you.",
+    ].join("\n"))
+    .addFields(
+      { name: "🏰 Dungeon", value: dungeon, inline: true },
+      { name: "⚔️ Difficulty", value: difficulty, inline: true },
+      { name: "🏃 Runs", value: String(runs), inline: true },
+      { name: "🎮 Roblox", value: `@${profile.roblox_username}`, inline: true },
+      { name: "🍻 Matching Carriers", value: `**${matched}** notified`, inline: true },
+      { name: "📌 Active Slots", value: `**${activeCount}/${MAX_ACTIVE_REQUESTS}**`, inline: true },
+      { name: "🕒 Availability", value: availability || "Not specified", inline: false },
+      ...(notes ? [{ name: "📝 Notes", value: notes.slice(0, 1024), inline: false }] : []),
+    )
+    .setFooter({ text: `The Carry Tavern • Request ${String(requestId).slice(0, 8)}` })
+    .setTimestamp();
+
+  return {
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("premium_queue_open")
+          .setLabel("Live Queue")
+          .setEmoji("📡")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("premium_my_carries")
+          .setLabel("My Carries")
+          .setEmoji("📋")
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    ],
+  };
+}
+
 async function submitRequest(interaction) {
-  // index.js pre-acknowledges this modal before the modular event handlers run.
-  // Wait for that acknowledgement so this handler never races it with another
-  // deferReply(). The fallback keeps this module safe when used independently.
   if (interaction.__carryFastAckPromise) {
     await interaction.__carryFastAckPromise;
   }
@@ -168,9 +201,6 @@ async function submitRequest(interaction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   }
 
-  // No Carry Tavern Roblox verification is required anymore. Bloxlink is the
-  // source of truth for the Discord -> Roblox identity and the profile is synced
-  // from Bloxlink immediately before the queue request is created.
   const profile = await requireLinkedProfile(interaction, { alreadyDeferred: true, requireRoblox: true });
   if (!profile) return;
 
@@ -178,7 +208,7 @@ async function submitRequest(interaction) {
   const difficulty = interaction.fields.getStringSelectValues("difficulty")[0];
 
   if (!DUNGEONS.includes(dungeon)) {
-    return interaction.editReply("❌ Invalid dungeon selection. Please open the carry form again.");
+    return interaction.editReply("❌ That dungeon selection is no longer valid. Open the request form again.");
   }
 
   if (!difficultiesForDungeon(dungeon).includes(difficulty)) {
@@ -197,9 +227,18 @@ async function submitRequest(interaction) {
 
   const active = await loadActiveRequests(profile.id);
   if (active.length >= MAX_ACTIVE_REQUESTS) {
-    return interaction.editReply(
-      `❌ You now have **${MAX_ACTIVE_REQUESTS} active carry requests**. Finish or cancel one before submitting another.`,
-    );
+    return interaction.editReply({
+      content: `❌ You already have **${MAX_ACTIVE_REQUESTS} active carry requests**. Finish or cancel one first.`,
+      components: [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId("premium_my_carries")
+            .setLabel("View My Carries")
+            .setEmoji("📋")
+            .setStyle(ButtonStyle.Primary),
+        ),
+      ],
+    });
   }
 
   const supabase = getSupabase();
@@ -225,22 +264,17 @@ async function submitRequest(interaction) {
   const matched = await notifyMatchingCarriers(interaction.client, interaction.guildId, data).catch(() => 0);
   await maybeSendAbuseAlert(interaction.client, interaction.guildId, interaction.user.id, "carry request").catch(() => {});
 
-  const base = require("../platform/helpers").marketplaceBaseUrl();
-  return interaction.editReply(
-    [
-      "✅ **Your carry is in the shared Tavern queue.**",
-      `🏰 **${dungeon}**`,
-      `⚔️ **${difficulty}**`,
-      `👥 **${runs}** run${runs === 1 ? "" : "s"}`,
-      `🕒 **${availability}**`,
-      `🎮 Roblox via Bloxlink: **${profile.roblox_username}**`,
-      `🍻 Smart match: **${matched}** available matching Carrier${matched === 1 ? "" : "s"} notified.`,
-      `🆔 Request ID: \`${data.id}\``,
-      "",
-      `${active.length + 1}/${MAX_ACTIVE_REQUESTS} active request slots now in use.`,
-      base ? `${base}/queue` : null,
-    ].filter(Boolean).join("\n"),
-  );
+  return interaction.editReply(successPayload({
+    dungeon,
+    difficulty,
+    runs,
+    availability,
+    notes,
+    profile,
+    matched,
+    requestId: data.id,
+    activeCount: active.length + 1,
+  }));
 }
 
 module.exports = {
@@ -258,7 +292,7 @@ module.exports = {
       console.error("[CARRY REQUEST PANEL V4]", error);
       const message = `❌ ${error.message || "Something went wrong while creating the carry request."}`;
       if (interaction.deferred || interaction.replied) {
-        return interaction.editReply(message).catch(() => {});
+        return interaction.editReply({ content: message, embeds: [], components: [] }).catch(() => {});
       }
       return interaction.reply({ content: message, flags: MessageFlags.Ephemeral }).catch(() => {});
     }

@@ -1,4 +1,5 @@
 const { ensureSupportTicketSystem } = require("../platform/supportTicketSystem");
+const { refreshPremiumSupportPanel } = require("../platform/premiumSupportUi");
 
 module.exports = {
   name: "clientReady",
@@ -6,7 +7,10 @@ module.exports = {
   async execute(client) {
     const timer = setTimeout(async () => {
       try {
-        await ensureSupportTicketSystem(client);
+        const result = await ensureSupportTicketSystem(client);
+        await refreshPremiumSupportPanel(result?.publicChannel, client.user.id).catch((error) => {
+          console.warn(`[SUPPORT TICKETS] Premium panel refresh failed: ${error.message}`);
+        });
       } catch (error) {
         console.error(`[SUPPORT TICKETS] Startup failed: ${error.message}`);
       }
