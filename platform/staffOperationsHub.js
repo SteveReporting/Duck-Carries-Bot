@@ -8,6 +8,12 @@ const {
   PermissionFlagsBits,
 } = require("discord.js");
 
+const {
+  cachedSnapshot,
+  formatAge,
+  healthLabel,
+} = require("./carryOpsIntelligence");
+
 const STAFF_CATEGORY_NORMALIZED = "staff";
 const HUB_CHANNEL_NAME = "📊・operations-hub";
 const HUB_FOOTER = "The Carry Tavern • Staff Operations Hub";
@@ -146,6 +152,7 @@ function workloadSignal(support) {
 function hubPayload(guild) {
   const support = supportStats(guild);
   const systems = systemChannels(guild);
+  const pulse = cachedSnapshot(guild.id);
 
   const hero = new EmbedBuilder()
     .setColor(GOLD)
@@ -154,18 +161,21 @@ function hubPayload(guild) {
     .setDescription([
       "One live command center for the people running the Tavern.",
       "",
-      "**Support, Carrier operations, moderation, Treasury and the carry queue are surfaced here without turning staff work into a wall of channels or commands.**",
+      "**Support, Carrier operations, moderation, Treasury and the carry queue are surfaced here — with a watchdog watching the systems themselves.**",
     ].join("\n"))
     .addFields(
       { name: "📥 Support", value: `**${support.active}** active`, inline: true },
       { name: "👤 Unassigned", value: `**${support.unassigned}**`, inline: true },
-      { name: "🟣 Waiting User", value: `**${support.waiting}**`, inline: true },
-      { name: "🙋 Claimed", value: `**${support.claimed}**`, inline: true },
-      { name: "⚔️ Carrier Ops", value: systems.applicationReviews ? "🟢 Online" : "🟠 Check", inline: true },
-      { name: "💰 Treasury", value: systems.treasuryLogs || systems.treasuryStock ? "🟢 Online" : "🟠 Check", inline: true },
       { name: "🛡️ Workload", value: workloadSignal(support), inline: true },
-      { name: "⚙️ Automation", value: "🟢 Running", inline: true },
-      { name: "🔄 Refresh", value: "Every 60 seconds", inline: true },
+      { name: "🧠 Platform Health", value: healthLabel(pulse), inline: true },
+      { name: "📡 Queue Pressure", value: pulse?.pressure?.label || "⚪ Starting", inline: true },
+      { name: "⏱️ Oldest Wait", value: pulse ? `**${formatAge(pulse.oldestWaitingMs)}**` : "—", inline: true },
+      { name: "🍻 Available Carriers", value: pulse ? `**${pulse.availableCarriers}**` : "—", inline: true },
+      { name: "▶️ Live Carries", value: pulse ? `**${pulse.running}**` : "—", inline: true },
+      { name: "🔊 Session VCs", value: pulse ? `**${pulse.voiceSessions}**` : "—", inline: true },
+      { name: "🛟 Rescue Watch", value: pulse ? `**${pulse.staleQueued}** stale` : "—", inline: true },
+      { name: "🧩 Repair Watch", value: pulse?.orphanedSessions ? `**${pulse.orphanedSessions}** issue(s)` : "🟢 Clear", inline: true },
+      { name: "🤖 Automation", value: "Watchdog + self-heal", inline: true },
     )
     .setFooter({ text: HUB_FOOTER })
     .setTimestamp();
@@ -174,17 +184,17 @@ function hubPayload(guild) {
     .setColor(BLUE)
     .setTitle("🧭 Staff Quick Reference")
     .setDescription([
+      "### 🧠 Operations Intelligence",
+      "**Tavern Pulse** refreshes queue pressure and health on demand. Stale queues are surfaced automatically, control panels/session VCs are periodically repaired, and alerts are deduplicated so staff are not spammed.",
+      "",
       "### 🛟 Support",
       "Claim cases from the Support dashboard, mark them **Waiting on User**, then close when resolved.",
       "",
       "### ⚔️ Carrier Department",
       "Use `/carrier-admin` for scope, roles, hierarchy and no-show review. Carrier applications stay in the review console.",
       "",
-      "### 🛡️ Moderation & Cases",
-      "Use `/warn` for moderation records and `/report` for scam/trade cases. `/security` remains the dedicated anti-raid system.",
-      "",
-      "### 💰 Treasury",
-      "Use `/treasury` for stock and tickets; staff controls stay nested under `/treasury admin`.",
+      "### 🛡️ Moderation & Treasury",
+      "`/warn`, `/report`, `/security` and `/treasury` remain the focused tools for their departments.",
     ].join("\n"));
 
   const components = [];
@@ -200,8 +210,13 @@ function hubPayload(guild) {
     linkButton("Treasury Logs", systems.treasuryLogs, "💰"),
     linkButton("Treasury Stock", systems.treasuryStock, "📦"),
     new ButtonBuilder()
+      .setCustomId("tavern_ops_pulse")
+      .setLabel("Tavern Pulse")
+      .setEmoji("🧠")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
       .setCustomId("staff_operations_hub_refresh")
-      .setLabel("Refresh")
+      .setLabel("Refresh Hub")
       .setEmoji("🔄")
       .setStyle(ButtonStyle.Secondary),
   );
