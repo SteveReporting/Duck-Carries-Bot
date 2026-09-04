@@ -1,6 +1,7 @@
 "use strict";
 
 const { SentientControlClient, envBoolean } = require("./controlClient");
+const { collectOperationalState, publishOperationalTwin } = require("./operationalTwin");
 
 function envNumber(name, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
   const parsed = Number(process.env[name]);
@@ -68,6 +69,7 @@ class SentientRuntime {
     this.heartbeat = null;
     this.listeners = [];
     this.lastWarnAt = 0;
+    this.operationalCache = new Map();
   }
 
   configured() {
@@ -134,9 +136,6 @@ class SentientRuntime {
     this.heartbeat = setInterval(() => void this.heartbeatTick(), this.heartbeatMs);
     this.heartbeat.unref?.();
 
-    // When the runtime is attached from the modular clientReady event, READY has
-    // already fired. Bootstrap immediately in that case; otherwise the listener
-    // above handles the normal pre-login path.
     if (this.discord.isReady?.()) {
       const timer = setTimeout(() => void this.onReady(), 0);
       timer.unref?.();
@@ -204,6 +203,9 @@ class SentientRuntime {
         const timer = setTimeout(() => void this.snapshotGuild(guild, "carry-tavern-startup"), 8_000);
         timer.unref?.();
       }
+
+      const twinTimer = setTimeout(() => void this.refreshOperationalTwin(guild.id), 12_000);
+      twinTimer.unref?.();
     }
 
     void this.heartbeatTick();
@@ -351,6 +353,29 @@ class SentientRuntime {
     return this.control.guilds("apply", guild.id, { mode: mode === "minimal" ? "minimal" : "full" });
   }
 
+  async operationalState(guildId, { refresh = false } = {}) {
+    const id = String(guildId || "");
+    if (!id) return null;
+    const cached = this.operationalCache.get(id);
+    if (!refresh && cached && Date.now() - cached.cachedAt < 60_000) return cached.state;
+
+    const state = await collectOperationalState(id);
+    this.operationalCache.set(id, { state, cachedAt: Date.now() });
+    return state;
+  }
+
+  async refreshOperationalTwin(guildId) {
+    if (!this.configured() || !guildId) return null;
+    try {
+      const state = await this.operationalState(guildId, { refresh: true });
+      await publishOperationalTwin(this.control, guildId, state);
+      return state;
+    } catch (error) {
+      this.warn(`operational twin refresh failed for ${guildId}: ${error?.message || error}`);
+      return null;
+    }
+  }
+
   async heartbeatTick() {
     if (!this.configured()) return;
     const started = Date.now();
@@ -362,6 +387,10 @@ class SentientRuntime {
     } catch (error) {
       status = "degraded";
       details = { error: error?.message || String(error), botGuilds: this.discord.guilds.cache.size };
+    }
+
+    for (const guildId of this.discord.guilds.cache.keys()) {
+      await this.refreshOperationalTwin(guildId);
     }
 
     try {
