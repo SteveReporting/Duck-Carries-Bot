@@ -7,6 +7,7 @@ const {
 } = require("discord.js");
 
 const { installGuild, BRAND } = require("../platform/guildInstaller");
+const { finalizeGuildSetup } = require("../platform/setupFinalizer");
 
 function uiStatus(result) {
   return result.ok ? `✅ ${result.name}` : `⚠️ ${result.name}`;
@@ -24,7 +25,7 @@ function resourceSummary(resources, kind) {
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("setup")
-    .setDescription("Fully install or repair the Tavern platform in this server")
+    .setDescription("Fully install, brand and repair the Tavern platform in this server")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDMPermission(false)
     .addChannelOption((option) =>
@@ -66,7 +67,11 @@ module.exports = {
     }
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    await interaction.editReply("🍺 **Installing the Tavern platform…**\nCreating structure, permissions and every persistent UI. Existing Tavern resources will be reused instead of duplicated.");
+    await interaction.editReply([
+      "🍺 **Installing the complete Tavern platform…**",
+      "Creating/repairing structure, permissions, server branding and every persistent UI.",
+      "Existing Tavern resources are reused instead of duplicated.",
+    ].join("\n"));
 
     try {
       const result = await installGuild({
@@ -81,19 +86,42 @@ module.exports = {
         },
       });
 
+      await interaction.editReply([
+        "🍺 **Core structure ready. Finishing the install…**",
+        "Branding this server, verifying Support, Treasury, live boards and staff operations.",
+      ].join("\n"));
+
+      const finalized = await finalizeGuildSetup({
+        guild: interaction.guild,
+        client: interaction.client,
+        config: result.config,
+      });
+
+      result.config = finalized.config;
+      result.ui = [
+        ...result.ui,
+        ...finalized.ui.filter((entry) => !result.ui.some((existing) => existing.name === entry.name)),
+      ];
+      result.identity = finalized.identity;
+
       const failedUi = result.ui.filter((item) => !item.ok);
+      const identityWarning = !result.identity?.ok;
+      const hasWarnings = failedUi.length > 0 || identityWarning;
+
       const embed = new EmbedBuilder()
-        .setColor(failedUi.length ? BRAND.gold : BRAND.green)
+        .setColor(hasWarnings ? BRAND.gold : BRAND.green)
         .setAuthor({
-          name: "THE CARRY TAVERN • INSTALLER",
+          name: "THE CARRY TAVERN • FULL INSTALLER",
           ...(interaction.guild.iconURL() ? { iconURL: interaction.guild.iconURL({ size: 128 }) } : {}),
         })
-        .setTitle(failedUi.length ? "⚠️ Tavern installed with warnings" : "✅ Tavern is fully installed")
+        .setTitle(hasWarnings ? "⚠️ Tavern installed with warnings" : "✅ Tavern is fully installed")
         .setDescription([
           `**${interaction.guild.name}** now has the complete Tavern server stack.`,
           "",
-          `Open <#${result.config.home_channel_id}> — that is now the main front door for members.`,
-          "Re-run `/setup` at any time to repair missing resources or refresh every persistent panel.",
+          `🤖 Server identity: **${result.identity?.nickname || `${interaction.guild.name} Bot`}** ${result.identity?.ok ? "✅" : "⚠️"}`,
+          `🏠 Member front door: <#${result.config.home_channel_id}>`,
+          "",
+          "Re-run `/setup` at any time. It repairs missing resources, refreshes panels and re-checks the server configuration without deleting existing data.",
         ].join("\n"))
         .addFields(
           {
@@ -119,21 +147,33 @@ module.exports = {
             inline: false,
           },
           {
-            name: "⚙️ Automation enabled",
-            value: "Carry queue • grouped claims • private tickets • ready checks • verified progress • Waiting VC • session VCs • drop-ins • Support • staff operations • Treasury • Marketplace • self-heal workers",
+            name: "⚙️ Systems wired automatically",
+            value: [
+              "Carry requests + grouped queue matching",
+              "Private carry tickets + ready checks + verified progress",
+              "Waiting VC + private session VCs + drop-ins",
+              "Support desk + staff ticket dashboard",
+              "Treasury borrow/donate/trust + gold donations + live stock",
+              "Marketplace access + completed-carry board",
+              "Staff Operations Hub + Tavern Pulse + self-heal workers",
+            ].join(" • "),
             inline: false,
           },
         )
         .setFooter({ text: `Guild ${interaction.guild.id} • /setup is idempotent and safe to re-run` })
         .setTimestamp();
 
-      if (failedUi.length) {
+      const warnings = [];
+      if (identityWarning) {
+        warnings.push(`• **Server nickname:** ${String(result.identity?.error || "Discord refused the nickname change.").slice(0, 180)}`);
+      }
+      for (const item of failedUi) {
+        warnings.push(`• **${item.name}:** ${String(item.error || "could not initialize").slice(0, 180)}`);
+      }
+      if (warnings.length) {
         embed.addFields({
           name: "Warnings",
-          value: failedUi
-            .map((item) => `• **${item.name}:** ${String(item.error || "could not initialize").slice(0, 160)}`)
-            .join("\n")
-            .slice(0, 1024),
+          value: warnings.join("\n").slice(0, 1024),
           inline: false,
         });
       }
