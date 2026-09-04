@@ -43,12 +43,28 @@ function botOverwrites(guild, botId) {
   ];
 }
 
+async function configuredRequestChannel(guild, config) {
+  if (!config?.request_channel_id) return null;
+  const configured = guild.channels.cache.get(String(config.request_channel_id))
+    || await guild.channels.fetch(String(config.request_channel_id)).catch(() => null);
+  return configured?.type === ChannelType.GuildText ? configured : null;
+}
+
+function preferredExistingRequestChannel(guild) {
+  return guild.channels.cache.find((channel) =>
+    channel.type === ChannelType.GuildText && normalize(channel.name) === "requestacarry",
+  ) || null;
+}
+
 async function resolveRequestChannel(guild, config) {
-  if (config?.request_channel_id) {
-    const configured = guild.channels.cache.get(String(config.request_channel_id))
-      || await guild.channels.fetch(String(config.request_channel_id)).catch(() => null);
-    if (configured?.type === ChannelType.GuildText) return configured;
-  }
+  // Prefer the already-clean request-a-carry channel so re-running /setup never
+  // replaces its channel ID just because an older installer briefly recreated
+  // a legacy request-carry channel before this finalizer runs.
+  const preferred = preferredExistingRequestChannel(guild);
+  if (preferred) return preferred;
+
+  const configured = await configuredRequestChannel(guild, config);
+  if (configured) return configured;
 
   return guild.channels.cache.find((channel) =>
     channel.type === ChannelType.GuildText
@@ -123,6 +139,22 @@ async function clearOldRequestPanels(channel) {
   }
 }
 
+async function channelContainsOnlyBotContent(channel) {
+  const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+  if (!messages) return false;
+  return messages.every((message) =>
+    message.author?.id === channel.client.user.id || message.system,
+  );
+}
+
+async function removeDisposableLegacyDuplicate(guild, keepChannel, config) {
+  const configured = await configuredRequestChannel(guild, config);
+  if (!configured || configured.id === keepChannel.id) return;
+  if (normalize(configured.name) !== "requestcarry") return;
+  if (!await channelContainsOnlyBotContent(configured)) return;
+  await configured.delete("Remove duplicate legacy request-carry channel after request-only migration").catch(() => {});
+}
+
 function requestPanelPayload(guild) {
   const icon = guild.iconURL({ size: 256 });
   const embed = new EmbedBuilder()
@@ -179,6 +211,7 @@ async function ensureRequestOnlyExperience(guild) {
     created = true;
   }
 
+  await removeDisposableLegacyDuplicate(guild, channel, config);
   await repairRequestChannel(channel, guild, category);
   config = saveGuildConfig(guild.id, { request_channel_id: channel.id });
   const panel = await publishRequestOnlyPanel(channel);
