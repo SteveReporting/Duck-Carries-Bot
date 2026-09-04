@@ -13,9 +13,8 @@ const HUB_CHANNEL_NAME = "📊・operations-hub";
 const HUB_FOOTER = "The Carry Tavern • Staff Operations Hub";
 const SUPPORT_CATEGORY_NAME = "🎟️・TAVERN SUPPORT TICKETS";
 const SUPPORT_DASHBOARD_NAME = "📊・ticket-dashboard";
-const GOLD = 0xF2B705;
-const BLUE = 0x3498DB;
-const PURPLE = 0x9B59B6;
+const GOLD = 0xf2b705;
+const BLUE = 0x3498db;
 
 let refreshTimer = null;
 
@@ -70,7 +69,10 @@ function supportStats(guild) {
   const category = guild.channels.cache.find(
     (channel) => channel.type === ChannelType.GuildCategory && channel.name === SUPPORT_CATEGORY_NAME,
   );
-  if (!category) return { active: 0, claimed: 0, waiting: 0, unassigned: 0, category: null, dashboard: null };
+
+  if (!category) {
+    return { active: 0, claimed: 0, waiting: 0, unassigned: 0, category: null, dashboard: null };
+  }
 
   const channels = [...guild.channels.cache.filter((channel) =>
     channel.type === ChannelType.GuildText
@@ -118,101 +120,94 @@ function systemChannels(guild) {
 
   const carryQueue = process.env.CARRY_QUEUE_CHANNEL_ID
     ? guild.channels.cache.get(process.env.CARRY_QUEUE_CHANNEL_ID) || null
-    : null;
+    : findTextChannel(guild, (channel) => normalize(channel.name).includes("carryqueue"));
 
-  return { carrierCategory, becomeCarrier, applicationReviews, treasuryLogs, treasuryStock, carryQueue };
+  const modLog = process.env.MOD_LOG_CHANNEL_ID
+    ? guild.channels.cache.get(process.env.MOD_LOG_CHANNEL_ID) || null
+    : findTextChannel(guild, (channel) => normalize(channel.name).includes("modlog"));
+
+  return {
+    carrierCategory,
+    becomeCarrier,
+    applicationReviews,
+    treasuryLogs,
+    treasuryStock,
+    carryQueue,
+    modLog,
+  };
+}
+
+function workloadSignal(support) {
+  if (support.unassigned >= 5) return "🔴 Needs Staff";
+  if (support.unassigned > 0 || support.waiting > 0) return "🟠 Attention";
+  return "🟢 Clear";
 }
 
 function hubPayload(guild) {
   const support = supportStats(guild);
   const systems = systemChannels(guild);
 
-  const command = new EmbedBuilder()
+  const hero = new EmbedBuilder()
     .setColor(GOLD)
-    .setAuthor({ name: "THE CARRY TAVERN • STAFF OPERATIONS" })
-    .setTitle("📊 TAVERN OPERATIONS HUB")
+    .setAuthor({ name: "THE CARRY TAVERN • STAFF COMMAND CENTER" })
+    .setTitle("📊 Operations Hub")
     .setDescription([
-      "One staff command board for **Support**, **Carrier Recruitment**, **Treasury** and the live carry operation.",
+      "One live command center for the people running the Tavern.",
       "",
-      "Use the buttons below to jump straight into each department. This panel refreshes automatically.",
+      "**Support, Carrier operations, moderation, Treasury and the carry queue are surfaced here without turning staff work into a wall of channels or commands.**",
     ].join("\n"))
     .addFields(
-      { name: "📥 Support Active", value: `## ${support.active}`, inline: true },
-      { name: "👤 Support Unassigned", value: `## ${support.unassigned}`, inline: true },
-      { name: "🟣 Waiting User", value: `## ${support.waiting}`, inline: true },
-      { name: "🙋 Claimed", value: `## ${support.claimed}`, inline: true },
-      { name: "⚔️ Recruitment", value: systems.applicationReviews ? "## ONLINE" : "## CHECK", inline: true },
-      { name: "💰 Treasury", value: systems.treasuryLogs || systems.treasuryStock ? "## ONLINE" : "## CHECK", inline: true },
+      { name: "📥 Support", value: `**${support.active}** active`, inline: true },
+      { name: "👤 Unassigned", value: `**${support.unassigned}**`, inline: true },
+      { name: "🟣 Waiting User", value: `**${support.waiting}**`, inline: true },
+      { name: "🙋 Claimed", value: `**${support.claimed}**`, inline: true },
+      { name: "⚔️ Carrier Ops", value: systems.applicationReviews ? "🟢 Online" : "🟠 Check", inline: true },
+      { name: "💰 Treasury", value: systems.treasuryLogs || systems.treasuryStock ? "🟢 Online" : "🟠 Check", inline: true },
+      { name: "🛡️ Workload", value: workloadSignal(support), inline: true },
+      { name: "⚙️ Automation", value: "🟢 Running", inline: true },
+      { name: "🔄 Refresh", value: "Every 60 seconds", inline: true },
     )
     .setFooter({ text: HUB_FOOTER })
     .setTimestamp();
 
-  const operations = new EmbedBuilder()
+  const deck = new EmbedBuilder()
     .setColor(BLUE)
-    .setTitle("🧭 DEPARTMENT COMMAND BOARD")
-    .addFields(
-      {
-        name: "🛟 SUPPORT",
-        value: [
-          `**Active:** ${support.active}`,
-          `**Unassigned:** ${support.unassigned}`,
-          `**Waiting:** ${support.waiting}`,
-          `**Dashboard:** ${support.dashboard ? `<#${support.dashboard.id}>` : "Not found"}`,
-        ].join("\n"),
-        inline: true,
-      },
-      {
-        name: "⚔️ CARRIER RECRUITMENT",
-        value: [
-          `**Applications:** ${systems.becomeCarrier ? `<#${systems.becomeCarrier.id}>` : "Not found"}`,
-          `**Staff Review:** ${systems.applicationReviews ? `<#${systems.applicationReviews.id}>` : "Not found"}`,
-          "**System:** Google application + Discord review console",
-        ].join("\n"),
-        inline: true,
-      },
-      {
-        name: "💰 TREASURY",
-        value: [
-          `**Logs:** ${systems.treasuryLogs ? `<#${systems.treasuryLogs.id}>` : "Not found"}`,
-          `**Stock:** ${systems.treasuryStock ? `<#${systems.treasuryStock.id}>` : "Not configured"}`,
-          "**System:** Treasury operations + stock controls",
-        ].join("\n"),
-        inline: true,
-      },
-    );
-
-  const carry = new EmbedBuilder()
-    .setColor(PURPLE)
-    .setTitle("🍺 LIVE TAVERN LINKS")
+    .setTitle("🧭 Staff Quick Reference")
     .setDescription([
-      systems.carryQueue ? `**Carry Queue:** <#${systems.carryQueue.id}>` : "**Carry Queue:** not configured",
-      support.category ? `**Support Tickets:** <#${support.category.id}>` : "**Support Tickets:** not found",
-      systems.carrierCategory ? `**Carrier Team:** <#${systems.carrierCategory.id}>` : "**Carrier Team:** not found",
+      "### 🛟 Support",
+      "Claim cases from the Support dashboard, mark them **Waiting on User**, then close when resolved.",
       "",
-      "This hub is staff-only and does not replace the department-specific dashboards; it gives staff one place to reach all of them.",
+      "### ⚔️ Carrier Department",
+      "Use `/carrier-admin` for scope, roles, hierarchy and no-show review. Carrier applications stay in the review console.",
+      "",
+      "### 🛡️ Moderation & Cases",
+      "Use `/warn` for moderation records and `/report` for scam/trade cases. `/security` remains the dedicated anti-raid system.",
+      "",
+      "### 💰 Treasury",
+      "Use `/treasury` for stock and tickets; staff controls stay nested under `/treasury admin`.",
     ].join("\n"));
 
   const components = [];
-  const departmentRow = row(
-    linkButton("Support Dashboard", support.dashboard, "🛟"),
-    linkButton("Application Reviews", systems.applicationReviews, "⚔️"),
+  const firstRow = row(
+    linkButton("Support", support.dashboard, "🛟"),
+    linkButton("Carrier Reviews", systems.applicationReviews, "⚔️"),
+    linkButton("Carry Queue", systems.carryQueue, "🍺"),
+    linkButton("Mod Log", systems.modLog, "🛡️"),
+  );
+  if (firstRow.components.length) components.push(firstRow);
+
+  const secondRow = row(
     linkButton("Treasury Logs", systems.treasuryLogs, "💰"),
     linkButton("Treasury Stock", systems.treasuryStock, "📦"),
-    linkButton("Carry Queue", systems.carryQueue, "🍺"),
+    new ButtonBuilder()
+      .setCustomId("staff_operations_hub_refresh")
+      .setLabel("Refresh")
+      .setEmoji("🔄")
+      .setStyle(ButtonStyle.Secondary),
   );
-  if (departmentRow.components.length) components.push(departmentRow);
+  components.push(secondRow);
 
-  components.push(
-    row(
-      new ButtonBuilder()
-        .setCustomId("staff_operations_hub_refresh")
-        .setLabel("Refresh Hub")
-        .setEmoji("🔄")
-        .setStyle(ButtonStyle.Secondary),
-    ),
-  );
-
-  return { embeds: [command, operations, carry], components };
+  return { embeds: [hero, deck], components };
 }
 
 async function findOrCreateHubChannel(guild) {
@@ -228,7 +223,7 @@ async function findOrCreateHubChannel(guild) {
       name: HUB_CHANNEL_NAME,
       type: ChannelType.GuildText,
       parent: staffCategory.id,
-      topic: "Unified staff dashboard for Support, Carrier Recruitment, Treasury and Carry operations.",
+      topic: "Unified staff command center for Support, Carrier, moderation, Treasury and carry operations.",
       reason: "The Carry Tavern unified staff operations hub",
     });
   }
@@ -246,7 +241,7 @@ async function refreshStaffOperationsHub(guild) {
 
   if (existing) {
     await existing.edit(hubPayload(guild));
-    await existing.pin("Permanent Tavern staff operations hub").catch(() => {});
+    if (!existing.pinned) await existing.pin("Permanent Tavern staff operations hub").catch(() => {});
     return { channel, message: existing, created: false };
   }
 
