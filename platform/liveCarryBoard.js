@@ -1,16 +1,22 @@
 const { ChannelType } = require("discord.js");
 
 const db = require("../database/database");
+const { getGuildConfig, listConfiguredGuilds } = require("./guildConfig");
 const { loadPlatformQueue } = require("./carryQueue");
 const { buildPremiumQueuePayload } = require("./premiumQueueUi");
 
 const LIVE_FOOTER = "The Carry Tavern • Live Carry Board";
 const REFRESH_MS = 60_000;
-let refreshTimer = null;
-let refreshInFlight = false;
+const refreshTimers = new Map();
+const refreshInFlight = new Set();
 
 async function configuredQueueChannel(guild) {
-  const configuredId = process.env.CARRY_QUEUE_CHANNEL_ID || process.env.QUEUE_CHANNEL_ID;
+  const config = getGuildConfig(guild.id);
+  const configuredId = config?.queue_channel_id
+    || (String(process.env.GUILD_ID || "") === String(guild.id)
+      ? process.env.CARRY_QUEUE_CHANNEL_ID || process.env.QUEUE_CHANNEL_ID
+      : null);
+
   if (configuredId) {
     const configured = await guild.channels.fetch(configuredId).catch(() => null);
     if (configured?.type === ChannelType.GuildText) return configured;
@@ -24,8 +30,8 @@ async function configuredQueueChannel(guild) {
 
 function isLiveBoard(message, botId) {
   return Boolean(
-    message?.author?.id === botId &&
-    (message.embeds || []).some((embed) => String(embed.footer?.text || "") === LIVE_FOOTER),
+    message?.author?.id === botId
+    && (message.embeds || []).some((embed) => String(embed.footer?.text || "") === LIVE_FOOTER),
   );
 }
 
@@ -35,23 +41,30 @@ async function buildBoardPayload(guildId) {
   const embed = payload.embeds?.[0];
   if (embed) {
     embed
+      .setColor(rows.some((row) => row.status === "queued") ? 0xf2b705 : 0x2ecc71)
+      .setAuthor({ name: "THE CARRY TAVERN • LIVE" })
       .setTitle("⚔️ Live Carry Board")
       .setFooter({ text: LIVE_FOOTER });
   }
   return payload;
 }
 
-async function ensureLiveCarryBoard(client) {
-  if (refreshInFlight || !process.env.GUILD_ID) return null;
-  refreshInFlight = true;
+async function resolveGuild(client, guildOverride = null) {
+  if (guildOverride?.id) return guildOverride;
+  const guildId = String(process.env.GUILD_ID || "").trim();
+  if (!guildId) return null;
+  return client.guilds.cache.get(guildId) || client.guilds.fetch(guildId).catch(() => null);
+}
+
+async function ensureLiveCarryBoard(client, guildOverride = null) {
+  const guild = await resolveGuild(client, guildOverride);
+  if (!guild || refreshInFlight.has(guild.id)) return null;
+  refreshInFlight.add(guild.id);
 
   try {
-    const guild = await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
-    if (!guild) return null;
-
     const channel = await configuredQueueChannel(guild);
     if (!channel) {
-      console.warn("[LIVE CARRY BOARD] No configured queue text channel was found.");
+      console.warn(`[LIVE CARRY BOARD] No configured queue text channel was found in ${guild.name}.`);
       return null;
     }
 
@@ -61,32 +74,53 @@ async function ensureLiveCarryBoard(client) {
 
     if (existing) {
       await existing.edit(payload);
-      if (!existing.pinned) await existing.pin("Permanent Carry Tavern live queue").catch(() => {});
+      if (!existing.pinned) await existing.pin("Permanent Tavern live carry board").catch(() => {});
       return existing;
     }
 
     const board = await channel.send(payload);
-    await board.pin("Permanent Carry Tavern live queue").catch(() => {});
+    await board.pin("Permanent Tavern live carry board").catch(() => {});
     return board;
   } catch (error) {
-    console.warn("[LIVE CARRY BOARD] Refresh failed:", error.message);
+    console.warn(`[LIVE CARRY BOARD] ${guild.name}:`, error.message);
     return null;
   } finally {
-    refreshInFlight = false;
+    refreshInFlight.delete(guild.id);
   }
 }
 
-function startLiveCarryBoard(client) {
-  void ensureLiveCarryBoard(client);
-  if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(() => {
-    void ensureLiveCarryBoard(client);
+function startGuildBoardTimer(client, guild) {
+  if (!guild?.id || refreshTimers.has(guild.id)) return;
+  void ensureLiveCarryBoard(client, guild);
+  const timer = setInterval(() => {
+    void ensureLiveCarryBoard(client, guild);
   }, REFRESH_MS);
-  refreshTimer.unref?.();
+  timer.unref?.();
+  refreshTimers.set(guild.id, timer);
+}
+
+function startLiveCarryBoard(client) {
+  const configured = listConfiguredGuilds();
+  let started = 0;
+  for (const config of configured) {
+    const guild = client.guilds.cache.get(String(config.guild));
+    if (!guild) continue;
+    startGuildBoardTimer(client, guild);
+    started += 1;
+  }
+
+  // Compatibility fallback for an older one-guild config not yet migrated.
+  if (!started && process.env.GUILD_ID) {
+    const guild = client.guilds.cache.get(String(process.env.GUILD_ID));
+    if (guild) startGuildBoardTimer(client, guild);
+  }
 }
 
 module.exports = {
   LIVE_FOOTER,
+  buildBoardPayload,
+  configuredQueueChannel,
   ensureLiveCarryBoard,
+  startGuildBoardTimer,
   startLiveCarryBoard,
 };
