@@ -29,10 +29,34 @@ const REQUEST_FOOTER = "The Carry Tavern • Request Carry";
 const CARRIER_DESK_FOOTER = "The Carry Tavern • Carrier Desk";
 const LEADERBOARD_FOOTER = "The Carry Tavern • Carrier Leaderboard";
 
+const PERMISSION_KEYS = Object.freeze([
+  ["ViewChannel", PermissionFlagsBits.ViewChannel],
+  ["SendMessages", PermissionFlagsBits.SendMessages],
+  ["ReadMessageHistory", PermissionFlagsBits.ReadMessageHistory],
+  ["EmbedLinks", PermissionFlagsBits.EmbedLinks],
+  ["AttachFiles", PermissionFlagsBits.AttachFiles],
+  ["ManageMessages", PermissionFlagsBits.ManageMessages],
+  ["ManageChannels", PermissionFlagsBits.ManageChannels],
+  ["Connect", PermissionFlagsBits.Connect],
+  ["Speak", PermissionFlagsBits.Speak],
+  ["MoveMembers", PermissionFlagsBits.MoveMembers],
+]);
+
 function normalize(value) {
   return String(value || "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
+}
+
+function overwritePermissionMap(overwrite) {
+  const permissions = {};
+  const allowed = new Set(overwrite?.allow || []);
+  const denied = new Set(overwrite?.deny || []);
+  for (const [name, flag] of PERMISSION_KEYS) {
+    if (allowed.has(flag)) permissions[name] = true;
+    if (denied.has(flag)) permissions[name] = false;
+  }
+  return permissions;
 }
 
 function remember(resources, kind, value, created = false) {
@@ -126,12 +150,11 @@ async function ensureTextChannel(guild, name, parentId, overwrites, topic) {
   }
 
   for (const overwrite of overwrites || []) {
-    const permissions = {};
-    for (const permission of overwrite.allow || []) permissions[permission] = true;
-    for (const permission of overwrite.deny || []) permissions[permission] = false;
-    await channel.permissionOverwrites.edit(overwrite.id, permissions, {
-      reason: "Repair /setup channel permissions",
-    }).catch(() => {});
+    await channel.permissionOverwrites.edit(
+      overwrite.id,
+      overwritePermissionMap(overwrite),
+      { reason: "Repair /setup channel permissions" },
+    ).catch(() => {});
   }
 
   return { value: channel, created };
@@ -258,10 +281,11 @@ async function moveAndRepairPublicChannel(channel, name, parentId, guild, botId)
   }
   if (channel.name !== name) await channel.setName(name, "Separate Carry system layout").catch(() => {});
   for (const overwrite of publicReadOnlyOverwrites(guild, botId)) {
-    const permissions = {};
-    for (const permission of overwrite.allow || []) permissions[permission] = true;
-    for (const permission of overwrite.deny || []) permissions[permission] = false;
-    await channel.permissionOverwrites.edit(overwrite.id, permissions, { reason: "Carry area permissions" }).catch(() => {});
+    await channel.permissionOverwrites.edit(
+      overwrite.id,
+      overwritePermissionMap(overwrite),
+      { reason: "Carry area permissions" },
+    ).catch(() => {});
   }
   return channel;
 }
@@ -491,6 +515,7 @@ module.exports = {
   NAMES,
   fullPermissionCheck,
   installFullGuild,
+  overwritePermissionMap,
   publishCarrierDesk,
   publishRequestPanel,
 };
