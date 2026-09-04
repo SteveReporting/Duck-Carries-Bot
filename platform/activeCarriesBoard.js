@@ -16,6 +16,7 @@ const CHANNEL_NAME = "⚔️・active-carries";
 const HEADER_FOOTER = "The Carry Tavern • Active Carries";
 const CARD_FOOTER_PREFIX = "The Carry Tavern • Live Carry • ";
 const MANAGE_PREFIX = "active_carry_manage:";
+const RUN_PREFIX = "active_carry_run:";
 const REFRESH_MS = 20_000;
 const MAX_MUTATIONS_PER_PASS = 30;
 const timers = new Map();
@@ -28,6 +29,14 @@ db.exec(`
     channel_id TEXT NOT NULL,
     message_id TEXT NOT NULL,
     payload_hash TEXT,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS active_carry_run_progress (
+    ticket_channel TEXT PRIMARY KEY,
+    guild TEXT NOT NULL,
+    runs_done INTEGER NOT NULL DEFAULT 0,
+    target_runs INTEGER NOT NULL DEFAULT 1,
     updated_at INTEGER NOT NULL
   );
 
@@ -107,6 +116,9 @@ async function ensureActiveCarriesChannel(guild) {
     await channel.permissionOverwrites.edit(overwrite.id, permissions, { reason: "Keep active carry feed clean" }).catch(() => {});
   }
 
+  // Older guild_config schemas ignore unknown patch keys, but keeping this call
+  // means newer schemas can persist the channel automatically while name-based
+  // discovery still prevents duplicates on older installs.
   saveGuildConfig(guild.id, { active_carries_channel_id: channel.id });
   return channel;
 }
@@ -198,14 +210,36 @@ function requestProgress(row) {
 function sessionSummary(session) {
   const completed = session.requests.reduce((sum, row) => sum + Math.max(0, Number(row.runs_completed || 0)), 0);
   const total = session.requests.reduce((sum, row) => sum + Math.max(0, Number(row.runs_requested || 0)), 0);
-  const planned = Math.max(0, ...session.requests.map((row) => Number(row.session_runs || 0)));
+  const planned = Math.max(1, ...session.requests.map((row) => Number(row.session_runs || 0)));
   return { completed, total, planned };
+}
+
+function liveRunProgress(session, guildId) {
+  const target = sessionSummary(session).planned;
+  let row = db.prepare("SELECT * FROM active_carry_run_progress WHERE ticket_channel=?")
+    .get(String(session.ticketId));
+  if (!row) {
+    db.prepare(`
+      INSERT INTO active_carry_run_progress(ticket_channel,guild,runs_done,target_runs,updated_at)
+      VALUES(?,?,0,?,?)
+    `).run(String(session.ticketId), String(guildId), target, Date.now());
+    row = { runs_done: 0, target_runs: target };
+  } else if (Number(row.target_runs || 0) !== target) {
+    db.prepare("UPDATE active_carry_run_progress SET target_runs=?,updated_at=? WHERE ticket_channel=?")
+      .run(target, Date.now(), String(session.ticketId));
+    row = { ...row, target_runs: target };
+  }
+  return {
+    done: Math.max(0, Number(row.runs_done || 0)),
+    target: Math.max(1, Number(row.target_runs || target || 1)),
+  };
 }
 
 function cardPayload(guild, session) {
   const voice = sessionVoice(session.ticketId);
   const dropins = dropInRows(session.ticketId);
   const summary = sessionSummary(session);
+  const live = liveRunProgress(session, guild.id);
   const requesterIds = [...new Set(session.requests.map((row) => row.requester?.discord_id).filter(Boolean).map(String))];
   const participantIds = [...new Set([...requesterIds, ...dropins.map((row) => String(row.user))])];
   const progress = session.requests.slice(0, 8).map(requestProgress);
@@ -217,7 +251,8 @@ function cardPayload(guild, session) {
     .setDescription([
       `**Carrier:** ${mention(session.carrier)}`,
       `**Status:** 🟢 **LIVE** • started ${relative(session.startedAt)}`,
-      `**Progress:** **${summary.completed}/${summary.total}** requester-runs recorded${summary.planned ? ` • **${summary.planned}** planned this session` : ""}`,
+      `**Live run progress:** **${Math.min(live.done, live.target)}/${live.target}**`,
+      `**Request progress:** **${summary.completed}/${summary.total}** requester-runs recorded`,
       `**Requesters:** **${session.requests.length}** • **Live participants:** **${participantIds.length}**`,
       voice?.voice_channel ? `**Voice:** <#${voice.voice_channel}> • optional` : "**Voice:** preparing…",
       "",
@@ -226,6 +261,12 @@ function cardPayload(guild, session) {
     .setFooter({ text: `${CARD_FOOTER_PREFIX}${session.ticketId}` });
 
   const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${RUN_PREFIX}${session.ticketId}`)
+      .setLabel("End Run +1")
+      .setEmoji("✅")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(live.done >= live.target),
     new ButtonBuilder()
       .setCustomId("carry_dropin_open")
       .setLabel("Join Carry")
@@ -238,7 +279,7 @@ function cardPayload(guild, session) {
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`${MANAGE_PREFIX}${session.ticketId}`)
-      .setLabel("Carrier Controls")
+      .setLabel("Controls")
       .setEmoji("⚙️")
       .setStyle(ButtonStyle.Secondary),
   );
@@ -246,7 +287,7 @@ function cardPayload(guild, session) {
   if (voice?.voice_channel) {
     row.addComponents(
       new ButtonBuilder()
-        .setLabel("Open Voice")
+        .setLabel("Voice")
         .setEmoji("🔊")
         .setStyle(ButtonStyle.Link)
         .setURL(`https://discord.com/channels/${guild.id}/${voice.voice_channel}`),
@@ -275,7 +316,7 @@ async function ensureHeader(channel, activeCount) {
       .setDescription([
         "Live sessions appear below as individual cards.",
         "",
-        "Press **Join Carry** to drop into a live run. If several carries are active, you choose the one you want. Voice is optional and private tickets stay private.",
+        "**Join Carry** lets you drop into a live run without exposing the private requester ticket. **End Run +1** is Carrier/staff only and updates the public live counter; verified completion still happens in the private session.",
         `**Currently live:** ${activeCount.toLocaleString("en-GB")}`,
       ].join("\n"))
       .setFooter({ text: HEADER_FOOTER })],
@@ -300,6 +341,7 @@ async function removeEndedCards(client, guildId, activeIds, budget) {
     const message = channel?.isTextBased?.() ? await channel.messages.fetch(String(row.message_id)).catch(() => null) : null;
     if (message) await message.delete().catch(() => {});
     db.prepare("DELETE FROM active_carry_cards WHERE ticket_channel=?").run(String(row.ticket_channel));
+    db.prepare("DELETE FROM active_carry_run_progress WHERE ticket_channel=?").run(String(row.ticket_channel));
     mutations += 1;
   }
   return mutations;
@@ -359,9 +401,51 @@ async function refreshTicketCard(client, ticketChannel) {
   return reconcileActiveCarries(client, ticketChannel.guild);
 }
 
+async function findLiveSessionForGuild(ticketId, guildId) {
+  const sessions = await loadActiveSessions();
+  return sessions.find((session) =>
+    String(session.ticketId) === String(ticketId)
+    && sessionBelongsToGuild(session, guildId),
+  ) || null;
+}
+
+function actorCanRun(interaction, session) {
+  const carrierId = String(session?.carrier?.discord_id || "");
+  return carrierId === String(interaction.user.id)
+    || interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)
+    || interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
+}
+
 async function handleActiveCarriesInteraction(interaction) {
   if (!interaction.inGuild?.() || !interaction.isButton?.()) return false;
   const id = String(interaction.customId || "");
+
+  if (id.startsWith(RUN_PREFIX)) {
+    const ticketId = id.slice(RUN_PREFIX.length);
+    const session = await findLiveSessionForGuild(ticketId, interaction.guildId);
+    if (!session) {
+      await interaction.reply({ content: "❌ That carry is no longer live.", flags: MessageFlags.Ephemeral });
+      return true;
+    }
+    if (!actorCanRun(interaction, session)) {
+      await interaction.reply({ content: "❌ Only the assigned Carrier or staff can update live run progress.", flags: MessageFlags.Ephemeral });
+      return true;
+    }
+
+    const progress = liveRunProgress(session, interaction.guildId);
+    const next = Math.min(progress.target, progress.done + 1);
+    db.prepare("UPDATE active_carry_run_progress SET runs_done=?,updated_at=? WHERE ticket_channel=?")
+      .run(next, Date.now(), String(ticketId));
+
+    await interaction.reply({
+      content: next >= progress.target
+        ? `✅ Run **${next}/${progress.target}** recorded. The planned live batch is complete — finish the verified session from the private Carry Controls when ready.`
+        : `✅ Run **${next}/${progress.target}** recorded on the public live card.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    await reconcileActiveCarries(interaction.client, interaction.guild).catch(() => {});
+    return true;
+  }
 
   if (id.startsWith(MANAGE_PREFIX)) {
     const ticketId = id.slice(MANAGE_PREFIX.length);
@@ -381,7 +465,7 @@ async function handleActiveCarriesInteraction(interaction) {
     }
 
     await interaction.reply({
-      content: `⚙️ Open the private session controls in <#${ticket.id}>. The public card stays intentionally simple.`,
+      content: `⚙️ Open the private session controls in <#${ticket.id}>. Ready Check, verified timer, participant management and final completion stay there.`,
       flags: MessageFlags.Ephemeral,
     });
     return true;
