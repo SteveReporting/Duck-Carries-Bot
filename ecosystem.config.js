@@ -2,12 +2,11 @@ module.exports = {
     apps: [
         {
             name: "carry-tavern",
-            script: "./index.js",
+            script: "./shutdown.js",
             cwd: __dirname,
-            node_args: "-r ./env-bootstrap.js -r ./ai/openAiCompatPreload.js -r ./global-command-cleanup.js -r ./security-command-pass-through.js -r ./platform/localAiProxyBootstrap.js",
             instances: 1,
             exec_mode: "fork",
-            autorestart: true,
+            autorestart: false,
             watch: false,
             max_memory_restart: "512M",
             restart_delay: 3000,
