@@ -5,7 +5,7 @@ import { localAiConfigured, localAiModel, localChatCompletion } from "./aiClient
 const GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json";
 const INTENTS = (1 << 0) | (1 << 9) | (1 << 15);
 const MAX_HISTORY = 18;
-const OWNER_ID = "1178367418955989053";
+const OWNER_IDS = new Set(["1178367418955989053", "1523293295663513881"]);
 const SILENCED_KEY = "ownerSilenced";
 
 function json(data, status = 200) {
@@ -36,7 +36,7 @@ function isControl(value) {
 }
 
 function isOwner(message) {
-  return String(message?.author?.id || "") === OWNER_ID;
+  return OWNER_IDS.has(String(message?.author?.id || ""));
 }
 
 function cleanReply(text) {
