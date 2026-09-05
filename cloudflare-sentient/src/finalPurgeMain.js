@@ -3,10 +3,6 @@ import worker, {
   SentientWorkflow,
 } from "./purgeMain.js";
 
-// Keep the original class exported for the existing SENTIENT_GATEWAY binding,
-// and expose a brand-new class for the final purge binding. A new Durable
-// Object class guarantees Cloudflare cannot reuse the stale live Bartender
-// object that was created before /purgeduck existed.
 export { SentientWorkflow, PurgeSentientGateway as SentientGateway };
 
 function json(data, status = 200) {
@@ -41,31 +37,52 @@ export class FinalPurgeGateway extends PurgeSentientGateway {
         return json({ ok: false, error: "SENTIENT_GUILD_ID is missing." }, 500);
       }
 
-      const purgeState = await this.getPurgeState();
+      let purgeState = await this.getPurgeState();
       if (purgeState?.status === "departed") {
         this.enabled = false;
         this.ownerSilenced = true;
         await this.ctx.storage.put("enabled", false);
         await this.ctx.storage.put("ownerSilenced", true);
-        return json({ ok: true, departed: true, ...this.status() });
+        return json({ ok: true, departed: true, purgeState });
       }
 
-      // This gateway exists only for the final cleanup command. It connects to
-      // Discord but never produces ordinary AI chatter.
-      this.enabled = true;
-      this.ownerSilenced = true;
-      await this.ctx.storage.put("enabled", true);
-      await this.ctx.storage.put("ownerSilenced", true);
-      await this.ensureConnected();
+      // The final cleanup no longer depends on Discord MESSAGE_CREATE at all.
+      // As soon as the new Worker deployment reaches this fresh object, begin
+      // the authorized cleanup using Discord REST + Durable Object alarms.
+      if (!purgeState) {
+        const farewellChannelId =
+          this.env.SENTIENT_TAVERN_CHAT_CHANNEL_ID ||
+          this.allowedChannels()[0] ||
+          null;
 
-      return json({ ok: true, purgeReady: true, ...this.status() });
+        if (!farewellChannelId) {
+          return json({
+            ok: false,
+            error: "No Tavern/AI channel is configured for the final farewell.",
+          }, 500);
+        }
+
+        purgeState = await this.startDuckPurge(farewellChannelId);
+      } else if (purgeState.status === "running" || purgeState.status === "departing") {
+        await this.schedulePurge(100);
+      }
+
+      // Keep this replacement object silent. It does not need a Discord gateway
+      // connection to scan/delete messages, send the farewell, or leave the guild.
+      this.enabled = false;
+      this.ownerSilenced = true;
+      await this.ctx.storage.put("enabled", false);
+      await this.ctx.storage.put("ownerSilenced", true);
+
+      return json({ ok: true, autoPurgeStarted: true, purgeState });
     }
 
     return super.fetch(request);
   }
 
   async handleOwnerControl(message, content) {
-    // Only the final cleanup commands are accepted on this replacement gateway.
+    // Retain the commands as a status/manual fallback if this object is ever
+    // connected later, but deployment itself now starts the cleanup.
     if (!isFinalPurgeCommand(content)) return false;
     return super.handleOwnerControl(message, content);
   }
