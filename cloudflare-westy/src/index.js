@@ -1,15 +1,9 @@
 export { WestyGateway } from "./gateway.js";
 
-import { adminPage } from "./adminUi.js";
 import { localAiConfigured, localAiModel } from "./aiClient.js";
 
 function json(data, status = 200) {
   return Response.json(data, { status, headers: { "Cache-Control": "no-store" } });
-}
-
-function authorized(request, env) {
-  if (!env.WESTY_ADMIN_SECRET) return false;
-  return request.headers.get("Authorization") === `Bearer ${env.WESTY_ADMIN_SECRET}`;
 }
 
 function gatewayStub(env) {
@@ -52,18 +46,32 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/" || url.pathname === "/admin") {
-      return adminPage();
-    }
-
-    if (url.pathname === "/health") {
+    if (url.pathname === "/" || url.pathname === "/health") {
       const liveAi = liveAiHealth(env);
+      let gateway = null;
+
+      if (liveAi.configured) {
+        try {
+          const ensured = await gatewayAction(env, "ensure");
+          gateway = ensured.data;
+        } catch (error) {
+          gateway = { ok: false, error: error?.message || String(error) };
+        }
+      }
+
+      if (url.pathname === "/") {
+        return new Response("Westy is running.", {
+          status: liveAi.configured ? 200 : 503,
+          headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+        });
+      }
+
       return json({
-        ok: liveAi.configured,
-        service: "westy-discord",
+        ok: liveAi.configured && gateway?.ok !== false,
+        service: "westy",
         applicationId: env.WESTY_APPLICATION_ID || null,
-        liveAiConfigured: liveAi.configured,
         liveAi,
+        gateway,
         romanticOwnerOverride: false,
       }, liveAi.configured ? 200 : 503);
     }
@@ -71,55 +79,21 @@ export default {
     if (url.pathname === "/diagnostics" && request.method === "GET") {
       try {
         const liveAi = liveAiHealth(env);
+        await gatewayAction(env, "ensure");
         const { response, data } = await gatewayAction(env, "status");
         return json({
           ok: response.ok,
-          service: "westy-discord",
+          service: "westy",
           aiModel: localAiModel(env),
           liveAi,
           gateway: data,
         }, response.status);
       } catch (error) {
-        return json({ ok: false, service: "westy-discord", error: error?.message || String(error) }, 500);
+        return json({ ok: false, service: "westy", error: error?.message || String(error) }, 500);
       }
     }
 
-    if (!url.pathname.startsWith("/api/")) {
-      return new Response("Not found", { status: 404 });
-    }
-
-    if (!authorized(request, env)) {
-      return json({ error: "Unauthorized" }, 401);
-    }
-
-    if (url.pathname === "/api/auth-check" && request.method === "GET") {
-      return json({ ok: true, authorized: true });
-    }
-
-    if (url.pathname === "/api/live-ai/status" && request.method === "GET") {
-      const liveAi = liveAiHealth(env);
-      if (!liveAi.configured) {
-        return json({ ok: false, enabled: false, ready: false, error: `Westy is missing: ${liveAi.missing.join(", ")}`, liveAi }, 503);
-      }
-      const { response, data } = await gatewayAction(env, "status");
-      return json({ ...data, liveAi }, response.status);
-    }
-
-    if (url.pathname === "/api/live-ai/start" && request.method === "POST") {
-      const liveAi = liveAiHealth(env);
-      if (!liveAi.configured) {
-        return json({ ok: false, enabled: false, ready: false, error: `Cannot start Westy. Missing: ${liveAi.missing.join(", ")}`, liveAi }, 503);
-      }
-      const { response, data } = await gatewayAction(env, "start");
-      return json({ ...data, liveAi }, response.status);
-    }
-
-    if (url.pathname === "/api/live-ai/stop" && request.method === "POST") {
-      const { response, data } = await gatewayAction(env, "stop");
-      return json(data, response.status);
-    }
-
-    return json({ error: "Unknown API route" }, 404);
+    return new Response("Not found", { status: 404 });
   },
 
   async scheduled(_event, env, ctx) {
