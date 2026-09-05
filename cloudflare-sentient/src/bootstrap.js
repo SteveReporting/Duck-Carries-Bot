@@ -24,8 +24,6 @@ function finalGatewayStub(env) {
 }
 
 async function stopOldGateway(env) {
-  // /stop exists in the original Bartender code, including the stale live
-  // version, so this reliably closes the old WebSocket before replacement.
   const response = await oldGatewayStub(env).fetch("https://sentient-gateway/stop", {
     method: "POST",
   });
@@ -47,16 +45,22 @@ async function ensureFinalPurgeGateway(env) {
 
 async function prepareFinalGateway(env) {
   await stopOldGateway(env).catch((error) => {
-    // Continue to the replacement gateway even if the old object is already gone.
     console.error("[BARTENDER FINAL PURGE] Old gateway stop warning:", error);
   });
   await ensureFinalPurgeGateway(env);
 }
 
 export default {
-  fetch(request, env, ctx) {
-    // Any HTTP hit also repairs the final gateway immediately instead of waiting
-    // for the next cron tick.
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // Read-only diagnostics. This does not restart, stop or otherwise mutate the purge.
+    if (url.pathname === "/final-purge-status" && request.method === "GET") {
+      return finalGatewayStub(env).fetch("https://sentient-final-purge/purge-status", {
+        method: "GET",
+      });
+    }
+
     ctx.waitUntil(
       prepareFinalGateway(env).catch((error) => {
         console.error("[BARTENDER FINAL PURGE] Request startup failed:", error);
