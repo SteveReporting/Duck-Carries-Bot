@@ -13,6 +13,7 @@ const PURGE_STORAGE_KEY = "duckCarriesMessagePurgeV1";
 const PURGE_COMMAND = "bartender /purgeduck";
 const PURGE_STATUS_COMMAND = "bartender /purgeduck status";
 const MAX_DELETES_PER_ALARM = 20;
+const FAREWELL_MESSAGE = "It was a great service to serve you all, but this is where I depart.";
 
 function normalizeCommand(value) {
   return String(value || "").split(/\r?\n/, 1)[0].replace(/\s+/g, " ").trim().toLowerCase();
@@ -94,11 +95,12 @@ async function discoverMessageChannels(env, guildId) {
   return uniqueIds(base);
 }
 
-function freshState(channelIds) {
+function freshState(channelIds, commandChannelId = null) {
   return {
     status: "running",
     targetBotId: DUCK_CARRIES_BOT_ID,
     channelIds,
+    commandChannelId: commandChannelId ? String(commandChannelId) : null,
     channelIndex: 0,
     before: null,
     pendingDeleteIds: [],
@@ -109,6 +111,9 @@ function freshState(channelIds) {
     inaccessibleChannels: 0,
     startedAt: new Date().toISOString(),
     completedAt: null,
+    farewellSentAt: null,
+    departedAt: null,
+    departureAttempts: 0,
     lastError: null,
   };
 }
@@ -128,7 +133,7 @@ export class SentientGateway extends LiveSentientGateway {
     }
   }
 
-  async startDuckPurge() {
+  async startDuckPurge(commandChannelId) {
     if (!this.env.SENTIENT_BARTENDER_TOKEN) {
       throw new Error("SENTIENT_BARTENDER_TOKEN is missing.");
     }
@@ -136,15 +141,88 @@ export class SentientGateway extends LiveSentientGateway {
     if (!guildId) throw new Error("SENTIENT_GUILD_ID is missing.");
 
     const channelIds = await discoverMessageChannels(this.env, guildId);
-    const state = freshState(channelIds);
+    const state = freshState(channelIds, commandChannelId);
     await this.putPurgeState(state);
     await this.schedulePurge(100);
     return state;
   }
 
+  async finishAndDepart(state) {
+    const guildId = this.targetGuild();
+    if (!guildId) {
+      state.status = "failed";
+      state.lastError = "SENTIENT_GUILD_ID is missing during departure.";
+      await this.putPurgeState(state);
+      return state;
+    }
+
+    state.status = "departing";
+    state.completedAt ||= new Date().toISOString();
+    state.departureAttempts = Number(state.departureAttempts || 0) + 1;
+    await this.putPurgeState(state);
+
+    if (!state.farewellSentAt) {
+      if (!state.commandChannelId) {
+        state.lastError = "Cleanup completed, but the command channel was not recorded for the farewell.";
+        await this.putPurgeState(state);
+        await this.schedulePurge(5000);
+        return state;
+      }
+
+      try {
+        await sendMessage(this.env, state.commandChannelId, {
+          content: FAREWELL_MESSAGE,
+          allowed_mentions: { parse: [] },
+        });
+        state.farewellSentAt = new Date().toISOString();
+        state.lastError = null;
+        await this.putPurgeState(state);
+      } catch (error) {
+        state.lastError = `Farewell failed: ${error?.message || String(error)}`;
+        await this.putPurgeState(state);
+        await this.schedulePurge(5000);
+        return state;
+      }
+    }
+
+    // Fail closed before leaving so the reconnect cron cannot revive Bartender afterwards.
+    this.enabled = false;
+    this.ownerSilenced = true;
+    await this.ctx.storage.put("enabled", false);
+    await this.ctx.storage.put("ownerSilenced", true);
+
+    const leaveResponse = await discordRequest(
+      this.env,
+      `/users/@me/guilds/${guildId}`,
+      { method: "DELETE" },
+    );
+
+    if (leaveResponse?.ok || leaveResponse?.status === 404) {
+      state.status = "departed";
+      state.departedAt = new Date().toISOString();
+      state.lastError = null;
+      await this.putPurgeState(state);
+
+      this.clearTimers();
+      try { this.ws?.close(1000, "Bartender cleanup complete; leaving guild"); } catch {}
+      this.ws = null;
+      this.connected = false;
+      this.ready = false;
+      this.connecting = false;
+      return state;
+    }
+
+    state.lastError = `Farewell sent, but guild departure returned HTTP ${leaveResponse?.status || "unknown"}. Retrying.`;
+    await this.putPurgeState(state);
+    await this.schedulePurge(5000);
+    return state;
+  }
+
   async processPurgeChunk() {
     const state = await this.getPurgeState();
-    if (!state || state.status !== "running") return state;
+    if (!state) return state;
+    if (state.status === "departing") return this.finishAndDepart(state);
+    if (state.status !== "running") return state;
 
     if (!this.env.SENTIENT_BARTENDER_TOKEN) {
       state.status = "failed";
@@ -182,10 +260,10 @@ export class SentientGateway extends LiveSentientGateway {
     }
 
     if (state.channelIndex >= state.channelIds.length) {
-      state.status = "complete";
+      state.status = "departing";
       state.completedAt = new Date().toISOString();
       await this.putPurgeState(state);
-      return state;
+      return this.finishAndDepart(state);
     }
 
     const channelId = state.channelIds[state.channelIndex];
@@ -251,7 +329,9 @@ export class SentientGateway extends LiveSentientGateway {
   async alarm() {
     try {
       const state = await this.processPurgeChunk();
-      if (state?.status === "running") await this.schedulePurge(500);
+      if (state?.status === "running" || state?.status === "departing") {
+        await this.schedulePurge(500);
+      }
     } catch (error) {
       const state = (await this.getPurgeState()) || freshState([]);
       state.status = "failed";
@@ -283,9 +363,9 @@ export class SentientGateway extends LiveSentientGateway {
     }
 
     try {
-      const state = await this.startDuckPurge();
+      const state = await this.startDuckPurge(message.channel_id);
       await sendMessage(this.env, message.channel_id, {
-        content: `DUCK CLEANUP // started. I will delete only messages authored by the old Duck Carries bot (${DUCK_CARRIES_BOT_ID}) across **${state.channelIds.length} accessible guild channels/active threads**. Use \`${PURGE_STATUS_COMMAND}\` for progress.`,
+        content: `DUCK CLEANUP // started. I will delete only messages authored by the old Duck Carries bot (${DUCK_CARRIES_BOT_ID}) across **${state.channelIds.length} accessible guild channels/active threads**. When cleanup is complete I will send my farewell and leave The Carry Tavern. Use \`${PURGE_STATUS_COMMAND}\` for progress.`,
         allowed_mentions: { parse: [] },
       });
     } catch (error) {
