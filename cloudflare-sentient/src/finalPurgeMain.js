@@ -2,6 +2,7 @@ import worker, {
   SentientGateway as PurgeSentientGateway,
   SentientWorkflow,
 } from "./purgeMain.js";
+import { OldCarryTavernPurgeGateway } from "./oldCarryTavernPurgeGateway.js";
 
 export { SentientWorkflow, PurgeSentientGateway as SentientGateway };
 
@@ -30,6 +31,7 @@ function summarizePurgeState(state) {
   return {
     status: state.status,
     targetBotId: state.targetBotId,
+    matcher: "bot-id+carry-tavern-webhooks-v2",
     scanned: Number(state.scanned || 0),
     deleted: Number(state.deleted || 0),
     deleteFailures: Number(state.deleteFailures || 0),
@@ -45,7 +47,7 @@ function summarizePurgeState(state) {
   };
 }
 
-export class FinalPurgeGateway extends PurgeSentientGateway {
+export class FinalPurgeGateway extends OldCarryTavernPurgeGateway {
   async fetch(request) {
     const url = new URL(request.url);
 
