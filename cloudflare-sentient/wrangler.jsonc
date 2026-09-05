@@ -22,6 +22,10 @@
       {
         "name": "SENTIENT_GATEWAY",
         "class_name": "SentientGateway"
+      },
+      {
+        "name": "SENTIENT_FINAL_PURGE_GATEWAY",
+        "class_name": "FinalPurgeGateway"
       }
     ]
   },
@@ -29,6 +33,10 @@
     {
       "tag": "sentient-gateway-v1",
       "new_sqlite_classes": ["SentientGateway"]
+    },
+    {
+      "tag": "sentient-final-purge-v2",
+      "new_sqlite_classes": ["FinalPurgeGateway"]
     }
   ],
   "triggers": {
