@@ -3,7 +3,11 @@ import worker, {
   SentientWorkflow,
 } from "./purgeMain.js";
 
-export { SentientWorkflow };
+// Keep the original class exported for the existing SENTIENT_GATEWAY binding,
+// and expose a brand-new class for the final purge binding. A new Durable
+// Object class guarantees Cloudflare cannot reuse the stale live Bartender
+// object that was created before /purgeduck existed.
+export { SentientWorkflow, PurgeSentientGateway as SentientGateway };
 
 function json(data, status = 200) {
   return Response.json(data, {
@@ -25,7 +29,7 @@ function isFinalPurgeCommand(value) {
   return command === "bartender /purgeduck" || command === "bartender /purgeduck status";
 }
 
-export class SentientGateway extends PurgeSentientGateway {
+export class FinalPurgeGateway extends PurgeSentientGateway {
   async fetch(request) {
     const url = new URL(request.url);
 
@@ -46,8 +50,8 @@ export class SentientGateway extends PurgeSentientGateway {
         return json({ ok: true, departed: true, ...this.status() });
       }
 
-      // This fresh gateway exists only to receive the final purge command.
-      // Keep all ordinary Bartender AI replies silenced while it is present.
+      // This gateway exists only for the final cleanup command. It connects to
+      // Discord but never produces ordinary AI chatter.
       this.enabled = true;
       this.ownerSilenced = true;
       await this.ctx.storage.put("enabled", true);
@@ -61,8 +65,7 @@ export class SentientGateway extends PurgeSentientGateway {
   }
 
   async handleOwnerControl(message, content) {
-    // On this replacement gateway, only expose the final cleanup controls.
-    // Standard /status, /on and /off remain handled by the old gateway until it departs.
+    // Only the final cleanup commands are accepted on this replacement gateway.
     if (!isFinalPurgeCommand(content)) return false;
     return super.handleOwnerControl(message, content);
   }
