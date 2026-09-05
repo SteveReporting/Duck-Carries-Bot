@@ -1,3 +1,4 @@
+// Deployment marker: ensure the purge-enabled Bartender bundle is rebuilt from main.
 import worker, { SentientGateway, SentientWorkflow } from "./purgeMain.js";
 
 export { SentientGateway, SentientWorkflow };
