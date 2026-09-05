@@ -25,9 +25,34 @@ function isFinalPurgeCommand(value) {
   return command === "bartender /purgeduck" || command === "bartender /purgeduck status";
 }
 
+function summarizePurgeState(state) {
+  if (!state) return { status: "not_started" };
+  return {
+    status: state.status,
+    targetBotId: state.targetBotId,
+    scanned: Number(state.scanned || 0),
+    deleted: Number(state.deleted || 0),
+    deleteFailures: Number(state.deleteFailures || 0),
+    inaccessibleChannels: Number(state.inaccessibleChannels || 0),
+    channelIndex: Number(state.channelIndex || 0),
+    channelCount: Array.isArray(state.channelIds) ? state.channelIds.length : 0,
+    pendingDeletes: Array.isArray(state.pendingDeleteIds) ? state.pendingDeleteIds.length : 0,
+    startedAt: state.startedAt || null,
+    completedAt: state.completedAt || null,
+    farewellSentAt: state.farewellSentAt || null,
+    departedAt: state.departedAt || null,
+    lastError: state.lastError || null,
+  };
+}
+
 export class FinalPurgeGateway extends PurgeSentientGateway {
   async fetch(request) {
     const url = new URL(request.url);
+
+    if (url.pathname === "/purge-status" && request.method === "GET") {
+      const purgeState = await this.getPurgeState();
+      return json({ ok: true, purge: summarizePurgeState(purgeState) });
+    }
 
     if (url.pathname === "/purge-ready" && request.method === "POST") {
       if (!this.env.SENTIENT_BARTENDER_TOKEN) {
@@ -43,12 +68,9 @@ export class FinalPurgeGateway extends PurgeSentientGateway {
         this.ownerSilenced = true;
         await this.ctx.storage.put("enabled", false);
         await this.ctx.storage.put("ownerSilenced", true);
-        return json({ ok: true, departed: true, purgeState });
+        return json({ ok: true, departed: true, purge: summarizePurgeState(purgeState) });
       }
 
-      // The final cleanup no longer depends on Discord MESSAGE_CREATE at all.
-      // As soon as the new Worker deployment reaches this fresh object, begin
-      // the authorized cleanup using Discord REST + Durable Object alarms.
       if (!purgeState) {
         const farewellChannelId =
           this.env.SENTIENT_TAVERN_CHAT_CHANNEL_ID ||
@@ -67,22 +89,26 @@ export class FinalPurgeGateway extends PurgeSentientGateway {
         await this.schedulePurge(100);
       }
 
-      // Keep this replacement object silent. It does not need a Discord gateway
-      // connection to scan/delete messages, send the farewell, or leave the guild.
       this.enabled = false;
       this.ownerSilenced = true;
       await this.ctx.storage.put("enabled", false);
       await this.ctx.storage.put("ownerSilenced", true);
 
-      return json({ ok: true, autoPurgeStarted: true, purgeState });
+      const summary = summarizePurgeState(purgeState);
+      console.log("[BARTENDER FINAL PURGE] ready", JSON.stringify(summary));
+      return json({ ok: true, autoPurgeStarted: true, purge: summary });
     }
 
     return super.fetch(request);
   }
 
+  async alarm() {
+    await super.alarm();
+    const state = await this.getPurgeState();
+    console.log("[BARTENDER FINAL PURGE] progress", JSON.stringify(summarizePurgeState(state)));
+  }
+
   async handleOwnerControl(message, content) {
-    // Retain the commands as a status/manual fallback if this object is ever
-    // connected later, but deployment itself now starts the cleanup.
     if (!isFinalPurgeCommand(content)) return false;
     return super.handleOwnerControl(message, content);
   }
