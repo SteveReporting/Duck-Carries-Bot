@@ -1,5 +1,5 @@
 {
-  "name": "westy-discord-worker",
+  "name": "westy",
   "version": "0.1.0",
   "private": true,
   "type": "module",
