@@ -104,6 +104,18 @@ export class FinalPurgeGateway extends OldCarryTavernPurgeGateway {
     return super.fetch(request);
   }
 
+  async finishAndDepart(state) {
+    if (Number(state?.deleted || 0) === 0) {
+      state.status = "failed";
+      state.completedAt ||= new Date().toISOString();
+      state.lastError = "Safety stop: full cleanup scan completed without matching any old Carry Tavern/Duck Carries messages. Farewell and guild departure were blocked.";
+      await this.putPurgeState(state);
+      return state;
+    }
+
+    return super.finishAndDepart(state);
+  }
+
   async alarm() {
     await super.alarm();
     const state = await this.getPurgeState();
